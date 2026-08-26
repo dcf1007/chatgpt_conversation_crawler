@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ChatGPT Share Archiver</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: Canvas;
+      color: CanvasText;
+    }
+    main { width: min(720px, calc(100% - 32px)); }
+    .card {
+      border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 10px 32px color-mix(in srgb, CanvasText 7%, transparent);
+    }
+    h1 { margin: 0 0 8px; font-size: clamp(24px, 5vw, 34px); }
+    p { line-height: 1.5; }
+    label { display: block; font-weight: 650; margin: 24px 0 8px; }
+    input {
+      width: 100%;
+      padding: 12px 13px;
+      border: 1px solid color-mix(in srgb, CanvasText 24%, transparent);
+      border-radius: 10px;
+      font: inherit;
+      background: Canvas;
+      color: CanvasText;
+    }
+    button {
+      margin-top: 12px;
+      padding: 11px 15px;
+      border: 0;
+      border-radius: 10px;
+      font: inherit;
+      font-weight: 650;
+      cursor: pointer;
+      background: CanvasText;
+      color: Canvas;
+    }
+    button:disabled { opacity: .55; cursor: progress; }
+    .note {
+      margin-top: 18px;
+      font-size: 14px;
+      color: color-mix(in srgb, CanvasText 72%, transparent);
+    }
+    #status { min-height: 1.4em; margin-top: 12px; font-size: 14px; }
+    .error { color: #c33; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="card">
+      <h1>ChatGPT Share Archiver</h1>
+      <p>Paste a public ChatGPT conversation share URL. The server opens it in Chromium, scrolls through lazy-loaded content, expands user-visible disclosure sections, and returns a readable static HTML file with code blocks preserved.</p>
+
+      <form id="form">
+        <label for="url">Share URL</label>
+        <input id="url" name="url" type="url" required autocomplete="off"
+          placeholder="https://chatgpt.com/share/...">
+        <button id="submit" type="submit">Create static HTML</button>
+      </form>
+
+      <div id="status" aria-live="polite"></div>
+      <p class="note">This archives only content exposed by the shared page to an ordinary browser. It does not extract hidden/private reasoning, internal application state, account-only data, or content that the share link itself does not expose.</p>
+    </div>
+  </main>
+
+<script>
+const form = document.querySelector('#form');
+const input = document.querySelector('#url');
+const button = document.querySelector('#submit');
+const status = document.querySelector('#status');
+
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  status.className = '';
+  status.textContent = 'Loading the share and building the snapshot…';
+  button.disabled = true;
+
+  try {
+    const response = await fetch('/api/archive', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: input.value.trim() })
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || `Archive failed (${response.status}).`);
+    }
+
+    const blob = await response.blob();
+    const disposition = response.headers.get('content-disposition') || '';
+    const match = disposition.match(/filename="([^"]+)"/i);
+    const filename = match?.[1] || 'chatgpt-share.html';
+
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 30_000);
+
+    status.textContent = 'Static HTML created.';
+  } catch (error) {
+    status.className = 'error';
+    status.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
