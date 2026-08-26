@@ -34,7 +34,7 @@ function publicJob(job) {
     status: job.state === 'complete' ? 'done' : job.state,
     phase: job.phase,
     detail: job.detail,
-    scanningStatus: job.scanningStatus || 'Not scanning yet',
+    scanningStatus: job.scanningStatus || 'Not started',
     oldestRetained: job.oldestRetained || 'none',
     expandingStatus: job.expandingStatus || 'No disclosure expansion yet',
     turns: job.turns || 0,
@@ -47,6 +47,7 @@ function publicJob(job) {
     lastProgressAt: job.progressAt,
     scanPass: job.pass || 0,
     scanPasses: 3,
+    scanComplete: Boolean(job.scanComplete),
     direction: job.direction || '',
     step: job.step || 0,
     scrollPercent,
@@ -65,8 +66,8 @@ async function runJob(job) {
     update(job, {
       state: 'running',
       phase: 'Launching Chromium',
-      detail: 'Starting a clean headless browser',
-      scanningStatus: 'Waiting for page load'
+      detail: 'Starting a clean headless browser.',
+      scanningStatus: 'Not started'
     });
     job.browser = await chromium.launch({ headless: true });
     const context = await job.browser.newContext({ viewport: { width: 1440, height: 1000 }, javaScriptEnabled: true });
@@ -74,8 +75,8 @@ async function runJob(job) {
 
     update(job, {
       phase: 'Loading share',
-      detail: 'Opening the ChatGPT share page',
-      scanningStatus: 'Waiting for ChatGPT to render'
+      detail: 'Opening the ChatGPT share page and waiting for its initial render.',
+      scanningStatus: 'Not started'
     });
     await job.page.goto(job.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await job.page.waitForLoadState('networkidle', { timeout: 12_000 }).catch(() => {});
@@ -94,6 +95,7 @@ async function runJob(job) {
         p.scanningStatus,
         p.oldestRetained,
         p.expandingStatus,
+        p.scanComplete,
         p.turns,
         p.expanded,
         p.failures,
@@ -116,8 +118,12 @@ async function runJob(job) {
 
     update(job, {
       phase: 'Building final static page',
-      detail: 'Sanitizing captured turns and assembling HTML',
-      scanningStatus: 'Scanning complete'
+      detail: 'Sanitizing retained turns and assembling the downloadable HTML archive.',
+      scanningStatus: 'Complete — 3 passes + oldest-edge convergence',
+      scanComplete: true,
+      pass: 0,
+      direction: '',
+      step: 0
     });
     const snapshot = await buildSnapshot(job.page, job.url);
     if (!snapshot.stats.turns) throw new Error('No conversation turns were captured. ChatGPT may have changed the shared-page DOM.');
@@ -129,8 +135,12 @@ async function runJob(job) {
       ...snapshot.stats,
       state: 'complete',
       phase: 'Complete',
-      detail: 'Static HTML is ready to download',
-      scanningStatus: 'Complete',
+      detail: 'Static HTML is ready to download.',
+      scanningStatus: 'Complete — 3 passes + oldest-edge convergence',
+      scanComplete: true,
+      pass: 0,
+      direction: '',
+      step: 0,
       finishedAt: now()
     });
   } catch (e) {
@@ -157,10 +167,11 @@ app.post('/api/archive/start', (req, res) => {
       url,
       state: 'queued',
       phase: 'Queued',
-      detail: 'Waiting to start',
-      scanningStatus: 'Not scanning yet',
+      detail: 'Waiting to start.',
+      scanningStatus: 'Not started',
       oldestRetained: 'none',
       expandingStatus: 'No disclosure expansion yet',
+      scanComplete: false,
       createdAt: now(),
       heartbeatAt: now(),
       progressAt: now(),
