@@ -8,6 +8,7 @@ export async function installCrawler(page) {
       clickCount: 0,
       successfulExpansions: 0,
       lastExpansion: 'No disclosure expansion yet',
+      lastExpansionTurn: '',
       oldestVerification: { converged: null, quietChecks: 0, checks: 0, requiredQuietChecks: 12, maxChecks: 180 }
     };
 
@@ -60,6 +61,14 @@ export async function installCrawler(page) {
     function mountedIds() {
       return turns().map(section => section.getAttribute('data-testid')).filter(Boolean)
         .sort((a, b) => turnNumber(a) - turnNumber(b) || a.localeCompare(b));
+    }
+
+    function coherentExpansionStatus(mounted) {
+      if (state.lastExpansionTurn && !mounted.includes(state.lastExpansionTurn)) {
+        state.lastExpansionTurn = '';
+        state.lastExpansion = 'No disclosure expansion active in current mounted range';
+      }
+      return state.lastExpansion;
     }
 
     function nextTurnAfter(element, mountedTurns) {
@@ -199,12 +208,18 @@ export async function installCrawler(page) {
     }
 
     function activity() {
+      const retained = retainedIds();
+      const mounted = mountedIds();
       return {
         expanded: state.successfulExpansions,
         clicks: state.clickCount,
         failures: Object.keys(state.failures).length,
         timelineMarkers: Object.keys(state.timelineMarkers).length,
-        expandingStatus: state.lastExpansion
+        oldestRetained: retained[0] || 'none',
+        newestRetained: retained[retained.length - 1] || 'none',
+        mountedFirst: mounted[0] || 'none',
+        mountedLast: mounted[mounted.length - 1] || 'none',
+        expandingStatus: coherentExpansionStatus(mounted)
       };
     }
 
@@ -214,7 +229,8 @@ export async function installCrawler(page) {
         if (details) {
           details.open = true;
           state.successfulExpansions++;
-          state.lastExpansion = `${turnId(details)} — opened native <details>`;
+          state.lastExpansionTurn = turnId(details);
+          state.lastExpansion = `${state.lastExpansionTurn} — opened native <details>`;
           return { kind: 'details', description: state.lastExpansion };
         }
       }
@@ -227,7 +243,8 @@ export async function installCrawler(page) {
           if (attempts >= 3) continue;
           state.attempts[key] = attempts + 1;
           const shortLabel = label(el).slice(0, 180) || el.getAttribute('aria-controls') || 'unlabelled disclosure';
-          state.lastExpansion = `${turnId(el)} — ${shortLabel}`;
+          state.lastExpansionTurn = turnId(el);
+          state.lastExpansion = `${state.lastExpansionTurn} — ${shortLabel}`;
           try {
             el.scrollIntoView({ block: 'center', inline: 'nearest' });
             el.click();
@@ -271,7 +288,7 @@ export async function installCrawler(page) {
         newestRetained: retained[retained.length - 1] || 'none',
         mountedFirst: mounted[0] || 'none',
         mountedLast: mounted[mounted.length - 1] || 'none',
-        expandingStatus: state.lastExpansion,
+        expandingStatus: coherentExpansionStatus(mounted),
         oldestConverged: state.oldestVerification.converged,
         oldestQuietChecks: state.oldestVerification.quietChecks,
         oldestChecks: state.oldestVerification.checks
@@ -313,7 +330,7 @@ async function expandMounted(page, max, onProgress, shouldCancel) {
 
     await onProgress?.({
       ...activity,
-      expandingStatus: result.description || activity.expandingStatus || `Expansion ${i + 1}`
+      expandingStatus: activity.expandingStatus || 'No disclosure expansion active in current mounted range'
     });
     if (expandedSinceFullReport >= 8) {
       await report(page, onProgress);
