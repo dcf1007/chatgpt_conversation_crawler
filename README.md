@@ -2,7 +2,7 @@
 
 A local Node.js/Playwright application that turns a ChatGPT **shared conversation** into a readable, script-free static HTML archive.
 
-It is aimed at long conversations that ordinary browser **Save page** / MHTML capture can miss because ChatGPT lazily mounts content, virtualizes conversation turns, and keeps reasoning/tool sections behind user-visible disclosure controls.
+It is designed for long conversations that ordinary browser **Save page** / MHTML capture can miss because ChatGPT lazily mounts content, virtualizes conversation turns, and keeps reasoning/tool sections behind user-visible disclosure controls.
 
 For example, ChatGPT can expose a collapsed row like:
 
@@ -33,11 +33,12 @@ The generated `aria-label` is not the important part. The crawler uses the struc
 - Avoids obvious menu controls such as `aria-haspopup` and `[role="menuitem"]`.
 - Preserves semantic code markup such as `<pre>` and `<code>`.
 - Retains the richest version of each virtualized conversation turn encountered during the crawl.
-- Provides live progress, persistent scanning/oldest/expansion diagnostics, heartbeat monitoring, and a separate preview window.
+- Provides live progress, persistent scanning/oldest/expansion diagnostics, heartbeat monitoring, and an optional separate preview window.
 - Supports cancellation.
 - Includes a dedicated oldest-message convergence phase for long conversations.
 - Produces a static, script-free HTML file suitable for offline reading or further conversion.
 - Includes setup/start scripts for **Windows, Linux, and macOS**.
+- Publishes finished versions automatically as GitHub Releases with a cross-platform ZIP asset.
 
 ## Requirements
 
@@ -49,12 +50,12 @@ The generated `aria-label` is not the important part. The crawler uses the struc
 
 ## Downloading a release
 
-Finished versions are published as formal GitHub Releases. Each release includes a cross-platform ZIP containing the source plus all Windows/Linux/macOS launchers.
+Finished versions are published as formal GitHub Releases. Each release includes a cross-platform ZIP containing the source plus the Windows/Linux/macOS launchers.
 
-Open the repository's **Releases** page and download the asset named similar to:
+Open the repository's **Releases** page and download the versioned asset, for example:
 
 ```text
-chatgpt-conversation-crawler-v1.4.0.zip
+chatgpt-conversation-crawler-v1.4.1.zip
 ```
 
 The release workflow reads the version from `package.json`, creates the `vX.Y.Z` release only if it does not already exist, and attaches a ZIP built from that exact release commit.
@@ -216,7 +217,7 @@ node node_modules/playwright/cli.js install chromium
 node server.mjs
 ```
 
-On Linux, Chromium may additionally require OS shared libraries. On supported apt-based systems you can ask Playwright to install them with:
+On Linux, Chromium may additionally require OS shared libraries. On supported apt-based systems:
 
 ```bash
 node node_modules/playwright/cli.js install --with-deps chromium
@@ -236,14 +237,101 @@ Then open `http://localhost:3000`.
 3. Paste it into **ChatGPT Conversation Crawler**.
 4. Select **Start archive**.
 5. Keep the main status page open while the crawler works.
-6. Optionally open the separate live preview.
+6. If you want to inspect captured content during the run, wait for **Open live preview** to become enabled and click it. The preview window is **not opened automatically**.
 7. When the job reaches **Complete**, download the generated static HTML file.
 
 For long conversations the crawl can take substantial time because it repeatedly scrolls, waits for asynchronous rendering, expands mounted disclosures, revisits the oldest edge until it converges, and progressively preserves turns that ChatGPT later virtualizes out of the live DOM.
 
 ## Understanding the progress page
 
-The current scan-position percentage is diagnostic only. ChatGPT can mount or unmount content while the crawler moves, so the known scroll range can grow or shrink during a run.
+The UI intentionally separates several kinds of state instead of forcing them through one changing message line.
+
+### Phase
+
+The large phase heading is the coarse lifecycle state, for example:
+
+```text
+Launching Chromium
+Loading share
+Preparing crawler
+Scanning conversation
+Verifying oldest messages
+Final expansion sweep
+Building final static page
+Complete
+```
+
+### Detail
+
+**Detail** explains the current operation, wait, transition, or noteworthy state that is not already represented by the persistent traversal/expansion fields.
+
+Examples:
+
+```text
+Opening the ChatGPT share page and waiting for its initial render.
+Capturing mounted turns and opening disclosures as they appear.
+Live-preview rebuilding is paused while the oldest edge is probed for asynchronously prepended turns.
+Sanitizing retained turns and assembling the downloadable HTML archive.
+```
+
+Detail deliberately does **not** repeat the pass number, scan direction, step number, oldest retained ID, or disclosure label.
+
+### Scanning
+
+**Scanning** is reserved for traversal state only.
+
+During an ordinary scan it looks similar to:
+
+```text
+Pass 2/3 ↑ · step 47 · 31.8% mounted range
+```
+
+When a directional endpoint is being checked for stability, it can add:
+
+```text
+· edge stable 2/3
+```
+
+During oldest-message verification it looks similar to:
+
+```text
+Oldest-edge probe · check 18 · stable 7/12 · mounted first conversation-turn-12
+```
+
+Before traversal begins it says:
+
+```text
+Not started
+```
+
+After all traversal/oldest-edge work completes it says:
+
+```text
+Complete — 3 passes + oldest-edge convergence
+```
+
+The current mounted-range percentage is **diagnostic only**. ChatGPT can mount or unmount content while the crawler moves, so the known scroll range can grow or shrink during a run. It is not an overall completion percentage.
+
+### Oldest retained
+
+**Oldest retained** is the oldest `conversation-turn-*` ID currently stored in the progressive capture map.
+
+This is persistent across phase changes, so when older content is discovered you can see the value move toward earlier turn IDs.
+
+### Expanding
+
+**Expanding** shows the current or most recent disclosure expansion, including the turn ID and the user-facing/generated disclosure label when available.
+
+Expansion reporting does not overwrite Detail or Scanning.
+
+### Progress bar
+
+The progress bar is a coarse visualization:
+
+- before traversal starts: indeterminate;
+- during scan passes: derived from pass plus the currently mounted scroll position;
+- after traversal/oldest-edge convergence: held near completion while final expansion/snapshot work runs;
+- after the archive is complete: 100%.
 
 The main phase sequence is:
 
@@ -265,13 +353,6 @@ Building final static page
 Complete
 ```
 
-The UI keeps four activity lines independently visible:
-
-- **Detail** — general transient crawler/server messages;
-- **Scanning** — current pass/direction/step or top-verification state;
-- **Oldest retained** — oldest conversation-turn ID captured so far;
-- **Expanding** — current or most recent disclosure-expansion activity.
-
 The dashboard also reports:
 
 - conversation turns retained;
@@ -289,7 +370,7 @@ These signals are intentionally separate.
 
 **Worker heartbeat** means the Node/Chromium job is still responding.
 
-**Last substantive progress** means something meaningful changed, such as a phase transition, a newly retained turn, an expansion, or a code-block count change.
+**Last substantive progress** means something meaningful changed, such as a phase transition, traversal position, newly retained turn, expansion, or code-block count change.
 
 A recent heartbeat with an older progress timestamp can be normal while ChatGPT is asynchronously mounting content or while the crawler is waiting for a convergence condition. A stale heartbeat is a stronger indication that Chromium or Node may actually be stuck.
 
@@ -305,7 +386,7 @@ flowchart TD
     CRAWL --> SCROLL[Scan internal scroll container]
     EXPAND --> CAPTURE[Progressive turn capture map]
     SCROLL --> CAPTURE
-    CAPTURE --> PREVIEW[Throttled live preview]
+    CAPTURE --> PREVIEW[Throttled preview generation]
     CAPTURE --> SNAPSHOT[Static snapshot sanitizer]
     SNAPSHOT --> HTML[Downloadable HTML archive]
     API -->|poll| UI
@@ -408,7 +489,7 @@ Directional scans permit up to 1,200 steps. Upward motion uses smaller increment
 
 A previous implementation could reach `scrollTop = 0`, observe a few unchanged samples, and move on before ChatGPT asynchronously prepended all old turns.
 
-The crawler now has a dedicated **Verifying oldest messages** phase. At the top edge it monitors a signature containing:
+The crawler has a dedicated **Verifying oldest messages** phase. At the top edge it monitors a signature containing:
 
 - oldest conversation-turn ID retained so far;
 - first conversation-turn ID currently mounted;
@@ -423,11 +504,13 @@ It requires **12 consecutive unchanged top checks** before considering the oldes
 
 Between checks it moves a short distance away from the top and back again. This re-crosses the edge and can retrigger `IntersectionObserver` or virtualizer logic that may not fire again if the browser simply remains parked at `scrollTop = 0`.
 
-Expensive live-preview reconstruction is paused during this phase so Chromium can concentrate on mounting old turns.
+Expensive preview reconstruction is paused during this phase so Chromium can concentrate on mounting old turns.
 
 ## Live preview
 
-The main page opens, or can manually open, a separate **Live archive preview** window.
+The crawler generates preview HTML periodically in the background, but the browser **does not automatically open a preview window when a job starts**.
+
+The **Open live preview** button becomes enabled once a preview is available. Clicking it opens a separate preview window for the current job.
 
 The preview is generated from the progressive capture map rather than whichever subset of turns happens to be mounted in ChatGPT at that instant.
 
@@ -491,6 +574,7 @@ This keeps output files smaller, but an image can stop displaying later if its s
 - creates and tracks in-memory archive jobs;
 - owns Playwright Chromium;
 - records heartbeat and persistent progress fields;
+- tracks traversal completion independently from final archive completion;
 - throttles preview generation;
 - serves status, preview, cancellation, and final-download endpoints.
 
@@ -504,7 +588,7 @@ Transforms the progressive capture map into the readable static HTML output.
 
 ### `public/index.html`
 
-The local control/status UI. It starts jobs and polls the server for live progress.
+The local control/status UI. It starts jobs, polls the server for live progress, and opens the live preview only when explicitly requested.
 
 ### `public/preview.html`
 
@@ -515,7 +599,7 @@ The separate live preview window.
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `POST` | `/api/archive/start` | Start an archive job |
-| `GET` | `/api/archive/status/:id` | Poll phase, counters, heartbeat, and persistent status fields |
+| `GET` | `/api/archive/status/:id` | Poll phase, counters, heartbeat, traversal completion, and persistent status fields |
 | `GET` | `/api/archive/preview/:id` | Retrieve the latest preview HTML |
 | `GET` | `/api/archive/download/:id` | Download the final HTML after completion |
 | `POST` | `/api/archive/cancel/:id` | Request cancellation |
@@ -596,11 +680,11 @@ Check **Worker heartbeat**.
 - recent heartbeat + older substantive-progress time: the crawler is alive and may be waiting on ChatGPT or a convergence check;
 - stale heartbeat: Chromium/Node may actually be stalled.
 
-Also inspect **Scanning**, **Oldest retained**, **Expanding**, and the live preview.
+Also inspect **Detail**, **Scanning**, **Oldest retained**, and **Expanding**. Open the live preview manually if you want to inspect the retained content itself.
 
 ### Oldest messages are still missing
 
-Watch the **Verifying oldest messages** phase and confirm the quiet top-check count reaches `12/12`.
+Watch the **Verifying oldest messages** phase and confirm the oldest-edge stability count reaches `12/12`.
 
 If the first retained turn is still not the true beginning, ChatGPT may have changed lazy-loading/virtualizer behavior. Capture the relevant saved DOM pattern and adjust the scroll-root/convergence logic rather than simply forcing hidden HTML visible.
 
@@ -641,7 +725,8 @@ When changing crawler behavior, test at least:
 5. a long conversation that virtualizes turns;
 6. a conversation where older turns appear asynchronously after repeatedly reaching the top;
 7. cancellation during a long scan;
-8. live preview while counters change.
+8. manual live preview while counters change;
+9. status semantics during launch, traversal, oldest-edge verification, final expansion, final snapshot, and completion.
 
 ## Release automation
 
@@ -657,7 +742,7 @@ It:
 6. creates the GitHub Release with generated release notes;
 7. attaches the ZIP as **Cross-platform source ZIP**.
 
-Therefore, finishing a new version requires bumping `package.json` before pushing the finished commit to `main`.
+Therefore, a finished version is committed first and the `package.json` version bump is pushed only after the release contents are ready. That final version bump causes the release workflow to publish the complete state.
 
 ## Version history
 
@@ -709,7 +794,17 @@ Therefore, finishing a new version requires bumping `package.json` before pushin
 - Added `setup-macos.sh` and `start-macos.sh`.
 - Added platform-aware default-browser opening.
 - Added Node 20/dependency validation to Unix launchers.
-- Release ZIP is now labeled cross-platform rather than Windows-only.
+- Release ZIP is labeled cross-platform rather than Windows-only.
+
+### v1.4.1 — status semantics and opt-in preview
+
+- Restricted **Scanning** to traversal and oldest-edge state.
+- Kept **Detail** for operation/wait/transition messages instead of duplicating pass information.
+- Made disclosure reports update only **Expanding**.
+- Added mounted-position and endpoint-stability information to the Scanning line.
+- Added explicit traversal-complete state and cleared stale pass/direction/step values before finalization.
+- Made the progress UI prioritize completed/finalizing states over stale scan data.
+- Stopped automatically opening the live preview when an archive starts; preview opening is user initiated.
 
 ## Reconstructed repository history
 
