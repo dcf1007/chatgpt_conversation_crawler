@@ -1,0 +1,89 @@
+name: Release packaged version
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read package version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid package version: $VERSION" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether release already exists
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG already exists; leaving it unchanged."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build downloadable ZIP
+        if: steps.existing.outputs.exists != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="chatgpt-conversation-crawler-v${VERSION}-windows.zip"
+          PREFIX="chatgpt-conversation-crawler-v${VERSION}/"
+          git archive --format=zip --prefix="$PREFIX" --output="$ARCHIVE" "$GITHUB_SHA"
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release
+        if: steps.existing.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" "$ARCHIVE#Windows/source ZIP" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "ChatGPT Conversation Crawler v${VERSION}" \
+            --generate-notes
+
+      - name: Release summary
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          EXISTS: ${{ steps.existing.outputs.exists }}
+        run: |
+          if [[ "$EXISTS" == "true" ]]; then
+            echo "Release $TAG already existed, so no release was modified." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Created release $TAG with a downloadable Windows/source ZIP." >> "$GITHUB_STEP_SUMMARY"
+          fi
