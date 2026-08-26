@@ -16,7 +16,7 @@
       background: Canvas;
       color: CanvasText;
     }
-    main { width: min(720px, calc(100% - 32px)); }
+    main { width: min(760px, calc(100% - 32px)); padding: 28px 0; }
     .card {
       border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
       border-radius: 16px;
@@ -52,7 +52,7 @@
       font-size: 14px;
       color: color-mix(in srgb, CanvasText 72%, transparent);
     }
-    #status { min-height: 1.4em; margin-top: 12px; font-size: 14px; }
+    #status { min-height: 1.4em; margin-top: 12px; font-size: 14px; white-space: pre-wrap; }
     .error { color: #c33; }
   </style>
 </head>
@@ -60,7 +60,7 @@
   <main>
     <div class="card">
       <h1>ChatGPT Share Archiver</h1>
-      <p>Paste a public ChatGPT conversation share URL. The server opens it in Chromium, scrolls through lazy-loaded content, expands user-visible disclosure sections, and returns a readable static HTML file with code blocks preserved.</p>
+      <p>Paste a ChatGPT conversation share URL. Chromium scans the conversation in both directions, expands visible reasoning/tool disclosure trees, captures virtualized turns as they appear, and exports a static HTML page with code blocks preserved.</p>
 
       <form id="form">
         <label for="url">Share URL</label>
@@ -70,7 +70,7 @@
       </form>
 
       <div id="status" aria-live="polite"></div>
-      <p class="note">This archives only content exposed by the shared page to an ordinary browser. It does not extract hidden/private reasoning, internal application state, account-only data, or content that the share link itself does not expose.</p>
+      <p class="note">The app expands user-facing content that the shared page exposes to the browser. It does not inspect private model state, hidden network payloads, account-only data, or reasoning that the shared page itself does not expose.</p>
     </div>
   </main>
 
@@ -83,7 +83,7 @@ const status = document.querySelector('#status');
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   status.className = '';
-  status.textContent = 'Loading the share and building the snapshot…';
+  status.textContent = 'Scanning lazy-loaded turns and expanding disclosures…';
   button.disabled = true;
 
   try {
@@ -97,6 +97,13 @@ form.addEventListener('submit', async (event) => {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.error || `Archive failed (${response.status}).`);
     }
+
+    const stats = {
+      turns: response.headers.get('x-archive-turns'),
+      expansions: response.headers.get('x-archive-expansions'),
+      failures: response.headers.get('x-archive-failures'),
+      pre: response.headers.get('x-archive-pre-blocks'),
+    };
 
     const blob = await response.blob();
     const disposition = response.headers.get('content-disposition') || '';
@@ -112,7 +119,14 @@ form.addEventListener('submit', async (event) => {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(href), 30_000);
 
-    status.textContent = 'Static HTML created.';
+    const summary = [
+      'Static HTML created.',
+      stats.turns ? `${stats.turns} turns captured` : '',
+      stats.expansions ? `${stats.expansions} disclosures expanded` : '',
+      stats.pre ? `${stats.pre} <pre> blocks retained` : '',
+      stats.failures && stats.failures !== '0' ? `${stats.failures} expansion failures (listed at the bottom of the export)` : ''
+    ].filter(Boolean).join(' · ');
+    status.textContent = summary;
   } catch (error) {
     status.className = 'error';
     status.textContent = error.message;
