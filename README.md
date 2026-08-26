@@ -20,13 +20,15 @@ It is designed for long conversations where a normal browser save can miss conte
 - Scans up to **2,000 steps per directional pass**.
 - Requires **6 stable observations** at ordinary scan endpoints.
 - Requires **12 consecutive stable observations while actually at the top** before oldest-message discovery is considered converged.
-- Keeps **Detail**, **Scanning**, **Oldest retained**, and **Expanding** as separate persistent diagnostics.
+- Reports the actual result if the **180-check oldest-edge safety limit** is reached instead of falsely reporting 12/12 convergence.
+- Keeps **Detail**, **Scanning**, **Oldest retained**, **Mounted first**, and **Expanding** as separate persistent diagnostics.
 - Maintains an independent worker heartbeat every ~2 seconds.
 - Does not treat ordinary scan-step movement by itself as substantive progress.
+- Treats mounted-first/mounted-last virtualizer changes as substantive progress.
 - Generates live-preview snapshots only while a preview window is active.
-- Embeds retrievable images into the final HTML as data URLs.
+- Embeds retrievable HTTP(S) **and `blob:` images** into the final HTML as data URLs.
 - Preserves captured image display dimensions and intrinsic dimensions when available.
-- Falls back to the external image URL and records diagnostics when an image cannot be embedded.
+- Falls back to the original image URL and records diagnostics when an image cannot be embedded.
 - Supports cancellation and automatically cleans old completed jobs from memory.
 - Includes setup/start scripts for **Windows, Linux, and macOS**.
 - Publishes finished versions automatically as GitHub Releases with a cross-platform ZIP asset.
@@ -44,7 +46,7 @@ It is designed for long conversations where a normal browser save can miss conte
 Finished versions are published as formal GitHub Releases. Download the versioned cross-platform ZIP from the repository's **Releases** page, for example:
 
 ```text
-chatgpt-conversation-crawler-v1.5.1.zip
+chatgpt-conversation-crawler-v1.5.2.zip
 ```
 
 The release workflow reads the version from `package.json`, creates a `vX.Y.Z` release when that version is new, and attaches a ZIP made from that exact commit.
@@ -116,11 +118,12 @@ The status panel deliberately separates different concepts:
 
 - **Phase** — the high-level lifecycle: loading, scanning, oldest verification, final expansion, building, complete.
 - **Detail** — the current operation or wait explanation. It does not duplicate the scan step.
-- **Scanning** — current pass, direction, step, mounted-range position, endpoint stability, or oldest-edge probe state.
-- **Oldest retained** — the oldest `conversation-turn-*` currently stored in the progressive capture map.
+- **Scanning** — current pass, direction, step, mounted-range position, mounted-first frontier, endpoint stability, or oldest-edge probe state.
+- **Oldest retained** — the numerically earliest `conversation-turn-*` that has ever been stored in the cumulative progressive-capture map. Once turn 1 is captured, this is expected to remain `conversation-turn-1`.
+- **Mounted first** — the earliest `conversation-turn-*` currently mounted by ChatGPT's virtualizer. This is the live frontier that can move while scrolling/loading.
 - **Expanding** — the most recent disclosure/tool/reasoning row being opened.
 - **Worker heartbeat** — an independent liveness signal updated approximately every two seconds.
-- **Last substantive progress** — meaningful capture-state changes, not ordinary step-number changes.
+- **Last substantive progress** — meaningful capture/virtualizer changes, not ordinary step-number changes.
 
 The mounted-range percentage is diagnostic only. ChatGPT can mount and unmount content while the crawler moves, so scroll height is not a trustworthy overall completion percentage.
 
@@ -167,6 +170,8 @@ After a few quiet checks, the crawler deliberately nudges roughly 38% of a viewp
 
 The top settling wait is intentionally conservative, and live-preview reconstruction is completely paused during this phase.
 
+The verification loop also has a **180-check safety limit**. If that limit is reached before 12 quiet checks, the crawler continues rather than throwing away an otherwise useful capture, but it does **not** claim convergence. The UI and final archive record the actual stable-check count and a prominent warning.
+
 ## Disclosure expansion
 
 Expansion is scoped to actual conversation turns:
@@ -180,6 +185,8 @@ A collapsed control is eligible when it structurally controls content (`aria-exp
 Obvious menu controls are excluded. Each click is confirmed; a disclosure that remains collapsed after three attempts is recorded as a failure instead of silently counted as successful.
 
 The final expansion sweep allows up to **500** remaining mounted disclosures.
+
+Expansion status is lightweight: the **Expanding** line is updated for each disclosure, while complete retained-turn statistics/scroll metrics are recomputed every eight expansions and at the end of each sweep. This keeps the UI responsive without recreating the v1.5.1 per-click reporting overhead.
 
 ## Progressive capture
 
@@ -203,7 +210,7 @@ The live preview is demand-driven rather than continuously generated.
 - **Preview window open:** it signals activity while polling status.
 - Full preview serialization is normally limited to at least **20 seconds** between builds.
 - If the material capture signature has not changed, rebuilding can be deferred up to **45 seconds**.
-- During oldest-edge convergence, preview generation is paused completely.
+- During oldest-edge verification, preview generation is paused completely.
 - Closing the preview stops its activity signal; preview generation automatically becomes inactive shortly afterward.
 
 Preview images remain external URLs to keep preview reconstruction lightweight. The final archive performs image embedding once after crawling is complete.
@@ -212,26 +219,30 @@ Preview images remain external URLs to keep preview reconstruction lightweight. 
 
 The worker heartbeat is maintained independently of crawler state at approximately two-second intervals. This means a long wait or final image-embedding operation does not make an otherwise healthy worker look dead.
 
-`Last substantive progress` intentionally excludes the changing scan step/status string. The step remains fully visible under **Scanning**. Substantive progress is driven by capture state such as phase transitions, retained-turn/code/expansion/failure changes, oldest/newest retained boundaries, and growth in the maximum observed scroll height.
+`Last substantive progress` intentionally excludes the changing scan step/status string. The step remains fully visible under **Scanning**. Substantive progress is driven by capture state such as phase transitions, retained-turn/code/expansion/failure changes, oldest/newest retained boundaries, **mounted-first/mounted-last virtualizer changes**, and growth in the maximum observed scroll height.
 
 ## Embedded images and image dimensions
 
-During capture, each live image is resolved to an absolute URL. When available, the crawler also records:
+During capture, each live image is resolved to its current source URL. When available, the crawler also records:
 
 - displayed width/height from `getBoundingClientRect()`;
 - intrinsic `naturalWidth` / `naturalHeight`.
 
 The static archive preserves the displayed `width` and `height`, and stores intrinsic dimensions in `data-natural-width` and `data-natural-height`.
 
-At finalization, unique HTTP(S) image URLs are fetched through Playwright's browser-context request client and converted to `data:` URLs. Duplicate URLs are fetched once.
+At finalization, unique image sources are converted to `data:` URLs:
+
+- HTTP(S) images are fetched through Playwright's browser-context request client;
+- `blob:` images are resolved inside the still-open ChatGPT page and read as data URLs before Chromium closes;
+- duplicate URLs are processed once.
 
 Current embedding safety limits are:
 
 - **32 MiB per image**;
 - **256 MiB total embedded source bytes**;
-- up to four image fetches concurrently.
+- up to four image fetch/resolve operations concurrently.
 
-If an image fetch fails, returns a non-image content type, or exceeds a limit, the archive retains the original external URL and adds an image-embedding diagnostic.
+If an image cannot be embedded, the final archive retains the original source string where possible and adds an image-embedding diagnostic. Image placeholder tokens use a randomized namespace to avoid collisions with ordinary conversation/code text.
 
 ## Static output fidelity
 
@@ -245,7 +256,7 @@ The final archive is script-free but preserves readable semantic content and ric
 - `<pre>` and `<code>` plus inline-code styling;
 - blockquote styling;
 - responsive images/video;
-- disclosure and image-embedding diagnostics;
+- disclosure, oldest-edge and image-embedding diagnostics;
 - archive metadata and scope statement;
 - print-oriented styling.
 
@@ -305,10 +316,12 @@ For crawler changes, test at least:
 3. arbitrary generated-label `aria-controls` disclosures;
 4. a **Worked for ...** parent disclosure;
 5. a heavily virtualized long thread;
-6. delayed oldest-turn loading;
+6. delayed oldest-turn loading and the 180-check safety limit;
 7. cancellation;
 8. live preview open and closed;
-9. final image embedding and fallback behavior.
+9. HTTP(S) image embedding;
+10. `blob:` image embedding and fallback behavior;
+11. **Oldest retained** vs **Mounted first** behavior during virtualization.
 
 ## Version history
 
@@ -321,7 +334,8 @@ For crawler changes, test at least:
 - **v1.4.0** — Linux and macOS launchers and cross-platform release ZIP.
 - **v1.4.1** — clarified Detail/Scanning semantics, stale-pass fix and manual-only preview opening.
 - **v1.5.0** — restored/strengthened the conservative v1.3 crawler safeguards, increased directional scan ceiling to 2,000, added demand-driven preview, independent heartbeat, stronger cancellation/cleanup, higher-fidelity static output and embedded final images.
-- **v1.5.1** — documentation reconciliation and a small image-fallback escaping correction; this is the recommended build for testing the v1.5 changes.
+- **v1.5.1** — documentation reconciliation and a small image-fallback escaping correction.
+- **v1.5.2** — truthful oldest-edge safety-limit reporting, mounted-frontier diagnostics and substantive-progress tracking, lightweight per-expansion reporting, randomized image tokens, and `blob:` image embedding.
 
 ## Maintenance note
 
