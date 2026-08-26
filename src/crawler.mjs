@@ -2,6 +2,7 @@ export async function installCrawler(page) {
   await page.evaluate(() => {
     const state = {
       turns: Object.create(null),
+      timelineMarkers: Object.create(null),
       attempts: Object.create(null),
       failures: Object.create(null),
       clickCount: 0,
@@ -61,7 +62,73 @@ export async function installCrawler(page) {
         .sort((a, b) => turnNumber(a) - turnNumber(b) || a.localeCompare(b));
     }
 
+    function nextTurnAfter(element, mountedTurns) {
+      for (const section of mountedTurns) {
+        if (element === section || section.contains(element)) continue;
+        if (element.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING) return section;
+      }
+      return null;
+    }
+
+    function captureTimelineMarkers() {
+      const mountedTurns = turns();
+      const candidates = [];
+
+      for (const separator of document.querySelectorAll('main [role="separator"][aria-label]')) {
+        if (separator.closest(turnSelector)) continue;
+        const text = (separator.getAttribute('aria-label') || separator.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!text) continue;
+        candidates.push({ element: separator, kind: 'timestamp', label: text, text, href: '' });
+      }
+
+      for (const anchor of document.querySelectorAll('main p a[href*="/c/"]')) {
+        const paragraph = anchor.closest('p');
+        if (!paragraph || paragraph.closest(turnSelector)) continue;
+        const text = (paragraph.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!/^Branched from\b/i.test(text)) continue;
+        let href = '';
+        if (anchor?.href) {
+          try { href = new URL(anchor.href, location.href).href; } catch { href = anchor.href; }
+        }
+        const title = (anchor?.textContent || text.replace(/^Branched from\s*/i, '')).replace(/\s+/g, ' ').trim();
+        candidates.push({
+          element: paragraph,
+          kind: 'branch',
+          label: 'Branched from',
+          text: title ? `Branched from ${title}` : text,
+          href,
+          title
+        });
+      }
+
+      candidates.sort((a, b) => {
+        if (a.element === b.element) return 0;
+        return a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+      });
+
+      const orderByTurn = Object.create(null);
+      for (const candidate of candidates) {
+        const nextTurn = nextTurnAfter(candidate.element, mountedTurns);
+        const beforeTurn = nextTurn?.getAttribute('data-testid');
+        if (!beforeTurn) continue;
+        const order = orderByTurn[beforeTurn] || 0;
+        orderByTurn[beforeTurn] = order + 1;
+        const key = [beforeTurn, candidate.kind, candidate.text, candidate.href].join('|');
+        state.timelineMarkers[key] = {
+          key,
+          beforeTurn,
+          kind: candidate.kind,
+          label: candidate.label,
+          text: candidate.text,
+          href: candidate.href,
+          title: candidate.title || '',
+          order
+        };
+      }
+    }
+
     function capture() {
+      captureTimelineMarkers();
       for (const section of turns()) {
         const id = section.getAttribute('data-testid');
         if (!id) continue;
@@ -110,9 +177,15 @@ export async function installCrawler(page) {
         const previous = state.turns[id];
 
         if (!previous || score > previous.score || (score === previous.score && html.length > previous.html.length)) {
+          const message = section.querySelector('[data-message-id]');
+          const timestamp = Object.values(state.timelineMarkers)
+            .filter(marker => marker.beforeTurn === id && marker.kind === 'timestamp')
+            .sort((a, b) => a.order - b.order)[0];
           state.turns[id] = {
             id,
+            messageId: message?.getAttribute('data-message-id') || previous?.messageId || '',
             role: section.querySelector('[data-message-author-role]')?.getAttribute('data-message-author-role') || '',
+            timestampLabel: timestamp?.text || previous?.timestampLabel || '',
             score,
             remaining,
             preCount,
@@ -130,6 +203,7 @@ export async function installCrawler(page) {
         expanded: state.successfulExpansions,
         clicks: state.clickCount,
         failures: Object.keys(state.failures).length,
+        timelineMarkers: Object.keys(state.timelineMarkers).length,
         expandingStatus: state.lastExpansion
       };
     }
@@ -192,6 +266,7 @@ export async function installCrawler(page) {
         failures: Object.keys(state.failures).length,
         preBlocks: values.reduce((n, turn) => n + (turn.preCount || 0), 0),
         codeBlocks: values.reduce((n, turn) => n + (turn.codeCount || 0), 0),
+        timelineMarkers: Object.keys(state.timelineMarkers).length,
         oldestRetained: retained[0] || 'none',
         newestRetained: retained[retained.length - 1] || 'none',
         mountedFirst: mounted[0] || 'none',
@@ -236,9 +311,6 @@ async function expandMounted(page, max, onProgress, shouldCancel) {
     const activity = await page.evaluate(() => window.__archiveCrawler.capture());
     expandedSinceFullReport++;
 
-    // Keep the per-disclosure UI current without recomputing all retained-turn
-    // statistics and scroll metrics after every click. A complete report is still
-    // emitted every eight expansions and once at the end of the sweep.
     await onProgress?.({
       ...activity,
       expandingStatus: result.description || activity.expandingStatus || `Expansion ${i + 1}`
@@ -284,7 +356,8 @@ async function scan(page, direction, pass, onProgress, shouldCancel, maxSteps = 
       stats.expanded,
       stats.failures,
       stats.preBlocks,
-      stats.codeBlocks
+      stats.codeBlocks,
+      stats.timelineMarkers
     ].join('|');
 
     if (atEnd && signature === previous) stable++;
@@ -298,7 +371,7 @@ async function scan(page, direction, pass, onProgress, shouldCancel, maxSteps = 
     await onProgress?.({
       ...stats,
       phase: 'Scanning conversation',
-      detail: 'Capturing mounted turns and opening disclosures as they appear.',
+      detail: 'Capturing mounted turns, timeline markers, and disclosures as they appear.',
       scanningStatus: `Pass ${pass}/3 ${arrow} · step ${step + 1}/${maxSteps} · ${positionPercent.toFixed(1)}% mounted range · mounted first ${stats.mountedFirst}${edgeStatus}`,
       scanComplete: false,
       pass,
@@ -368,7 +441,8 @@ async function verifyOldestMessages(page, onProgress, shouldCancel) {
       stats.codeBlocks,
       stats.clicks,
       stats.expanded,
-      stats.failures
+      stats.failures,
+      stats.timelineMarkers
     ].join('|');
 
     if (atTop && signature === previousSignature) quietChecks++;
