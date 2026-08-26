@@ -26,6 +26,7 @@ It is designed for long conversations where a normal browser save can miss conte
 - Does not treat ordinary scan-step movement by itself as substantive progress.
 - Treats mounted-first/mounted-last virtualizer changes as substantive progress.
 - Generates live-preview snapshots only while a preview window is active.
+- Detects the shared conversation name from the page `<title>` and uses it for the downloaded HTML filename when available.
 - Embeds retrievable HTTP(S) **and `blob:` images** into the final HTML as data URLs.
 - Preserves captured image display dimensions and intrinsic dimensions when available.
 - Falls back to the original image URL and records diagnostics when an image cannot be embedded.
@@ -46,7 +47,7 @@ It is designed for long conversations where a normal browser save can miss conte
 Finished versions are published as formal GitHub Releases. Download the versioned cross-platform ZIP from the repository's **Releases** page, for example:
 
 ```text
-chatgpt-conversation-crawler-v1.5.2.zip
+chatgpt-conversation-crawler-v1.5.3.zip
 ```
 
 The release workflow reads the version from `package.json`, creates a `vX.Y.Z` release when that version is new, and attaches a ZIP made from that exact commit.
@@ -108,14 +109,15 @@ The server also reads the `PORT` environment variable.
 1. Create/copy a ChatGPT shared-conversation URL.
 2. Paste it into the local crawler UI.
 3. Click **Start archive**.
-4. Watch the persistent status fields while the crawler runs.
+4. Watch the persistent status fields while the crawler runs, including the detected **Chat name**.
 5. Optionally click **Open live preview**. It is never opened automatically.
-6. When the job reaches **Complete**, download the generated static HTML.
+6. When the job reaches **Complete**, download the generated static HTML. The detected chat name is used as the filename when available.
 
 ## Understanding the progress page
 
 The status panel deliberately separates different concepts:
 
+- **Chat name** — the conversation name detected from the shared page `<title>`; it is also used for the download filename when available.
 - **Phase** — the high-level lifecycle: loading, scanning, oldest verification, final expansion, building, complete.
 - **Detail** — the current operation or wait explanation. It does not duplicate the scan step.
 - **Scanning** — current pass, direction, step, mounted-range position, mounted-first frontier, endpoint stability, or oldest-edge probe state.
@@ -126,6 +128,21 @@ The status panel deliberately separates different concepts:
 - **Last substantive progress** — meaningful capture/virtualizer changes, not ordinary step-number changes.
 
 The mounted-range percentage is diagnostic only. ChatGPT can mount and unmount content while the crawler moves, so scroll height is not a trustworthy overall completion percentage.
+
+## Chat name and download filename
+
+Actual ChatGPT shared-link pages expose the conversation name in the document `<title>`. The crawler reads that title after the share page has loaded and rejects generic values such as `ChatGPT` or `Check out this chat`.
+
+The detected title is shown in the local status UI and is used for the downloaded `.html` filename. Filename generation:
+
+- preserves Unicode when the browser supports RFC 5987 filenames;
+- removes control characters and characters invalid on Windows (`<>:"/\\|?*`);
+- trims trailing spaces/dots;
+- avoids Windows reserved device names such as `CON`, `NUL`, `COM1`, and `LPT1`;
+- caps the base name length;
+- falls back to `chatgpt-share-<job-id>.html` if no meaningful title is available.
+
+The Open Graph title is intentionally not used because current shared pages can expose the generic value `Check out this chat` there while the real conversation name is present in `<title>`.
 
 ## Traversal and convergence
 
@@ -336,6 +353,7 @@ For crawler changes, test at least:
 - **v1.5.0** — restored/strengthened the conservative v1.3 crawler safeguards, increased directional scan ceiling to 2,000, added demand-driven preview, independent heartbeat, stronger cancellation/cleanup, higher-fidelity static output and embedded final images.
 - **v1.5.1** — documentation reconciliation and a small image-fallback escaping correction.
 - **v1.5.2** — truthful oldest-edge safety-limit reporting, mounted-frontier diagnostics and substantive-progress tracking, lightweight per-expansion reporting, randomized image tokens, and `blob:` image embedding.
+- **v1.5.3** — detects the real shared-chat title and uses a cross-platform sanitized version as the downloaded HTML filename, with the detected name exposed in status.
 
 ## Maintenance note
 
