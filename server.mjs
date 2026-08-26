@@ -29,6 +29,44 @@ function validateShareUrl(input) {
   return u.toString();
 }
 
+function normalizeChatName(value) {
+  let name = String(value || '').replace(/\s+/g, ' ').trim();
+  name = name.replace(/\s+(?:[-–—|])\s+ChatGPT$/i, '').trim();
+  if (!name || /^(?:ChatGPT|Check out this chat|Shared chat)$/i.test(name)) return '';
+  return name.slice(0, 240).trim();
+}
+
+async function detectChatName(page) {
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const name = normalizeChatName(await page.title().catch(() => ''));
+    if (name) return name;
+    await page.waitForTimeout(250);
+  }
+  return '';
+}
+
+function safeFilenameBase(value, fallback) {
+  let name = String(value || '').normalize('NFKC')
+    .replace(/[\u0000-\u001f\u007f<>:"/\\|?*]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/g, '');
+  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) name = `${name}-chat`;
+  if (!name) name = fallback;
+  name = name.slice(0, 140).trim().replace(/[. ]+$/g, '');
+  return name || fallback;
+}
+
+function contentDispositionFilename(chatName, id) {
+  const fallbackBase = `chatgpt-share-${id.slice(0, 8)}`;
+  const filename = `${safeFilenameBase(chatName, fallbackBase)}.html`;
+  const ascii = filename.normalize('NFKD')
+    .replace(/[^\x20-\x7e]/g, '_')
+    .replace(/["\\]/g, '_');
+  const encoded = encodeURIComponent(filename).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return { filename, header: `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}` };
+}
+
 function previewIsActive(job) {
   return Boolean(job.previewLastAccessAt && now() - job.previewLastAccessAt <= PREVIEW_ACTIVE_MS);
 }
@@ -38,6 +76,8 @@ function publicJob(job) {
   const scrollPercent = Math.max(0, Math.min(100, ((job.scrollTop || 0) / max) * 100));
   return {
     id: job.id,
+    chatName: job.chatName || '',
+    downloadFilename: job.downloadFilename || '',
     status: job.state === 'complete' ? 'done' : job.state,
     phase: job.phase,
     detail: job.detail,
@@ -157,6 +197,12 @@ async function runJob(job) {
       throw new Error('The shared conversation could not be accessed. The link may be invalid, deleted, or restricted.');
     }
 
+    const detectedChatName = await detectChatName(job.page);
+    if (detectedChatName) {
+      const { filename } = contentDispositionFilename(detectedChatName, job.id);
+      update(job, { chatName: detectedChatName, downloadFilename: filename }, true);
+    }
+
     job.materialSignature = '';
     const onProgress = async patch => {
       const maxObservedScrollHeight = Math.max(job.maxObservedScrollHeight || 0, Number(patch.scrollHeight || 0));
@@ -224,6 +270,7 @@ app.post('/api/archive/start', (req, res) => {
     const t = now();
     const job = {
       id, url,
+      chatName: '', downloadFilename: `chatgpt-share-${id.slice(0, 8)}.html`,
       state: 'queued',
       phase: 'Queued',
       detail: 'Waiting to start.',
@@ -272,8 +319,10 @@ app.get('/api/archive/download/:id', (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: 'Job not found or expired.' });
   if (job.state !== 'complete' || !job.html) return res.status(409).json({ error: 'Archive is not complete yet.' });
+  const disposition = contentDispositionFilename(job.chatName, job.id);
+  job.downloadFilename = disposition.filename;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="chatgpt-share-${job.id.slice(0, 8)}.html"`);
+  res.setHeader('Content-Disposition', disposition.header);
   res.setHeader('Cache-Control', 'no-store');
   res.send(job.html);
 });
