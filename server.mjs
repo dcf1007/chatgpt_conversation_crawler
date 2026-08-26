@@ -90,6 +90,7 @@ function publicJob(job) {
     oldestChecks: job.oldestChecks || 0,
     expandingStatus: job.expandingStatus || 'No disclosure expansion yet',
     turns: job.turns || 0,
+    timelineMarkers: job.timelineMarkers || 0,
     expansions: job.expanded || 0,
     clicks: job.clicks || 0,
     failures: job.failures || 0,
@@ -133,6 +134,7 @@ function materialSignature(job, patch = {}, maxObservedScrollHeight = job.maxObs
     patch.failures ?? job.failures,
     patch.preBlocks ?? job.preBlocks,
     patch.codeBlocks ?? job.codeBlocks,
+    patch.timelineMarkers ?? job.timelineMarkers,
     patch.oldestRetained ?? job.oldestRetained,
     patch.newestRetained ?? job.newestRetained,
     patch.mountedFirst ?? job.mountedFirst,
@@ -142,7 +144,7 @@ function materialSignature(job, patch = {}, maxObservedScrollHeight = job.maxObs
 }
 
 function previewSignature(job) {
-  return [job.turns, job.expanded, job.failures, job.preBlocks, job.codeBlocks, job.oldestRetained, job.newestRetained, job.mountedFirst, job.mountedLast].join('|');
+  return [job.turns, job.timelineMarkers, job.expanded, job.failures, job.preBlocks, job.codeBlocks, job.oldestRetained, job.newestRetained, job.mountedFirst, job.mountedLast].join('|');
 }
 
 async function maybeRefreshPreview(job, { force = false } = {}) {
@@ -219,7 +221,7 @@ async function runJob(job) {
 
     update(job, {
       phase: 'Building final static page',
-      detail: 'Sanitizing retained turns, embedding retrievable images, and assembling the downloadable HTML archive.',
+      detail: 'Sanitizing retained turns, timeline markers, embedding retrievable images, and assembling the downloadable HTML archive.',
       scanningStatus: job.scanningStatus || (job.oldestConverged === false ? 'Complete — 3 passes; oldest-edge safety limit reached' : 'Complete — 3 passes + oldest-edge convergence'),
       scanComplete: true,
       pass: 0,
@@ -280,7 +282,7 @@ app.post('/api/archive/start', (req, res) => {
       expandingStatus: 'No disclosure expansion yet',
       scanComplete: false,
       createdAt: t, heartbeatAt: t, progressAt: t, finishedAt: null,
-      turns: 0, expanded: 0, clicks: 0, failures: 0, preBlocks: 0, codeBlocks: 0,
+      turns: 0, timelineMarkers: 0, expanded: 0, clicks: 0, failures: 0, preBlocks: 0, codeBlocks: 0,
       imagesTotal: 0, imagesEmbedded: 0, imageEmbeddingFailures: 0,
       pass: 0, direction: '', step: 0, scrollTop: 0, scrollHeight: 0, scrollClient: 0,
       previewVersion: 0, previewHtml: '', previewPaused: false, previewLastAccessAt: 0,
