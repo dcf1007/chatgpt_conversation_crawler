@@ -209,7 +209,6 @@ async function expandMounted(page, max, onProgress, shouldCancel) {
     await page.evaluate(() => window.__archiveCrawler.capture());
     if (i % 8 === 0) {
       await report(page, onProgress, {
-        detail: `Expanding mounted disclosures (${i + 1})`,
         expandingStatus: result.description || `Expansion ${i + 1}`
       });
     }
@@ -237,13 +236,22 @@ async function scan(page, direction, pass, onProgress, shouldCancel, maxSteps = 
     const atEnd = direction === 'down' ? metrics.top >= maxTop - 4 : metrics.top <= 4;
     const stats = await page.evaluate(() => window.__archiveCrawler.stats());
     const signature = `${Math.round(metrics.top)}|${metrics.height}|${stats.turns}|${stats.clicks}`;
-    const scanningStatus = `Pass ${pass}/3 — ${direction} · step ${step + 1}`;
+
+    if (atEnd && signature === previous) stable++;
+    else if (atEnd) stable = Math.max(stable, 1);
+    else stable = 0;
+
+    const positionPercent = maxTop <= 0 ? 100 : Math.max(0, Math.min(100, (metrics.top / maxTop) * 100));
+    const arrow = direction === 'up' ? '↑' : '↓';
+    const edgeStatus = atEnd ? ` · edge stable ${Math.min(stable, 3)}/3` : '';
+    const scanningStatus = `Pass ${pass}/3 ${arrow} · step ${step + 1} · ${positionPercent.toFixed(1)}% mounted range${edgeStatus}`;
 
     await onProgress?.({
       ...stats,
       phase: 'Scanning conversation',
-      detail: `Pass ${pass}/3 — ${direction}`,
+      detail: 'Capturing mounted turns and opening disclosures as they appear.',
       scanningStatus,
+      scanComplete: false,
       pass,
       direction,
       step: step + 1,
@@ -252,9 +260,6 @@ async function scan(page, direction, pass, onProgress, shouldCancel, maxSteps = 
       scrollClient: metrics.client
     });
 
-    if (atEnd && signature === previous) stable++;
-    else if (atEnd) stable = Math.max(stable, 1);
-    else stable = 0;
     if (atEnd && stable >= 3) break;
     previous = signature;
 
@@ -277,10 +282,12 @@ async function verifyOldestMessages(page, onProgress, shouldCancel) {
 
   await onProgress?.({
     phase: 'Verifying oldest messages',
-    detail: 'Pausing preview reconstruction while checking for asynchronously prepended turns',
-    scanningStatus: 'Top-edge convergence probe',
+    detail: 'Live-preview rebuilding is paused while the oldest edge is probed for asynchronously prepended turns.',
+    scanningStatus: `Oldest-edge probe · check 0 · stable 0/${requiredQuietChecks}`,
+    scanComplete: false,
     pass: 2,
     direction: 'up',
+    step: 0,
     previewPaused: true
   });
 
@@ -310,9 +317,9 @@ async function verifyOldestMessages(page, onProgress, shouldCancel) {
 
     await report(page, onProgress, {
       phase: 'Verifying oldest messages',
-      detail: `Mounted first: ${top.mountedFirst} · ${quietChecks}/${requiredQuietChecks} quiet top checks`,
-      scanningStatus: `Top-edge verification · check ${check + 1} · ${quietChecks}/${requiredQuietChecks} quiet`,
+      scanningStatus: `Oldest-edge probe · check ${check + 1} · stable ${quietChecks}/${requiredQuietChecks} · mounted first ${top.mountedFirst}`,
       oldestRetained: top.oldestRetained,
+      scanComplete: false,
       pass: 2,
       direction: 'up',
       step: check + 1,
@@ -332,8 +339,8 @@ async function verifyOldestMessages(page, onProgress, shouldCancel) {
 
   await report(page, onProgress, {
     phase: 'Oldest-message verification complete',
-    detail: 'Top-region capture converged; resuming the final downward pass',
-    scanningStatus: 'Top-edge convergence complete',
+    detail: 'The oldest edge converged; preparing the final downward traversal.',
+    scanningStatus: `Oldest-edge probe complete · stable ${requiredQuietChecks}/${requiredQuietChecks}`,
     pass: 2,
     direction: 'up',
     previewPaused: false
@@ -344,8 +351,12 @@ export async function crawlConversation(page, { onProgress, shouldCancel } = {})
   await installCrawler(page);
   await report(page, onProgress, {
     phase: 'Preparing crawler',
-    detail: 'Installed page-side capture helpers',
-    scanningStatus: 'Preparing first downward scan',
+    detail: 'Installed page-side capture helpers; preparing the first traversal.',
+    scanningStatus: 'Not started',
+    scanComplete: false,
+    pass: 0,
+    direction: '',
+    step: 0,
     previewPaused: false
   });
 
@@ -356,16 +367,24 @@ export async function crawlConversation(page, { onProgress, shouldCancel } = {})
 
   await onProgress?.({
     phase: 'Final expansion sweep',
-    detail: 'Opening remaining mounted disclosures',
-    scanningStatus: 'Three scan passes complete',
+    detail: 'Traversal is complete; opening any disclosures still mounted before the final snapshot.',
+    scanningStatus: 'Complete — 3 passes + oldest-edge convergence',
+    scanComplete: true,
+    pass: 0,
+    direction: '',
+    step: 0,
     previewPaused: false
   });
   await expandMounted(page, 400, onProgress, shouldCancel);
   await page.evaluate(() => window.__archiveCrawler.capture());
   await report(page, onProgress, {
     phase: 'Final expansion sweep',
-    detail: 'Capture stabilized',
-    scanningStatus: 'Scanning complete',
+    detail: 'Expansion sweep complete; preparing the final static page.',
+    scanningStatus: 'Complete — 3 passes + oldest-edge convergence',
+    scanComplete: true,
+    pass: 0,
+    direction: '',
+    step: 0,
     previewPaused: false
   });
 }
