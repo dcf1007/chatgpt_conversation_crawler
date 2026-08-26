@@ -57,7 +57,7 @@
 <main>
   <div class="card">
     <h1>ChatGPT Conversation Crawler</h1>
-    <p>Captures a shared ChatGPT conversation while progressively lazy-loading turns and expanding user-visible disclosure trees. Long conversations can take time; the status panel keeps the important crawler signals visible instead of replacing them with the latest message.</p>
+    <p>Captures a shared ChatGPT conversation while progressively lazy-loading turns and expanding user-visible disclosure trees. Long conversations can take time; the status panel separates traversal state, expansion activity, and general crawler detail so they remain understandable throughout the run.</p>
 
     <form id="form">
       <label for="url">Share URL</label>
@@ -77,13 +77,13 @@
 
       <div class="activity" aria-label="Crawler activity">
         <div class="activity-row"><div class="activity-label">Detail</div><div class="activity-value" id="detail">Creating a tracked job.</div></div>
-        <div class="activity-row"><div class="activity-label">Scanning</div><div class="activity-value" id="scanningStatus">Not scanning yet</div></div>
+        <div class="activity-row"><div class="activity-label">Scanning</div><div class="activity-value" id="scanningStatus">Not started</div></div>
         <div class="activity-row"><div class="activity-label">Oldest retained</div><div class="activity-value" id="oldestRetained">none</div></div>
         <div class="activity-row"><div class="activity-label">Expanding</div><div class="activity-value" id="expandingStatus">No disclosure expansion yet</div></div>
       </div>
 
       <div class="progress"><div id="bar" class="bar indeterminate"></div></div>
-      <div class="progress-caption"><span id="passText">Preparing</span><span id="scrollText">Current mounted range</span></div>
+      <div class="progress-caption"><span id="passText">Preparing</span><span id="scrollText">Working…</span></div>
 
       <div class="stats">
         <div class="stat"><div class="value" id="turns">0</div><div class="label">turns captured</div></div>
@@ -102,7 +102,7 @@
       <div id="doneBox" class="done"></div>
     </section>
 
-    <p class="note">The scan-position indicator is diagnostic only: ChatGPT can mount or unmount content while the crawler moves, so the known scroll range can change during a run. Completion is determined by the crawler's scan phases and, for the oldest edge, repeated convergence checks that require the retained/mounted top state to remain stable. The persistent <strong>Scanning</strong>, <strong>Oldest retained</strong>, and <strong>Expanding</strong> lines are the best live indicators of what the crawler is doing.</p>
+    <p class="note"><strong>Detail</strong> explains the current operation or wait state. <strong>Scanning</strong> is reserved for traversal position and oldest-edge verification. <strong>Oldest retained</strong> and <strong>Expanding</strong> remain persistent. The mounted-range percentage is diagnostic rather than an overall completion percentage. The live preview is generated in the background but opens only when you click <strong>Open live preview</strong>.</p>
   </div>
 </main>
 <script>
@@ -144,7 +144,7 @@ function render(s) {
   lastStatus = s;
   phase.textContent = s.phase || s.status;
   detail.textContent = s.detail || '—';
-  scanningStatus.textContent = s.scanningStatus || 'Not scanning yet';
+  scanningStatus.textContent = s.scanningStatus || 'Not started';
   oldestRetained.textContent = s.oldestRetained || 'none';
   expandingStatus.textContent = s.expandingStatus || 'No disclosure expansion yet';
   statusPill.textContent = s.status;
@@ -154,7 +154,19 @@ function render(s) {
   previewBtn.disabled = !s.previewReady;
   cancelBtn.disabled = ['done','error','cancelled'].includes(s.status);
 
-  if (s.scanPass) {
+  if (s.status === 'done') {
+    passText.textContent = 'Capture complete';
+    scrollText.textContent = 'Complete';
+    bar.classList.remove('indeterminate');
+    bar.style.width = '100%';
+    bar.style.transform = 'none';
+  } else if (s.scanComplete) {
+    passText.textContent = 'Traversal complete';
+    scrollText.textContent = 'Finalizing archive';
+    bar.classList.remove('indeterminate');
+    bar.style.width = '96%';
+    bar.style.transform = 'none';
+  } else if (s.scanPass) {
     const direction = s.direction ? ` · ${s.direction}` : '';
     passText.textContent = `Pass ${s.scanPass}/${s.scanPasses}${direction} · step ${s.step}`;
     scrollText.textContent = `${Number(s.scrollPercent || 0).toFixed(1)}% of current mounted range`;
@@ -164,13 +176,7 @@ function render(s) {
     const visual = s.direction === 'up'
       ? passBase + ((100 - Number(s.scrollPercent || 0)) / s.scanPasses)
       : passBase + within;
-    bar.style.width = `${Math.max(1, Math.min(99, visual))}%`;
-    bar.style.transform = 'none';
-  } else if (s.status === 'done') {
-    passText.textContent = 'Capture complete';
-    scrollText.textContent = 'Complete';
-    bar.classList.remove('indeterminate');
-    bar.style.width = '100%';
+    bar.style.width = `${Math.max(1, Math.min(95, visual))}%`;
     bar.style.transform = 'none';
   } else {
     passText.textContent = s.phase || 'Preparing';
@@ -186,7 +192,7 @@ function render(s) {
     warning.textContent = `The worker heartbeat has not updated for ${Math.floor(heartbeatAge/1000)} seconds. The Node process or browser may be stalled.`;
   } else if (!['done','error','cancelled'].includes(s.status) && progressAge > 30_000) {
     warning.style.display = 'block';
-    warning.textContent = `The worker is still alive, but no substantive state changed for ${Math.floor(progressAge/1000)} seconds. Check the persistent scanning/oldest/expanding fields and the live preview for the latest captured state.`;
+    warning.textContent = `The worker is still alive, but no substantive state changed for ${Math.floor(progressAge/1000)} seconds. Check Detail, Scanning, Oldest retained, Expanding, or open the live preview manually.`;
   } else {
     warning.style.display = 'none';
     warning.textContent = '';
@@ -241,12 +247,11 @@ form.addEventListener('submit', async event => {
   cancelBtn.disabled = true;
   phase.textContent = 'Starting archive…';
   detail.textContent = 'Creating a tracked job.';
-  scanningStatus.textContent = 'Not scanning yet';
+  scanningStatus.textContent = 'Not started';
   oldestRetained.textContent = 'none';
   expandingStatus.textContent = 'No disclosure expansion yet';
   bar.classList.add('indeterminate');
 
-  previewWindow = window.open('/preview.html?pending=1', 'chatgptArchivePreview');
   try {
     const r = await fetch('/api/archive/start', {
       method:'POST',
@@ -257,15 +262,11 @@ form.addEventListener('submit', async event => {
     if (!r.ok) throw new Error(data.error || `Could not start archive (${r.status}).`);
     currentJobId = data.jobId;
     cancelBtn.disabled = false;
-    if (previewWindow && !previewWindow.closed) {
-      previewWindow.location.replace(`/preview.html?job=${encodeURIComponent(currentJobId)}`);
-    }
     poll();
   } catch (e) {
     phase.textContent = 'Could not start';
     detail.textContent = e.message;
     submit.disabled = false;
-    if (previewWindow && !previewWindow.closed) previewWindow.close();
   }
 });
 
