@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>ChatGPT Share Archiver</title>
+  <title>ChatGPT Conversation Crawler</title>
   <style>
     :root { color-scheme: light dark; }
     * { box-sizing: border-box; }
     body { margin:0; min-height:100vh; font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:Canvas; color:CanvasText; }
-    main { width:min(980px,calc(100% - 32px)); margin:0 auto; padding:30px 0 50px; }
+    main { width:min(1020px,calc(100% - 32px)); margin:0 auto; padding:30px 0 50px; }
     .card { border:1px solid color-mix(in srgb,CanvasText 18%,transparent); border-radius:16px; padding:24px; box-shadow:0 10px 32px color-mix(in srgb,CanvasText 7%,transparent); }
     h1 { margin:0 0 8px; font-size:clamp(24px,5vw,34px); }
     p { line-height:1.5; }
@@ -24,7 +24,12 @@
     .phase-row { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; }
     .phase { font-size:20px; font-weight:750; }
     .status-pill { padding:5px 9px; border-radius:999px; font-size:12px; font-weight:700; background:color-mix(in srgb,CanvasText 9%,Canvas); white-space:nowrap; }
-    #detail { margin:6px 0 0; color:color-mix(in srgb,CanvasText 72%,transparent); min-height:1.4em; }
+    .activity { display:grid; gap:7px; margin-top:12px; padding:12px 14px; border-radius:11px; background:color-mix(in srgb,CanvasText 5%,Canvas); border:1px solid color-mix(in srgb,CanvasText 11%,transparent); }
+    .activity-row { display:grid; grid-template-columns:132px minmax(0,1fr); gap:10px; line-height:1.4; }
+    .activity-label { font-size:12px; font-weight:750; text-transform:uppercase; letter-spacing:.035em; opacity:.58; padding-top:2px; }
+    .activity-value { overflow-wrap:anywhere; }
+    #detail { color:color-mix(in srgb,CanvasText 78%,transparent); }
+    #scanningStatus, #oldestRetained, #expandingStatus { font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace; font-size:13px; }
     .progress { height:9px; margin:16px 0 5px; border-radius:999px; overflow:hidden; background:color-mix(in srgb,CanvasText 10%,Canvas); }
     .bar { height:100%; width:0; background:CanvasText; transition:width .25s ease; }
     .bar.indeterminate { width:35%; animation:indeterminate 1.4s ease-in-out infinite; }
@@ -39,14 +44,20 @@
     .warning { margin-top:12px; padding:11px 13px; border-radius:10px; border:1px solid #b77; background:color-mix(in srgb,#b77 12%,Canvas); display:none; }
     .error { color:#c33; }
     .done { margin-top:14px; padding:12px 14px; border-radius:10px; border:1px solid color-mix(in srgb,CanvasText 18%,transparent); display:none; }
-    @media(max-width:720px){ .stats{grid-template-columns:repeat(2,minmax(0,1fr))}.health{grid-template-columns:1fr}.phase-row{display:block}.status-pill{display:inline-block;margin-top:8px} }
+    @media(max-width:720px){
+      .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+      .health{grid-template-columns:1fr}
+      .phase-row{display:block}
+      .status-pill{display:inline-block;margin-top:8px}
+      .activity-row{grid-template-columns:1fr;gap:2px}
+    }
   </style>
 </head>
 <body>
 <main>
   <div class="card">
-    <h1>ChatGPT Share Archiver</h1>
-    <p>Captures a shared ChatGPT conversation while progressively lazy-loading turns and expanding user-visible disclosure trees. Long conversations can take time; this page now reports live worker activity and can show a continuously refreshed preview of what has already been captured.</p>
+    <h1>ChatGPT Conversation Crawler</h1>
+    <p>Captures a shared ChatGPT conversation while progressively lazy-loading turns and expanding user-visible disclosure trees. Long conversations can take time; the status panel keeps the important crawler signals visible instead of replacing them with the latest message.</p>
 
     <form id="form">
       <label for="url">Share URL</label>
@@ -60,15 +71,19 @@
 
     <section id="jobPanel" aria-live="polite">
       <div class="phase-row">
-        <div>
-          <div id="phase" class="phase">Starting…</div>
-          <div id="detail"></div>
-        </div>
+        <div class="phase" id="phase">Starting…</div>
         <div id="statusPill" class="status-pill">starting</div>
       </div>
 
+      <div class="activity" aria-label="Crawler activity">
+        <div class="activity-row"><div class="activity-label">Detail</div><div class="activity-value" id="detail">Creating a tracked job.</div></div>
+        <div class="activity-row"><div class="activity-label">Scanning</div><div class="activity-value" id="scanningStatus">Not scanning yet</div></div>
+        <div class="activity-row"><div class="activity-label">Oldest retained</div><div class="activity-value" id="oldestRetained">none</div></div>
+        <div class="activity-row"><div class="activity-label">Expanding</div><div class="activity-value" id="expandingStatus">No disclosure expansion yet</div></div>
+      </div>
+
       <div class="progress"><div id="bar" class="bar indeterminate"></div></div>
-      <div class="progress-caption"><span id="passText">Preparing</span><span id="scrollText">Current loaded range</span></div>
+      <div class="progress-caption"><span id="passText">Preparing</span><span id="scrollText">Current mounted range</span></div>
 
       <div class="stats">
         <div class="stat"><div class="value" id="turns">0</div><div class="label">turns captured</div></div>
@@ -87,7 +102,7 @@
       <div id="doneBox" class="done"></div>
     </section>
 
-    <p class="note">“Scroll %” refers to the scroll range currently mounted by ChatGPT. The total height can grow as more lazy content appears, so it is not a reliable overall-completion percentage. The three-pass indicator is the more meaningful coarse progress measure.</p>
+    <p class="note">The scan-position indicator is diagnostic only: ChatGPT can mount or unmount content while the crawler moves, so the known scroll range can change during a run. Completion is determined by the crawler's scan phases and, for the oldest edge, repeated convergence checks that require the retained/mounted top state to remain stable. The persistent <strong>Scanning</strong>, <strong>Oldest retained</strong>, and <strong>Expanding</strong> lines are the best live indicators of what the crawler is doing.</p>
   </div>
 </main>
 <script>
@@ -99,6 +114,9 @@ const cancelBtn = document.querySelector('#cancelBtn');
 const jobPanel = document.querySelector('#jobPanel');
 const phase = document.querySelector('#phase');
 const detail = document.querySelector('#detail');
+const scanningStatus = document.querySelector('#scanningStatus');
+const oldestRetained = document.querySelector('#oldestRetained');
+const expandingStatus = document.querySelector('#expandingStatus');
 const statusPill = document.querySelector('#statusPill');
 const bar = document.querySelector('#bar');
 const passText = document.querySelector('#passText');
@@ -125,7 +143,10 @@ function age(ms) {
 function render(s) {
   lastStatus = s;
   phase.textContent = s.phase || s.status;
-  detail.textContent = s.detail || '';
+  detail.textContent = s.detail || '—';
+  scanningStatus.textContent = s.scanningStatus || 'Not scanning yet';
+  oldestRetained.textContent = s.oldestRetained || 'none';
+  expandingStatus.textContent = s.expandingStatus || 'No disclosure expansion yet';
   statusPill.textContent = s.status;
   for (const id of Object.keys(fields)) fields[id].textContent = s[id] ?? 0;
   heartbeat.textContent = age(s.heartbeatAt);
@@ -136,17 +157,26 @@ function render(s) {
   if (s.scanPass) {
     const direction = s.direction ? ` · ${s.direction}` : '';
     passText.textContent = `Pass ${s.scanPass}/${s.scanPasses}${direction} · step ${s.step}`;
-    scrollText.textContent = `${Number(s.scrollPercent || 0).toFixed(1)}% of current loaded range`;
+    scrollText.textContent = `${Number(s.scrollPercent || 0).toFixed(1)}% of current mounted range`;
     bar.classList.remove('indeterminate');
     const passBase = ((s.scanPass - 1) / s.scanPasses) * 100;
-    const within = (Number(s.scrollPercent || 0) / s.scanPasses);
-    const visual = s.direction === 'up' ? passBase + ((100 - Number(s.scrollPercent || 0)) / s.scanPasses) : passBase + within;
+    const within = Number(s.scrollPercent || 0) / s.scanPasses;
+    const visual = s.direction === 'up'
+      ? passBase + ((100 - Number(s.scrollPercent || 0)) / s.scanPasses)
+      : passBase + within;
     bar.style.width = `${Math.max(1, Math.min(99, visual))}%`;
     bar.style.transform = 'none';
   } else if (s.status === 'done') {
-    passText.textContent = 'Capture complete'; scrollText.textContent = '100%'; bar.classList.remove('indeterminate'); bar.style.width = '100%'; bar.style.transform = 'none';
+    passText.textContent = 'Capture complete';
+    scrollText.textContent = 'Complete';
+    bar.classList.remove('indeterminate');
+    bar.style.width = '100%';
+    bar.style.transform = 'none';
   } else {
-    passText.textContent = s.phase || 'Preparing'; scrollText.textContent = 'Working…'; bar.classList.add('indeterminate'); bar.style.width = '35%';
+    passText.textContent = s.phase || 'Preparing';
+    scrollText.textContent = 'Working…';
+    bar.classList.add('indeterminate');
+    bar.style.width = '35%';
   }
 
   const heartbeatAge = Date.now() - Number(s.heartbeatAt || 0);
@@ -156,21 +186,30 @@ function render(s) {
     warning.textContent = `The worker heartbeat has not updated for ${Math.floor(heartbeatAge/1000)} seconds. The Node process or browser may be stalled.`;
   } else if (!['done','error','cancelled'].includes(s.status) && progressAge > 30_000) {
     warning.style.display = 'block';
-    warning.textContent = `The worker is still alive, but no counters/phase changed for ${Math.floor(progressAge/1000)} seconds. This can happen while ChatGPT is loading a difficult section; use the live preview to see the latest captured state.`;
+    warning.textContent = `The worker is still alive, but no substantive state changed for ${Math.floor(progressAge/1000)} seconds. Check the persistent scanning/oldest/expanding fields and the live preview for the latest captured state.`;
   } else {
-    warning.style.display = 'none'; warning.textContent = '';
+    warning.style.display = 'none';
+    warning.textContent = '';
   }
 
   if (s.status === 'done') {
     doneBox.style.display = 'block';
+    doneBox.className = 'done';
     doneBox.innerHTML = `<strong>Finished.</strong> ${s.turns} turns captured, ${s.expansions} disclosures expanded, ${s.preBlocks} &lt;pre&gt; blocks retained.<div class="actions"><a class="button-link" href="/api/archive/download/${encodeURIComponent(s.id)}">Download static HTML</a><a class="button-link secondary" target="_blank" href="/preview.html?job=${encodeURIComponent(s.id)}">Open final preview</a></div>`;
     submit.disabled = false;
   } else if (s.status === 'error') {
-    doneBox.style.display = 'block'; doneBox.className = 'done error'; doneBox.textContent = s.error || 'Archive failed.'; submit.disabled = false;
+    doneBox.style.display = 'block';
+    doneBox.className = 'done error';
+    doneBox.textContent = s.error || 'Archive failed.';
+    submit.disabled = false;
   } else if (s.status === 'cancelled') {
-    doneBox.style.display = 'block'; doneBox.textContent = 'Archive cancelled.'; submit.disabled = false;
+    doneBox.style.display = 'block';
+    doneBox.className = 'done';
+    doneBox.textContent = 'Archive cancelled.';
+    submit.disabled = false;
   } else {
-    doneBox.style.display = 'none'; doneBox.className = 'done';
+    doneBox.style.display = 'none';
+    doneBox.className = 'done';
   }
 }
 
@@ -183,33 +222,49 @@ async function poll() {
     render(s);
     if (!['done','error','cancelled'].includes(s.status)) pollTimer = setTimeout(poll, 1000);
   } catch (e) {
-    warning.style.display = 'block'; warning.textContent = e.message;
+    warning.style.display = 'block';
+    warning.textContent = e.message;
     pollTimer = setTimeout(poll, 2500);
   }
 }
 
-form.addEventListener('submit', async (event) => {
+form.addEventListener('submit', async event => {
   event.preventDefault();
   clearTimeout(pollTimer);
   currentJobId = null;
   lastStatus = null;
-  doneBox.style.display = 'none'; warning.style.display = 'none';
+  doneBox.style.display = 'none';
+  warning.style.display = 'none';
   jobPanel.style.display = 'block';
-  submit.disabled = true; previewBtn.disabled = true; cancelBtn.disabled = true;
-  phase.textContent = 'Starting archive…'; detail.textContent = 'Creating a tracked job.';
+  submit.disabled = true;
+  previewBtn.disabled = true;
+  cancelBtn.disabled = true;
+  phase.textContent = 'Starting archive…';
+  detail.textContent = 'Creating a tracked job.';
+  scanningStatus.textContent = 'Not scanning yet';
+  oldestRetained.textContent = 'none';
+  expandingStatus.textContent = 'No disclosure expansion yet';
   bar.classList.add('indeterminate');
 
   previewWindow = window.open('/preview.html?pending=1', 'chatgptArchivePreview');
   try {
-    const r = await fetch('/api/archive/start', { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({url:input.value.trim()}) });
+    const r = await fetch('/api/archive/start', {
+      method:'POST',
+      headers:{'content-type':'application/json'},
+      body:JSON.stringify({url:input.value.trim()})
+    });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || `Could not start archive (${r.status}).`);
     currentJobId = data.jobId;
     cancelBtn.disabled = false;
-    if (previewWindow && !previewWindow.closed) previewWindow.location.replace(`/preview.html?job=${encodeURIComponent(currentJobId)}`);
+    if (previewWindow && !previewWindow.closed) {
+      previewWindow.location.replace(`/preview.html?job=${encodeURIComponent(currentJobId)}`);
+    }
     poll();
   } catch (e) {
-    phase.textContent = 'Could not start'; detail.textContent = e.message; detail.className = 'error'; submit.disabled = false;
+    phase.textContent = 'Could not start';
+    detail.textContent = e.message;
+    submit.disabled = false;
     if (previewWindow && !previewWindow.closed) previewWindow.close();
   }
 });

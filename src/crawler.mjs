@@ -5,7 +5,8 @@ export async function installCrawler(page) {
       attempts: Object.create(null),
       failures: Object.create(null),
       clickCount: 0,
-      successfulExpansions: 0
+      successfulExpansions: 0,
+      lastExpansion: 'No disclosure expansion yet'
     };
 
     const turnSelector = 'section[data-testid^="conversation-turn-"]';
@@ -48,6 +49,10 @@ export async function installCrawler(page) {
       const root = scrollRoot();
       const doc = root === document.scrollingElement || root === document.documentElement || root === document.body;
       if (doc) scrollTo(0, top); else root.scrollTop = top;
+    }
+
+    function retainedIds() {
+      return Object.keys(state.turns).sort((a, b) => turnNumber(a) - turnNumber(b) || a.localeCompare(b));
     }
 
     function capture() {
@@ -104,7 +109,8 @@ export async function installCrawler(page) {
         if (details) {
           details.open = true;
           state.successfulExpansions++;
-          return { kind: 'details' };
+          state.lastExpansion = `${turnId(details)} — opened native <details>`;
+          return { kind: 'details', description: state.lastExpansion };
         }
       }
 
@@ -115,6 +121,8 @@ export async function installCrawler(page) {
           const attempts = state.attempts[key] || 0;
           if (attempts >= 3) continue;
           state.attempts[key] = attempts + 1;
+          const shortLabel = label(el).slice(0, 180) || el.getAttribute('aria-controls') || 'unlabelled disclosure';
+          state.lastExpansion = `${turnId(el)} — ${shortLabel}`;
           try {
             el.scrollIntoView({ block: 'center' });
             el.click();
@@ -122,7 +130,7 @@ export async function installCrawler(page) {
           } catch (error) {
             state.failures[key] = error?.message || 'click failed';
           }
-          return { kind: 'click', key };
+          return { kind: 'click', key, description: state.lastExpansion };
         }
       }
       return null;
@@ -144,18 +152,21 @@ export async function installCrawler(page) {
 
     function stats() {
       const values = Object.values(state.turns);
+      const ids = retainedIds();
       return {
         turns: values.length,
         expanded: state.successfulExpansions,
         clicks: state.clickCount,
         failures: Object.keys(state.failures).length,
         preBlocks: values.reduce((n, turn) => n + (turn.preCount || 0), 0),
-        codeBlocks: values.reduce((n, turn) => n + (turn.codeCount || 0), 0)
+        codeBlocks: values.reduce((n, turn) => n + (turn.codeCount || 0), 0),
+        oldestRetained: ids[0] || 'none',
+        expandingStatus: state.lastExpansion
       };
     }
 
     function topSignature() {
-      const ids = Object.keys(state.turns).sort((a, b) => turnNumber(a) - turnNumber(b) || a.localeCompare(b));
+      const ids = retainedIds();
       const mounted = turns();
       const s = stats();
       const m = metrics();
@@ -196,7 +207,12 @@ async function expandMounted(page, max, onProgress, shouldCancel) {
     await page.waitForTimeout(result.kind === 'details' ? 40 : 180);
     if (result.key) await page.evaluate(key => window.__archiveCrawler.confirm(key), result.key);
     await page.evaluate(() => window.__archiveCrawler.capture());
-    if (i % 8 === 0) await report(page, onProgress, { detail: `Expanding mounted disclosures (${i + 1})` });
+    if (i % 8 === 0) {
+      await report(page, onProgress, {
+        detail: `Expanding mounted disclosures (${i + 1})`,
+        expandingStatus: result.description || `Expansion ${i + 1}`
+      });
+    }
   }
 }
 
@@ -221,11 +237,13 @@ async function scan(page, direction, pass, onProgress, shouldCancel, maxSteps = 
     const atEnd = direction === 'down' ? metrics.top >= maxTop - 4 : metrics.top <= 4;
     const stats = await page.evaluate(() => window.__archiveCrawler.stats());
     const signature = `${Math.round(metrics.top)}|${metrics.height}|${stats.turns}|${stats.clicks}`;
+    const scanningStatus = `Pass ${pass}/3 — ${direction} · step ${step + 1}`;
 
     await onProgress?.({
       ...stats,
       phase: 'Scanning conversation',
       detail: `Pass ${pass}/3 — ${direction}`,
+      scanningStatus,
       pass,
       direction,
       step: step + 1,
@@ -260,6 +278,7 @@ async function verifyOldestMessages(page, onProgress, shouldCancel) {
   await onProgress?.({
     phase: 'Verifying oldest messages',
     detail: 'Pausing preview reconstruction while checking for asynchronously prepended turns',
+    scanningStatus: 'Top-edge convergence probe',
     pass: 2,
     direction: 'up',
     previewPaused: true
@@ -291,7 +310,9 @@ async function verifyOldestMessages(page, onProgress, shouldCancel) {
 
     await report(page, onProgress, {
       phase: 'Verifying oldest messages',
-      detail: `Oldest retained: ${top.oldestRetained} · mounted first: ${top.mountedFirst} · ${quietChecks}/${requiredQuietChecks} quiet top checks`,
+      detail: `Mounted first: ${top.mountedFirst} · ${quietChecks}/${requiredQuietChecks} quiet top checks`,
+      scanningStatus: `Top-edge verification · check ${check + 1} · ${quietChecks}/${requiredQuietChecks} quiet`,
+      oldestRetained: top.oldestRetained,
       pass: 2,
       direction: 'up',
       step: check + 1,
@@ -312,6 +333,7 @@ async function verifyOldestMessages(page, onProgress, shouldCancel) {
   await report(page, onProgress, {
     phase: 'Oldest-message verification complete',
     detail: 'Top-region capture converged; resuming the final downward pass',
+    scanningStatus: 'Top-edge convergence complete',
     pass: 2,
     direction: 'up',
     previewPaused: false
@@ -323,6 +345,7 @@ export async function crawlConversation(page, { onProgress, shouldCancel } = {})
   await report(page, onProgress, {
     phase: 'Preparing crawler',
     detail: 'Installed page-side capture helpers',
+    scanningStatus: 'Preparing first downward scan',
     previewPaused: false
   });
 
@@ -334,6 +357,7 @@ export async function crawlConversation(page, { onProgress, shouldCancel } = {})
   await onProgress?.({
     phase: 'Final expansion sweep',
     detail: 'Opening remaining mounted disclosures',
+    scanningStatus: 'Three scan passes complete',
     previewPaused: false
   });
   await expandMounted(page, 400, onProgress, shouldCancel);
@@ -341,6 +365,7 @@ export async function crawlConversation(page, { onProgress, shouldCancel } = {})
   await report(page, onProgress, {
     phase: 'Final expansion sweep',
     detail: 'Capture stabilized',
+    scanningStatus: 'Scanning complete',
     previewPaused: false
   });
 }
