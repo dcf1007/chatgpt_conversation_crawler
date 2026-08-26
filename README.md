@@ -12,6 +12,9 @@ It is designed for long conversations where a normal browser save can miss conte
 - Uses a clean Playwright Chromium browser context.
 - Detects ChatGPT's internal conversation scroller instead of assuming `window` scrolls.
 - Progressively retains virtualized turns so previously seen content is not lost.
+- Retains visible timeline metadata between turns, including date/time separators and **Branched from** ancestry notices.
+- Associates retained timeline markers with the following `conversation-turn-*` so virtualization cannot discard them after they scroll out of the DOM.
+- Preserves message UUIDs and visible timestamp labels as machine-readable archive attributes when available.
 - Expands native `<details>` and conversation-scoped `aria-expanded="false"` disclosures.
 - Recognizes parent controls such as **Worked for**, **Thought**, **Thinking**, and **Reasoning** even without `aria-controls`.
 - Avoids obvious menu controls such as `aria-haspopup` and `role="menuitem"`.
@@ -24,7 +27,7 @@ It is designed for long conversations where a normal browser save can miss conte
 - Keeps **Detail**, **Scanning**, **Oldest retained**, **Mounted first**, and **Expanding** as separate persistent diagnostics.
 - Maintains an independent worker heartbeat every ~2 seconds.
 - Does not treat ordinary scan-step movement by itself as substantive progress.
-- Treats mounted-first/mounted-last virtualizer changes as substantive progress.
+- Treats mounted-first/mounted-last virtualizer changes and newly retained timeline markers as substantive progress.
 - Generates live-preview snapshots only while a preview window is active.
 - Detects the shared conversation name from the page `<title>` and uses it for the downloaded HTML filename when available.
 - Embeds retrievable HTTP(S) **and `blob:` images** into the final HTML as data URLs.
@@ -47,7 +50,7 @@ It is designed for long conversations where a normal browser save can miss conte
 Finished versions are published as formal GitHub Releases. Download the versioned cross-platform ZIP from the repository's **Releases** page, for example:
 
 ```text
-chatgpt-conversation-crawler-v1.5.3.zip
+chatgpt-conversation-crawler-v1.6.0.zip
 ```
 
 The release workflow reads the version from `package.json`, creates a `vX.Y.Z` release when that version is new, and attaches a ZIP made from that exact commit.
@@ -109,7 +112,7 @@ The server also reads the `PORT` environment variable.
 1. Create/copy a ChatGPT shared-conversation URL.
 2. Paste it into the local crawler UI.
 3. Click **Start archive**.
-4. Watch the persistent status fields while the crawler runs, including the detected **Chat name**.
+4. Watch the persistent status fields while the crawler runs, including the detected **Chat name** and retained **timeline markers** count.
 5. Optionally click **Open live preview**. It is never opened automatically.
 6. When the job reaches **Complete**, download the generated static HTML. The detected chat name is used as the filename when available.
 
@@ -124,6 +127,7 @@ The status panel deliberately separates different concepts:
 - **Oldest retained** — the numerically earliest `conversation-turn-*` that has ever been stored in the cumulative progressive-capture map. Once turn 1 is captured, this is expected to remain `conversation-turn-1`.
 - **Mounted first** — the earliest `conversation-turn-*` currently mounted by ChatGPT's virtualizer. This is the live frontier that can move while scrolling/loading.
 - **Expanding** — the most recent disclosure/tool/reasoning row being opened.
+- **Timeline markers** — visible timestamp/date separators plus **Branched from** ancestry notices retained between conversation turns.
 - **Worker heartbeat** — an independent liveness signal updated approximately every two seconds.
 - **Last substantive progress** — meaningful capture/virtualizer changes, not ordinary step-number changes.
 
@@ -173,21 +177,47 @@ At an endpoint, the crawler does not stop immediately. It requires six matching 
 - oldest/newest retained turn IDs;
 - first/last currently mounted turn IDs;
 - clicks, confirmed expansions, and failures;
-- retained `<pre>` and `<code>` counts.
+- retained `<pre>` and `<code>` counts;
+- retained timeline-marker count.
 
-This is deliberately conservative: a virtualizer can change which turns are mounted without changing the total retained turn count.
+This is deliberately conservative: a virtualizer can change which turns or between-turn markers are mounted without changing the total retained turn count.
 
 ### Oldest-message verification
 
 The crawler repeatedly returns to the real top edge and waits for older content to appear. A quiet observation counts only while the conversation is actually at the top (`scrollTop <= 4`).
 
-The oldest-edge signature includes actual top offset, scroll height, retained/mounted boundaries, turn/code counts, clicks, confirmed expansions, and failures. Any change resets the quiet counter. Twelve consecutive unchanged top observations are required.
+The oldest-edge signature includes actual top offset, scroll height, retained/mounted boundaries, turn/code counts, timeline-marker count, clicks, confirmed expansions, and failures. Any change resets the quiet counter. Twelve consecutive unchanged top observations are required.
 
 After a few quiet checks, the crawler deliberately nudges roughly 38% of a viewport away from the top (minimum 220 px where possible) and returns. This can retrigger virtualizer or `IntersectionObserver` boundaries that do not fire while parked continuously at `scrollTop = 0`.
 
 The top settling wait is intentionally conservative, and live-preview reconstruction is completely paused during this phase.
 
 The verification loop also has a **180-check safety limit**. If that limit is reached before 12 quiet checks, the crawler continues rather than throwing away an otherwise useful capture, but it does **not** claim convergence. The UI and final archive record the actual stable-check count and a prominent warning.
+
+## Timeline timestamps and branch ancestry
+
+ChatGPT can render timestamp/date separators outside the message turn itself, for example:
+
+```html
+<div aria-label="Today 9:09 AM" role="separator">…</div>
+```
+
+or a more explicit label such as `Sun, Aug 16 at 10:34 AM`. These are retained **exactly as displayed by ChatGPT**; the crawler does not invent or infer hidden timestamps. Relative labels such as `Today` therefore remain relative text in the archive rather than being silently converted to a guessed absolute date.
+
+The crawler also retains visible ancestry notices such as:
+
+```text
+Branched from Branch · Branch · Branch · Image Circle Detection
+```
+
+including the linked source-conversation URL when ChatGPT exposes one. Timestamp and branch markers are stored independently of the turn HTML and keyed to the following `conversation-turn-*`. This means they survive progressive virtualization even after the original marker DOM node is unmounted.
+
+When available, the following turn also receives machine-readable archive attributes:
+
+- `data-message-id` for ChatGPT's exposed message UUID;
+- `data-timestamp-label` for the retained visible timestamp label.
+
+These attributes are preservation metadata, not a claim that ChatGPT exposes an absolute creation timestamp for every message.
 
 ## Disclosure expansion
 
@@ -209,7 +239,7 @@ Expansion status is lightweight: the **Expanding** line is updated for each disc
 
 Long ChatGPT conversations can virtualize old DOM nodes out of the document. The crawler therefore does not wait until the end and copy only the final live DOM.
 
-Every encountered conversation turn is retained in an in-page map keyed by its `conversation-turn-*` ID. If the same turn is encountered later in a richer state, the retained copy is replaced.
+Every encountered conversation turn is retained in an in-page map keyed by its `conversation-turn-*` ID. If the same turn is encountered later in a richer state, the retained copy is replaced. Between-turn timestamp/branch markers are retained in a separate cumulative map and associated with the next turn in document order.
 
 The richness score strongly favors, in order:
 
@@ -236,7 +266,7 @@ Preview images remain external URLs to keep preview reconstruction lightweight. 
 
 The worker heartbeat is maintained independently of crawler state at approximately two-second intervals. This means a long wait or final image-embedding operation does not make an otherwise healthy worker look dead.
 
-`Last substantive progress` intentionally excludes the changing scan step/status string. The step remains fully visible under **Scanning**. Substantive progress is driven by capture state such as phase transitions, retained-turn/code/expansion/failure changes, oldest/newest retained boundaries, **mounted-first/mounted-last virtualizer changes**, and growth in the maximum observed scroll height.
+`Last substantive progress` intentionally excludes the changing scan step/status string. The step remains fully visible under **Scanning**. Substantive progress is driven by capture state such as phase transitions, retained-turn/code/expansion/failure changes, oldest/newest retained boundaries, **mounted-first/mounted-last virtualizer changes**, newly retained timeline markers, and growth in the maximum observed scroll height.
 
 ## Embedded images and image dimensions
 
@@ -267,6 +297,9 @@ The final archive is script-free but preserves readable semantic content and ric
 
 - role-specific turn classes;
 - `data-turn` conversation IDs;
+- exposed message UUIDs when available;
+- visible timestamp separators and their original `aria-label` text;
+- **Branched from** ancestry dividers and links;
 - dedicated `.archive-turn-content` wrappers;
 - reasoning labels converted to static text;
 - prose, lists, headings, tables and links;
@@ -313,6 +346,7 @@ It does not:
 - authenticate into a private ChatGPT account;
 - bypass workspace/share restrictions;
 - recover content the share page does not expose;
+- infer timestamps that ChatGPT does not visibly expose;
 - extract private model-internal chain-of-thought;
 - preserve ChatGPT as an interactive application;
 - guarantee compatibility with future ChatGPT DOM changes without maintenance.
@@ -338,7 +372,9 @@ For crawler changes, test at least:
 8. live preview open and closed;
 9. HTTP(S) image embedding;
 10. `blob:` image embedding and fallback behavior;
-11. **Oldest retained** vs **Mounted first** behavior during virtualization.
+11. **Oldest retained** vs **Mounted first** behavior during virtualization;
+12. timestamp separators such as `Today 9:09 AM` and explicit calendar labels;
+13. **Branched from** ancestry markers and source links.
 
 ## Version history
 
@@ -354,7 +390,8 @@ For crawler changes, test at least:
 - **v1.5.1** — documentation reconciliation and a small image-fallback escaping correction.
 - **v1.5.2** — truthful oldest-edge safety-limit reporting, mounted-frontier diagnostics and substantive-progress tracking, lightweight per-expansion reporting, randomized image tokens, and `blob:` image embedding.
 - **v1.5.3** — detects the real shared-chat title and uses a cross-platform sanitized version as the downloaded HTML filename, with the detected name exposed in status.
+- **v1.6.0** — retains visible timestamp/date separators and **Branched from** ancestry markers across virtualization, preserves exposed message IDs/timestamp labels, and renders those markers in live/final archives.
 
 ## Maintenance note
 
-ChatGPT's frontend is not a stable public DOM API. Prefer adapting to user-facing structural semantics—conversation-turn boundaries, accessibility disclosure state, and mounted-scroll behavior—rather than generated CSS class names.
+ChatGPT's frontend is not a stable public DOM API. Prefer adapting to user-facing structural semantics—conversation-turn boundaries, accessibility disclosure state, visible timeline markers, and mounted-scroll behavior—rather than generated CSS class names.
