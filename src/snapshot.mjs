@@ -2,7 +2,7 @@ const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 256 * 1024 * 1024;
 const IMAGE_CONCURRENCY = 4;
 
-const esc = v => String(v).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;' }[c]));
+const esc = v => String(v).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 
 async function embedImages(context, snapshot) {
   const images = snapshot.images || [];
