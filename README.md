@@ -33,6 +33,7 @@ It is designed for long conversations where a normal browser save can miss conte
 - Embeds retrievable HTTP(S) **and `blob:` images** into the final HTML as data URLs.
 - Preserves captured image display dimensions and intrinsic dimensions when available.
 - Falls back to the original image URL and records diagnostics when an image cannot be embedded.
+- Preserves assistant-generated download names when they are visibly present in the shared conversation; it does not infer missing names for user-uploaded files or images.
 - Supports cancellation and automatically cleans old completed jobs from memory.
 - Includes setup/start scripts for **Windows, Linux, and macOS**.
 - Publishes finished versions automatically as GitHub Releases with a cross-platform ZIP asset.
@@ -50,7 +51,7 @@ It is designed for long conversations where a normal browser save can miss conte
 Finished versions are published as formal GitHub Releases. Download the versioned cross-platform ZIP from the repository's **Releases** page, for example:
 
 ```text
-chatgpt-conversation-crawler-v1.6.0.zip
+chatgpt-conversation-crawler-v1.6.2.zip
 ```
 
 The release workflow reads the version from `package.json`, creates a `vX.Y.Z` release when that version is new, and attaches a ZIP made from that exact commit.
@@ -147,6 +148,14 @@ The detected title is shown in the local status UI and is used for the downloade
 - falls back to `chatgpt-share-<job-id>.html` if no meaningful title is available.
 
 The Open Graph title is intentionally not used because current shared pages can expose the generic value `Check out this chat` there while the real conversation name is present in `<title>`.
+
+## User-uploaded file and image names
+
+ChatGPT shared-conversation pages can omit the original filenames of files and images uploaded by the user. When the shared page does not expose a filename in its rendered DOM or other browser-visible content, the crawler cannot recover it reliably.
+
+The crawler therefore does **not** attempt to reconstruct missing upload names from image URLs, runtime paths, message order, generated identifiers, or other heuristics. Such guesses can be wrong and add crawl/convergence overhead without recovering authoritative metadata.
+
+Assistant-generated download names that are visibly present in the shared conversation are still archived as ordinary visible conversation content by the existing static-output sanitizer. No separate filename-tracking subsystem is required for those names.
 
 ## Traversal and convergence
 
@@ -347,6 +356,7 @@ It does not:
 - bypass workspace/share restrictions;
 - recover content the share page does not expose;
 - infer timestamps that ChatGPT does not visibly expose;
+- reconstruct original filenames of user-uploaded files or images when the shared page omits them;
 - extract private model-internal chain-of-thought;
 - preserve ChatGPT as an interactive application;
 - guarantee compatibility with future ChatGPT DOM changes without maintenance.
@@ -391,6 +401,8 @@ For crawler changes, test at least:
 - **v1.5.2** — truthful oldest-edge safety-limit reporting, mounted-frontier diagnostics and substantive-progress tracking, lightweight per-expansion reporting, randomized image tokens, and `blob:` image embedding.
 - **v1.5.3** — detects the real shared-chat title and uses a cross-platform sanitized version as the downloaded HTML filename, with the detected name exposed in status.
 - **v1.6.0** — retains visible timestamp/date separators and **Branched from** ancestry markers across virtualization, preserves exposed message IDs/timestamp labels, and renders those markers in live/final archives.
+- **v1.6.1** — keeps **Expanding** coherent with the currently mounted range and emits fresh retained/mounted boundaries on lightweight expansion updates.
+- **v1.6.2** — documents that shared links can omit original user-uploaded file/image names; no runtime filename inference or tracking is added.
 
 ## Maintenance note
 
