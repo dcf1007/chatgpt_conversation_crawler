@@ -56,7 +56,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ARCHIVE="chatgpt-conversation-crawler-v${VERSION}-windows.zip"
+          ARCHIVE="chatgpt-conversation-crawler-v${VERSION}.zip"
           PREFIX="chatgpt-conversation-crawler-v${VERSION}/"
           git archive --format=zip --prefix="$PREFIX" --output="$ARCHIVE" "$GITHUB_SHA"
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
@@ -70,7 +70,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh release create "$TAG" "$ARCHIVE#Windows/source ZIP" \
+          gh release create "$TAG" "$ARCHIVE#Cross-platform source ZIP" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "ChatGPT Conversation Crawler v${VERSION}" \
@@ -85,5 +85,5 @@ jobs:
           if [[ "$EXISTS" == "true" ]]; then
             echo "Release $TAG already existed, so no release was modified." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "Created release $TAG with a downloadable Windows/source ZIP." >> "$GITHUB_STEP_SUMMARY"
+            echo "Created release $TAG with a downloadable cross-platform source ZIP." >> "$GITHUB_STEP_SUMMARY"
           fi
