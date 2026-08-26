@@ -1,43 +1,4 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ChatGPT Archive Live Preview</title>
-<style>
-:root{color-scheme:light dark}*{box-sizing:border-box}html,body{height:100%;margin:0;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:Canvas;color:CanvasText}body{display:grid;grid-template-rows:auto 1fr}.top{display:flex;gap:14px;align-items:center;padding:10px 14px;border-bottom:1px solid color-mix(in srgb,CanvasText 16%,transparent);font-size:13px}.top strong{font-size:14px}.grow{flex:1}.muted{opacity:.65}iframe{width:100%;height:100%;border:0;background:white}.waiting{display:grid;place-items:center;height:100%;padding:30px;text-align:center}.dot{display:inline-block;width:8px;height:8px;border-radius:999px;background:currentColor;animation:pulse 1s infinite alternate}@keyframes pulse{to{opacity:.2}}
-</style>
-</head>
-<body>
-<div class="top"><strong>Live archive preview</strong><span id="state" class="muted">Starting…</span><span class="grow"></span><span id="refresh" class="muted"></span></div>
-<div id="host" class="waiting"><div><span class="dot"></span><p>Waiting for the first captured turns…</p><p class="muted">This window refreshes automatically while the archive runs.</p></div></div>
-<script>
-const params=new URLSearchParams(location.search); const job=params.get('job');
-const state=document.querySelector('#state'); const refresh=document.querySelector('#refresh'); const host=document.querySelector('#host');
-let iframe=null,lastSignature='',lastPreviewAt=0;
-if(!job){ state.textContent='Waiting for archive job…'; }
-async function tick(){
-  if(!job) return setTimeout(tick,1000);
-  try{
-    const sr=await fetch(`/api/archive/status/${encodeURIComponent(job)}`,{cache:'no-store'}); if(!sr.ok) throw new Error(`status ${sr.status}`); const s=await sr.json();
-    state.textContent=`${s.phase} · ${s.turns} turns · ${s.expansions} expanded`;
-    const sig=`${s.turns}|${s.expansions}|${s.preBlocks}|${s.codeBlocks}|${s.status}`;
-    if(s.previewReady && sig!==lastSignature){
-      const pr=await fetch(`/api/archive/preview/${encodeURIComponent(job)}?t=${Date.now()}`,{cache:'no-store'});
-      if(pr.ok && pr.status!==204){
-        const html=await pr.text();
-        if(!iframe){ iframe=document.createElement('iframe'); host.replaceWith(iframe); }
-        const oldY=iframe.contentWindow?.scrollY||0;
-        iframe.srcdoc=html;
-        iframe.onload=()=>{ try{iframe.contentWindow.scrollTo(0,oldY)}catch{} };
-        lastSignature=sig; lastPreviewAt=Date.now();
-      }
-    }
-    refresh.textContent=lastPreviewAt?`preview updated ${Math.max(0,Math.floor((Date.now()-lastPreviewAt)/1000))}s ago`:'waiting for preview';
-    if(!['done','error','cancelled'].includes(s.status)) setTimeout(tick,1500); else { state.textContent=s.status==='done'?`Complete · ${s.turns} turns`:s.status==='error'?`Error: ${s.error}`:'Cancelled'; }
-  }catch(e){ state.textContent=`Preview connection error: ${e.message}`; setTimeout(tick,2500); }
-}
-tick();
-setInterval(()=>{ if(lastPreviewAt) refresh.textContent=`preview updated ${Math.max(0,Math.floor((Date.now()-lastPreviewAt)/1000))}s ago`; },1000);
-</script>
-</body>
-</html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ChatGPT Archive Live Preview</title><style>:root{color-scheme:light dark}*{box-sizing:border-box}html,body{height:100%;margin:0;font-family:system-ui,sans-serif;background:Canvas;color:CanvasText}body{display:grid;grid-template-rows:auto 1fr}.top{display:flex;gap:14px;align-items:center;padding:10px 14px;border-bottom:1px solid color-mix(in srgb,CanvasText 16%,transparent);font-size:13px}.grow{flex:1}.muted{opacity:.65}iframe{width:100%;height:100%;border:0;background:white}.waiting{display:grid;place-items:center;height:100%;padding:30px;text-align:center}</style></head><body><div class="top"><strong>Live archive preview</strong><span id="state" class="muted">Starting…</span><span class="grow"></span><span id="refresh" class="muted"></span></div><div id="host" class="waiting"><div><p>Waiting for the first preview snapshot…</p><p class="muted">Preview generation is active only while this window remains open.</p></div></div><script>
+const job=new URLSearchParams(location.search).get('job'),state=document.querySelector('#state'),refresh=document.querySelector('#refresh'),host=document.querySelector('#host');let iframe=null,lastVersion=-1,lastPreviewAt=0;
+async function tick(){if(!job)return;try{const sr=await fetch(`/api/archive/status/${encodeURIComponent(job)}?preview=1`,{cache:'no-store'});if(!sr.ok)throw new Error(`status ${sr.status}`);const s=await sr.json();state.textContent=`${s.phase} · ${s.turns} turns · ${s.expansions} expanded`;if(s.previewReady&&s.previewVersion!==lastVersion){const pr=await fetch(`/api/archive/preview/${encodeURIComponent(job)}?t=${Date.now()}`,{cache:'no-store'});if(pr.ok&&pr.status!==204){const html=await pr.text();if(!iframe){iframe=document.createElement('iframe');host.replaceWith(iframe)}const oldY=iframe.contentWindow?.scrollY||0;iframe.srcdoc=html;iframe.onload=()=>{try{iframe.contentWindow.scrollTo(0,oldY)}catch{}};lastVersion=s.previewVersion;lastPreviewAt=Date.now()}}refresh.textContent=lastPreviewAt?`preview updated ${Math.max(0,Math.floor((Date.now()-lastPreviewAt)/1000))}s ago`:'waiting for preview';if(!['done','error','cancelled'].includes(s.status))setTimeout(tick,1500);else state.textContent=s.status==='done'?`Complete · ${s.turns} turns`:s.status==='error'?`Error: ${s.error}`:'Cancelled'}catch(e){state.textContent=`Preview connection error: ${e.message}`;setTimeout(tick,2500)}}tick();setInterval(()=>{if(lastPreviewAt)refresh.textContent=`preview updated ${Math.max(0,Math.floor((Date.now()-lastPreviewAt)/1000))}s ago`},1000);
+</script></body></html>
