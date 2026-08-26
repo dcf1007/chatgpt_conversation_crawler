@@ -7,133 +7,225 @@
   <style>
     :root { color-scheme: light dark; }
     * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      display: grid;
-      place-items: center;
-      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: Canvas;
-      color: CanvasText;
-    }
-    main { width: min(760px, calc(100% - 32px)); padding: 28px 0; }
-    .card {
-      border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
-      border-radius: 16px;
-      padding: 24px;
-      box-shadow: 0 10px 32px color-mix(in srgb, CanvasText 7%, transparent);
-    }
-    h1 { margin: 0 0 8px; font-size: clamp(24px, 5vw, 34px); }
-    p { line-height: 1.5; }
-    label { display: block; font-weight: 650; margin: 24px 0 8px; }
-    input {
-      width: 100%;
-      padding: 12px 13px;
-      border: 1px solid color-mix(in srgb, CanvasText 24%, transparent);
-      border-radius: 10px;
-      font: inherit;
-      background: Canvas;
-      color: CanvasText;
-    }
-    button {
-      margin-top: 12px;
-      padding: 11px 15px;
-      border: 0;
-      border-radius: 10px;
-      font: inherit;
-      font-weight: 650;
-      cursor: pointer;
-      background: CanvasText;
-      color: Canvas;
-    }
-    button:disabled { opacity: .55; cursor: progress; }
-    .note {
-      margin-top: 18px;
-      font-size: 14px;
-      color: color-mix(in srgb, CanvasText 72%, transparent);
-    }
-    #status { min-height: 1.4em; margin-top: 12px; font-size: 14px; white-space: pre-wrap; }
-    .error { color: #c33; }
+    body { margin:0; min-height:100vh; font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:Canvas; color:CanvasText; }
+    main { width:min(980px,calc(100% - 32px)); margin:0 auto; padding:30px 0 50px; }
+    .card { border:1px solid color-mix(in srgb,CanvasText 18%,transparent); border-radius:16px; padding:24px; box-shadow:0 10px 32px color-mix(in srgb,CanvasText 7%,transparent); }
+    h1 { margin:0 0 8px; font-size:clamp(24px,5vw,34px); }
+    p { line-height:1.5; }
+    label { display:block; font-weight:650; margin:22px 0 8px; }
+    input { width:100%; padding:12px 13px; border:1px solid color-mix(in srgb,CanvasText 24%,transparent); border-radius:10px; font:inherit; background:Canvas; color:CanvasText; }
+    .actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; }
+    button, .button-link { padding:11px 15px; border:0; border-radius:10px; font:inherit; font-weight:650; cursor:pointer; background:CanvasText; color:Canvas; text-decoration:none; }
+    button.secondary, .button-link.secondary { background:color-mix(in srgb,CanvasText 10%,Canvas); color:CanvasText; border:1px solid color-mix(in srgb,CanvasText 20%,transparent); }
+    button.danger { background:#a22; color:white; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .note { margin-top:18px; font-size:14px; color:color-mix(in srgb,CanvasText 72%,transparent); }
+    #jobPanel { display:none; margin-top:22px; border-top:1px solid color-mix(in srgb,CanvasText 14%,transparent); padding-top:22px; }
+    .phase-row { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; }
+    .phase { font-size:20px; font-weight:750; }
+    .status-pill { padding:5px 9px; border-radius:999px; font-size:12px; font-weight:700; background:color-mix(in srgb,CanvasText 9%,Canvas); white-space:nowrap; }
+    #detail { margin:6px 0 0; color:color-mix(in srgb,CanvasText 72%,transparent); min-height:1.4em; }
+    .progress { height:9px; margin:16px 0 5px; border-radius:999px; overflow:hidden; background:color-mix(in srgb,CanvasText 10%,Canvas); }
+    .bar { height:100%; width:0; background:CanvasText; transition:width .25s ease; }
+    .bar.indeterminate { width:35%; animation:indeterminate 1.4s ease-in-out infinite; }
+    @keyframes indeterminate { 0%{transform:translateX(-110%)} 100%{transform:translateX(320%)} }
+    .progress-caption { display:flex; justify-content:space-between; gap:12px; font-size:12px; color:color-mix(in srgb,CanvasText 62%,transparent); }
+    .stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:18px; }
+    .stat { border:1px solid color-mix(in srgb,CanvasText 14%,transparent); border-radius:10px; padding:12px; min-width:0; }
+    .stat .value { font-size:21px; font-weight:760; overflow-wrap:anywhere; }
+    .stat .label { font-size:12px; opacity:.64; margin-top:2px; }
+    .health { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px; }
+    .health > div { padding:10px 12px; border-radius:10px; background:color-mix(in srgb,CanvasText 6%,Canvas); font-size:13px; }
+    .warning { margin-top:12px; padding:11px 13px; border-radius:10px; border:1px solid #b77; background:color-mix(in srgb,#b77 12%,Canvas); display:none; }
+    .error { color:#c33; }
+    .done { margin-top:14px; padding:12px 14px; border-radius:10px; border:1px solid color-mix(in srgb,CanvasText 18%,transparent); display:none; }
+    @media(max-width:720px){ .stats{grid-template-columns:repeat(2,minmax(0,1fr))}.health{grid-template-columns:1fr}.phase-row{display:block}.status-pill{display:inline-block;margin-top:8px} }
   </style>
 </head>
 <body>
-  <main>
-    <div class="card">
-      <h1>ChatGPT Share Archiver</h1>
-      <p>Paste a ChatGPT conversation share URL. Chromium scans the conversation in both directions, expands visible reasoning/tool disclosure trees, captures virtualized turns as they appear, and exports a static HTML page with code blocks preserved.</p>
+<main>
+  <div class="card">
+    <h1>ChatGPT Share Archiver</h1>
+    <p>Captures a shared ChatGPT conversation while progressively lazy-loading turns and expanding user-visible disclosure trees. Long conversations can take time; this page now reports live worker activity and can show a continuously refreshed preview of what has already been captured.</p>
 
-      <form id="form">
-        <label for="url">Share URL</label>
-        <input id="url" name="url" type="url" required autocomplete="off"
-          placeholder="https://chatgpt.com/share/...">
-        <button id="submit" type="submit">Create static HTML</button>
-      </form>
+    <form id="form">
+      <label for="url">Share URL</label>
+      <input id="url" name="url" type="url" required autocomplete="off" placeholder="https://chatgpt.com/share/...">
+      <div class="actions">
+        <button id="submit" type="submit">Start archive</button>
+        <button id="previewBtn" type="button" class="secondary" disabled>Open live preview</button>
+        <button id="cancelBtn" type="button" class="danger" disabled>Cancel</button>
+      </div>
+    </form>
 
-      <div id="status" aria-live="polite"></div>
-      <p class="note">The app expands user-facing content that the shared page exposes to the browser. It does not inspect private model state, hidden network payloads, account-only data, or reasoning that the shared page itself does not expose.</p>
-    </div>
-  </main>
+    <section id="jobPanel" aria-live="polite">
+      <div class="phase-row">
+        <div>
+          <div id="phase" class="phase">Starting…</div>
+          <div id="detail"></div>
+        </div>
+        <div id="statusPill" class="status-pill">starting</div>
+      </div>
 
+      <div class="progress"><div id="bar" class="bar indeterminate"></div></div>
+      <div class="progress-caption"><span id="passText">Preparing</span><span id="scrollText">Current loaded range</span></div>
+
+      <div class="stats">
+        <div class="stat"><div class="value" id="turns">0</div><div class="label">turns captured</div></div>
+        <div class="stat"><div class="value" id="expansions">0</div><div class="label">disclosures expanded</div></div>
+        <div class="stat"><div class="value" id="clicks">0</div><div class="label">expansion clicks</div></div>
+        <div class="stat"><div class="value" id="preBlocks">0</div><div class="label">&lt;pre&gt; blocks captured</div></div>
+        <div class="stat"><div class="value" id="codeBlocks">0</div><div class="label">&lt;code&gt; elements captured</div></div>
+        <div class="stat"><div class="value" id="failures">0</div><div class="label">unconfirmed expansions</div></div>
+      </div>
+
+      <div class="health">
+        <div><strong>Worker heartbeat:</strong> <span id="heartbeat">—</span></div>
+        <div><strong>Last substantive progress:</strong> <span id="lastProgress">—</span></div>
+      </div>
+      <div id="warning" class="warning"></div>
+      <div id="doneBox" class="done"></div>
+    </section>
+
+    <p class="note">“Scroll %” refers to the scroll range currently mounted by ChatGPT. The total height can grow as more lazy content appears, so it is not a reliable overall-completion percentage. The three-pass indicator is the more meaningful coarse progress measure.</p>
+  </div>
+</main>
 <script>
 const form = document.querySelector('#form');
 const input = document.querySelector('#url');
-const button = document.querySelector('#submit');
-const status = document.querySelector('#status');
+const submit = document.querySelector('#submit');
+const previewBtn = document.querySelector('#previewBtn');
+const cancelBtn = document.querySelector('#cancelBtn');
+const jobPanel = document.querySelector('#jobPanel');
+const phase = document.querySelector('#phase');
+const detail = document.querySelector('#detail');
+const statusPill = document.querySelector('#statusPill');
+const bar = document.querySelector('#bar');
+const passText = document.querySelector('#passText');
+const scrollText = document.querySelector('#scrollText');
+const warning = document.querySelector('#warning');
+const doneBox = document.querySelector('#doneBox');
+const fields = Object.fromEntries(['turns','expansions','clicks','preBlocks','codeBlocks','failures'].map(id => [id, document.querySelector('#'+id)]));
+const heartbeat = document.querySelector('#heartbeat');
+const lastProgress = document.querySelector('#lastProgress');
+let currentJobId = null;
+let pollTimer = null;
+let previewWindow = null;
+let lastStatus = null;
+
+function age(ms) {
+  if (!ms) return '—';
+  const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (s < 2) return 'just now';
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60), r = s % 60;
+  return `${m}m ${r}s ago`;
+}
+
+function render(s) {
+  lastStatus = s;
+  phase.textContent = s.phase || s.status;
+  detail.textContent = s.detail || '';
+  statusPill.textContent = s.status;
+  for (const id of Object.keys(fields)) fields[id].textContent = s[id] ?? 0;
+  heartbeat.textContent = age(s.heartbeatAt);
+  lastProgress.textContent = age(s.lastProgressAt);
+  previewBtn.disabled = !s.previewReady;
+  cancelBtn.disabled = ['done','error','cancelled'].includes(s.status);
+
+  if (s.scanPass) {
+    const direction = s.direction ? ` · ${s.direction}` : '';
+    passText.textContent = `Pass ${s.scanPass}/${s.scanPasses}${direction} · step ${s.step}`;
+    scrollText.textContent = `${Number(s.scrollPercent || 0).toFixed(1)}% of current loaded range`;
+    bar.classList.remove('indeterminate');
+    const passBase = ((s.scanPass - 1) / s.scanPasses) * 100;
+    const within = (Number(s.scrollPercent || 0) / s.scanPasses);
+    const visual = s.direction === 'up' ? passBase + ((100 - Number(s.scrollPercent || 0)) / s.scanPasses) : passBase + within;
+    bar.style.width = `${Math.max(1, Math.min(99, visual))}%`;
+    bar.style.transform = 'none';
+  } else if (s.status === 'done') {
+    passText.textContent = 'Capture complete'; scrollText.textContent = '100%'; bar.classList.remove('indeterminate'); bar.style.width = '100%'; bar.style.transform = 'none';
+  } else {
+    passText.textContent = s.phase || 'Preparing'; scrollText.textContent = 'Working…'; bar.classList.add('indeterminate'); bar.style.width = '35%';
+  }
+
+  const heartbeatAge = Date.now() - Number(s.heartbeatAt || 0);
+  const progressAge = Date.now() - Number(s.lastProgressAt || 0);
+  if (!['done','error','cancelled'].includes(s.status) && heartbeatAge > 12_000) {
+    warning.style.display = 'block';
+    warning.textContent = `The worker heartbeat has not updated for ${Math.floor(heartbeatAge/1000)} seconds. The Node process or browser may be stalled.`;
+  } else if (!['done','error','cancelled'].includes(s.status) && progressAge > 30_000) {
+    warning.style.display = 'block';
+    warning.textContent = `The worker is still alive, but no counters/phase changed for ${Math.floor(progressAge/1000)} seconds. This can happen while ChatGPT is loading a difficult section; use the live preview to see the latest captured state.`;
+  } else {
+    warning.style.display = 'none'; warning.textContent = '';
+  }
+
+  if (s.status === 'done') {
+    doneBox.style.display = 'block';
+    doneBox.innerHTML = `<strong>Finished.</strong> ${s.turns} turns captured, ${s.expansions} disclosures expanded, ${s.preBlocks} &lt;pre&gt; blocks retained.<div class="actions"><a class="button-link" href="/api/archive/download/${encodeURIComponent(s.id)}">Download static HTML</a><a class="button-link secondary" target="_blank" href="/preview.html?job=${encodeURIComponent(s.id)}">Open final preview</a></div>`;
+    submit.disabled = false;
+  } else if (s.status === 'error') {
+    doneBox.style.display = 'block'; doneBox.className = 'done error'; doneBox.textContent = s.error || 'Archive failed.'; submit.disabled = false;
+  } else if (s.status === 'cancelled') {
+    doneBox.style.display = 'block'; doneBox.textContent = 'Archive cancelled.'; submit.disabled = false;
+  } else {
+    doneBox.style.display = 'none'; doneBox.className = 'done';
+  }
+}
+
+async function poll() {
+  if (!currentJobId) return;
+  try {
+    const r = await fetch(`/api/archive/status/${encodeURIComponent(currentJobId)}`, { cache:'no-store' });
+    if (!r.ok) throw new Error(`Status request failed (${r.status}).`);
+    const s = await r.json();
+    render(s);
+    if (!['done','error','cancelled'].includes(s.status)) pollTimer = setTimeout(poll, 1000);
+  } catch (e) {
+    warning.style.display = 'block'; warning.textContent = e.message;
+    pollTimer = setTimeout(poll, 2500);
+  }
+}
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
-  status.className = '';
-  status.textContent = 'Scanning lazy-loaded turns and expanding disclosures…';
-  button.disabled = true;
+  clearTimeout(pollTimer);
+  currentJobId = null;
+  lastStatus = null;
+  doneBox.style.display = 'none'; warning.style.display = 'none';
+  jobPanel.style.display = 'block';
+  submit.disabled = true; previewBtn.disabled = true; cancelBtn.disabled = true;
+  phase.textContent = 'Starting archive…'; detail.textContent = 'Creating a tracked job.';
+  bar.classList.add('indeterminate');
 
+  previewWindow = window.open('/preview.html?pending=1', 'chatgptArchivePreview');
   try {
-    const response = await fetch('/api/archive', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url: input.value.trim() })
-    });
-
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || `Archive failed (${response.status}).`);
-    }
-
-    const stats = {
-      turns: response.headers.get('x-archive-turns'),
-      expansions: response.headers.get('x-archive-expansions'),
-      failures: response.headers.get('x-archive-failures'),
-      pre: response.headers.get('x-archive-pre-blocks'),
-    };
-
-    const blob = await response.blob();
-    const disposition = response.headers.get('content-disposition') || '';
-    const match = disposition.match(/filename="([^"]+)"/i);
-    const filename = match?.[1] || 'chatgpt-share.html';
-
-    const href = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = href;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(href), 30_000);
-
-    const summary = [
-      'Static HTML created.',
-      stats.turns ? `${stats.turns} turns captured` : '',
-      stats.expansions ? `${stats.expansions} disclosures expanded` : '',
-      stats.pre ? `${stats.pre} <pre> blocks retained` : '',
-      stats.failures && stats.failures !== '0' ? `${stats.failures} expansion failures (listed at the bottom of the export)` : ''
-    ].filter(Boolean).join(' · ');
-    status.textContent = summary;
-  } catch (error) {
-    status.className = 'error';
-    status.textContent = error.message;
-  } finally {
-    button.disabled = false;
+    const r = await fetch('/api/archive/start', { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({url:input.value.trim()}) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || `Could not start archive (${r.status}).`);
+    currentJobId = data.jobId;
+    cancelBtn.disabled = false;
+    if (previewWindow && !previewWindow.closed) previewWindow.location.replace(`/preview.html?job=${encodeURIComponent(currentJobId)}`);
+    poll();
+  } catch (e) {
+    phase.textContent = 'Could not start'; detail.textContent = e.message; detail.className = 'error'; submit.disabled = false;
+    if (previewWindow && !previewWindow.closed) previewWindow.close();
   }
 });
+
+previewBtn.addEventListener('click', () => {
+  if (!currentJobId) return;
+  previewWindow = window.open(`/preview.html?job=${encodeURIComponent(currentJobId)}`, 'chatgptArchivePreview');
+});
+
+cancelBtn.addEventListener('click', async () => {
+  if (!currentJobId) return;
+  cancelBtn.disabled = true;
+  await fetch(`/api/archive/cancel/${encodeURIComponent(currentJobId)}`, { method:'POST' }).catch(() => {});
+});
+
+setInterval(() => { if (lastStatus) render(lastStatus); }, 1000);
 </script>
 </body>
 </html>
