@@ -11,6 +11,13 @@ import {
   restoreEmbeddedContent,
   finalizeEmbeddedContent
 } from './src/app-blocks.mjs';
+import {
+  installMainImageCapture,
+  captureMountedMainImages,
+  prepareMainImages,
+  restoreMainImages,
+  finalizeMainImages
+} from './src/main-images.mjs';
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -162,14 +169,17 @@ function previewSignature(job) {
 }
 
 async function assembleSnapshot(page, sourceUrl, options = {}) {
+  const mainImages = options.embedImages === false ? null : await prepareMainImages(page);
   const prepared = await prepareEmbeddedContent(page, { embedSvgImages: options.embedImages !== false });
   let snapshot;
   try {
     snapshot = await buildSnapshot(page, sourceUrl, options);
   } finally {
     await restoreEmbeddedContent(page, prepared);
+    if (mainImages) await restoreMainImages(page, mainImages);
   }
-  return finalizeEmbeddedContent(snapshot, prepared);
+  snapshot = finalizeEmbeddedContent(snapshot, prepared);
+  return mainImages ? finalizeMainImages(snapshot, mainImages) : snapshot;
 }
 
 async function maybeRefreshPreview(job, { force = false } = {}) {
@@ -209,6 +219,7 @@ async function runJob(job) {
     job.browser = await chromium.launch({ headless: true });
     const context = await job.browser.newContext({ viewport: { width: 1440, height: 1000 }, javaScriptEnabled: true });
     job.page = await context.newPage();
+    installMainImageCapture(job.page);
 
     update(job, {
       phase: 'Loading share',
@@ -217,6 +228,7 @@ async function runJob(job) {
     });
     await job.page.goto(job.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await job.page.waitForLoadState('networkidle', { timeout: 12_000 }).catch(() => {});
+    await captureMountedMainImages(job.page).catch(() => {});
     assertNotCancelled(job);
 
     const text = (await job.page.locator('body').innerText().catch(() => '')).slice(0, 6000);
@@ -235,6 +247,7 @@ async function runJob(job) {
       let nextPatch = patch;
       const fullCheckpoint = Object.prototype.hasOwnProperty.call(patch || {}, 'scrollHeight') || patch?.scanComplete === true;
       if (fullCheckpoint) {
+        await captureMountedMainImages(job.page).catch(() => {});
         const appState = await captureMountedAppBlocks(job.page).catch(() => null);
         if (appState) {
           nextPatch = {
@@ -257,6 +270,7 @@ async function runJob(job) {
     await crawlConversation(job.page, { onProgress, shouldCancel: () => job.cancelRequested });
     assertNotCancelled(job);
 
+    await captureMountedMainImages(job.page, { settleMs: 1500 }).catch(() => {});
     await captureMountedAppBlocks(job.page).catch(() => {});
     update(job, {
       phase: 'Building final static page',
