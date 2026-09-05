@@ -5,6 +5,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { crawlConversation } from './src/crawler.mjs';
 import { buildSnapshot } from './src/snapshot.mjs';
+import {
+  captureMountedAppBlocks,
+  prepareEmbeddedContent,
+  restoreEmbeddedContent,
+  finalizeEmbeddedContent
+} from './src/app-blocks.mjs';
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -91,6 +97,8 @@ function publicJob(job) {
     expandingStatus: job.expandingStatus || 'No disclosure expansion yet',
     turns: job.turns || 0,
     timelineMarkers: job.timelineMarkers || 0,
+    appBlocks: job.appBlocks || 0,
+    appBlockCaptureFailures: job.appBlockCaptureFailures || 0,
     expansions: job.expanded || 0,
     clicks: job.clicks || 0,
     failures: job.failures || 0,
@@ -135,6 +143,8 @@ function materialSignature(job, patch = {}, maxObservedScrollHeight = job.maxObs
     patch.preBlocks ?? job.preBlocks,
     patch.codeBlocks ?? job.codeBlocks,
     patch.timelineMarkers ?? job.timelineMarkers,
+    patch.appBlocks ?? job.appBlocks,
+    patch.appBlockCaptureFailures ?? job.appBlockCaptureFailures,
     patch.oldestRetained ?? job.oldestRetained,
     patch.newestRetained ?? job.newestRetained,
     patch.mountedFirst ?? job.mountedFirst,
@@ -144,7 +154,22 @@ function materialSignature(job, patch = {}, maxObservedScrollHeight = job.maxObs
 }
 
 function previewSignature(job) {
-  return [job.turns, job.timelineMarkers, job.expanded, job.failures, job.preBlocks, job.codeBlocks, job.oldestRetained, job.newestRetained, job.mountedFirst, job.mountedLast].join('|');
+  return [
+    job.turns, job.timelineMarkers, job.appBlocks, job.appBlockCaptureFailures,
+    job.expanded, job.failures, job.preBlocks, job.codeBlocks,
+    job.oldestRetained, job.newestRetained, job.mountedFirst, job.mountedLast
+  ].join('|');
+}
+
+async function assembleSnapshot(page, sourceUrl, options = {}) {
+  const prepared = await prepareEmbeddedContent(page, { embedSvgImages: options.embedImages !== false });
+  let snapshot;
+  try {
+    snapshot = await buildSnapshot(page, sourceUrl, options);
+  } finally {
+    await restoreEmbeddedContent(page, prepared);
+  }
+  return finalizeEmbeddedContent(snapshot, prepared);
 }
 
 async function maybeRefreshPreview(job, { force = false } = {}) {
@@ -158,7 +183,7 @@ async function maybeRefreshPreview(job, { force = false } = {}) {
 
   job.previewBuildPromise = (async () => {
     try {
-      const snapshot = await buildSnapshot(job.page, job.url, { preview: true, embedImages: false });
+      const snapshot = await assembleSnapshot(job.page, job.url, { preview: true, embedImages: false });
       if (job.cancelRequested) return;
       job.previewHtml = snapshot.html;
       job.previewVersion++;
@@ -207,10 +232,23 @@ async function runJob(job) {
 
     job.materialSignature = '';
     const onProgress = async patch => {
-      const maxObservedScrollHeight = Math.max(job.maxObservedScrollHeight || 0, Number(patch.scrollHeight || 0));
-      const signature = materialSignature(job, patch, maxObservedScrollHeight);
+      let nextPatch = patch;
+      const fullCheckpoint = Object.prototype.hasOwnProperty.call(patch || {}, 'scrollHeight') || patch?.scanComplete === true;
+      if (fullCheckpoint) {
+        const appState = await captureMountedAppBlocks(job.page).catch(() => null);
+        if (appState) {
+          nextPatch = {
+            ...patch,
+            appBlocks: appState.captured,
+            appBlockCaptureFailures: appState.failures
+          };
+        }
+      }
+
+      const maxObservedScrollHeight = Math.max(job.maxObservedScrollHeight || 0, Number(nextPatch.scrollHeight || 0));
+      const signature = materialSignature(job, nextPatch, maxObservedScrollHeight);
       const substantive = signature !== job.materialSignature;
-      update(job, patch, substantive);
+      update(job, nextPatch, substantive);
       job.maxObservedScrollHeight = maxObservedScrollHeight;
       job.materialSignature = signature;
       await maybeRefreshPreview(job);
@@ -219,9 +257,10 @@ async function runJob(job) {
     await crawlConversation(job.page, { onProgress, shouldCancel: () => job.cancelRequested });
     assertNotCancelled(job);
 
+    await captureMountedAppBlocks(job.page).catch(() => {});
     update(job, {
       phase: 'Building final static page',
-      detail: 'Sanitizing retained turns, timeline markers, embedding retrievable images, and assembling the downloadable HTML archive.',
+      detail: 'Sanitizing retained turns, formulas, SVG, app-block frames, embedding retrievable images, and assembling the downloadable HTML archive.',
       scanningStatus: job.scanningStatus || (job.oldestConverged === false ? 'Complete — 3 passes; oldest-edge safety limit reached' : 'Complete — 3 passes + oldest-edge convergence'),
       scanComplete: true,
       pass: 0,
@@ -229,7 +268,7 @@ async function runJob(job) {
       step: 0
     });
 
-    const snapshot = await buildSnapshot(job.page, job.url, { preview: false, embedImages: true });
+    const snapshot = await assembleSnapshot(job.page, job.url, { preview: false, embedImages: true });
     assertNotCancelled(job);
     if (!snapshot.stats.turns) throw new Error('No conversation turns were captured. ChatGPT may have changed the shared-page DOM.');
 
@@ -282,7 +321,8 @@ app.post('/api/archive/start', (req, res) => {
       expandingStatus: 'No disclosure expansion yet',
       scanComplete: false,
       createdAt: t, heartbeatAt: t, progressAt: t, finishedAt: null,
-      turns: 0, timelineMarkers: 0, expanded: 0, clicks: 0, failures: 0, preBlocks: 0, codeBlocks: 0,
+      turns: 0, timelineMarkers: 0, appBlocks: 0, appBlockCaptureFailures: 0,
+      expanded: 0, clicks: 0, failures: 0, preBlocks: 0, codeBlocks: 0,
       imagesTotal: 0, imagesEmbedded: 0, imageEmbeddingFailures: 0,
       pass: 0, direction: '', step: 0, scrollTop: 0, scrollHeight: 0, scrollClient: 0,
       previewVersion: 0, previewHtml: '', previewPaused: false, previewLastAccessAt: 0,
