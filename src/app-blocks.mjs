@@ -114,7 +114,7 @@ async function snapshotFrameTree(frame, state, depth = 0) {
       iframe.replaceWith(placeholder);
     });
 
-    clone.querySelectorAll('script,noscript,object,embed,form,input,textarea,select,option,link,meta,base').forEach(el => el.remove());
+    clone.querySelectorAll('script,noscript,style,object,embed,form,input,textarea,select,option,link,meta,base').forEach(el => el.remove());
 
     for (const a of clone.querySelectorAll('a[href]')) {
       try {
