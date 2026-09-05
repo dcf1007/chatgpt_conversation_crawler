@@ -30,6 +30,7 @@ It is designed for long conversations where a normal browser save can miss conte
 - Treats mounted-first/mounted-last virtualizer changes and newly retained timeline markers as substantive progress.
 - Generates live-preview snapshots only while a preview window is active.
 - Detects the shared conversation name from the page `<title>` and uses it for the downloaded HTML filename when available.
+- Preserves ChatGPT formula source and renders inline/display formulas as native **MathML** in live previews and final archives, with visible original-TeX fallback if rendering fails.
 - Embeds retrievable HTTP(S) **and `blob:` images** into the final HTML as data URLs.
 - Preserves captured image display dimensions and intrinsic dimensions when available.
 - Falls back to the original image URL and records diagnostics when an image cannot be embedded.
@@ -51,7 +52,7 @@ It is designed for long conversations where a normal browser save can miss conte
 Finished versions are published as formal GitHub Releases. Download the versioned cross-platform ZIP from the repository's **Releases** page, for example:
 
 ```text
-chatgpt-conversation-crawler-v1.6.2.zip
+chatgpt-conversation-crawler-v1.6.3.zip
 ```
 
 The release workflow reads the version from `package.json`, creates a `vX.Y.Z` release when that version is new, and attaches a ZIP made from that exact commit.
@@ -156,6 +157,16 @@ ChatGPT shared-conversation pages can omit the original filenames of files and i
 The crawler therefore does **not** attempt to reconstruct missing upload names from image URLs, runtime paths, message order, generated identifiers, or other heuristics. Such guesses can be wrong and add crawl/convergence overhead without recovering authoritative metadata.
 
 Assistant-generated download names that are visibly present in the shared conversation are still archived as ordinary visible conversation content by the existing static-output sanitizer. No separate filename-tracking subsystem is required for those names.
+
+## Formulas and MathML
+
+Current ChatGPT pages expose formula source on `role="math"` elements through `data-math-source` and/or `aria-label`, while the visual KaTeX subtree can be marked `aria-hidden="true"`. A generic static sanitizer that removes hidden presentation DOM can therefore leave an empty formula wrapper even though the authoritative TeX source was present.
+
+Before sanitization, the crawler now extracts that source and replaces each formula with a randomized archive token. Snapshot finalization renders each unique inline/display expression with the local KaTeX package using **MathML-only output**. The resulting archive remains script-free and does not depend on ChatGPT's KaTeX CSS, JavaScript, or webfonts.
+
+The archive retains the original source in `data-math-source`. Display formulas are kept as block math; inline formulas remain inline. KaTeX is invoked with `trust: false` and bounded macro expansion. If a particular expression cannot be converted, the archive shows the escaped original TeX and records a diagnostic instead of silently dropping the formula.
+
+Formula conversion runs for both live previews and final archives. Image embedding remains a separate finalization step.
 
 ## Traversal and convergence
 
@@ -312,10 +323,11 @@ The final archive is script-free but preserves readable semantic content and ric
 - dedicated `.archive-turn-content` wrappers;
 - reasoning labels converted to static text;
 - prose, lists, headings, tables and links;
+- native MathML for ChatGPT formulas, with original TeX retained and visible TeX fallback on conversion errors;
 - `<pre>` and `<code>` plus inline-code styling;
 - blockquote styling;
 - responsive images/video;
-- disclosure, oldest-edge and image-embedding diagnostics;
+- disclosure, formula-rendering, oldest-edge and image-embedding diagnostics;
 - archive metadata and scope statement;
 - print-oriented styling.
 
@@ -343,6 +355,7 @@ The old synchronous `POST /api/archive` compatibility endpoint is intentionally 
 - only HTTPS `chatgpt.com/share/...` URLs are accepted;
 - arbitrary hosts are rejected;
 - Playwright uses a clean browser context rather than the user's browser profile;
+- formula conversion uses local KaTeX MathML generation with untrusted features disabled;
 - the final HTML contains no copied ChatGPT scripts;
 - the local server has no authentication layer because it is designed as a local utility.
 
@@ -384,7 +397,8 @@ For crawler changes, test at least:
 10. `blob:` image embedding and fallback behavior;
 11. **Oldest retained** vs **Mounted first** behavior during virtualization;
 12. timestamp separators such as `Today 9:09 AM` and explicit calendar labels;
-13. **Branched from** ancestry markers and source links.
+13. **Branched from** ancestry markers and source links;
+14. inline and display formulas containing fractions, roots, subscripts/superscripts, and a forced invalid-TeX fallback case.
 
 ## Version history
 
@@ -403,6 +417,7 @@ For crawler changes, test at least:
 - **v1.6.0** — retains visible timestamp/date separators and **Branched from** ancestry markers across virtualization, preserves exposed message IDs/timestamp labels, and renders those markers in live/final archives.
 - **v1.6.1** — keeps **Expanding** coherent with the currently mounted range and emits fresh retained/mounted boundaries on lightweight expansion updates.
 - **v1.6.2** — documents that shared links can omit original user-uploaded file/image names; no runtime filename inference or tracking is added.
+- **v1.6.3** — preserves ChatGPT formula TeX before sanitization, renders formulas as native MathML in preview/final archives, and falls back to visible source TeX with diagnostics if rendering fails.
 
 ## Maintenance note
 
