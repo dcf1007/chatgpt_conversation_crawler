@@ -8,6 +8,7 @@ function stateFor(page) {
   if (!page[MAIN_IMAGE_STORE]) {
     page[MAIN_IMAGE_STORE] = {
       records: new Map(),
+      byDigest: new Map(),
       failures: new Map(),
       pending: new Set(),
       totalBytes: 0,
@@ -65,13 +66,27 @@ function storeBuffer(page, urls, buffer, declared, source) {
   const aliases = [...new Set((urls || []).filter(Boolean))];
   for (const url of aliases) {
     const existing = state.records.get(url);
-    if (existing) return existing;
+    if (!existing) continue;
+    for (const alias of aliases) {
+      state.records.set(alias, existing);
+      state.failures.delete(alias);
+    }
+    return existing;
   }
   if (buffer.length > MAX_IMAGE_BYTES) throw new Error(`image exceeds ${MAX_IMAGE_BYTES / 1024 / 1024} MiB limit`);
-  if (state.totalBytes + buffer.length > MAX_CACHE_BYTES) throw new Error(`main-image retention cache exceeds ${MAX_CACHE_BYTES / 1024 / 1024} MiB`);
   const reportedType = declaredImageType(declared);
   const type = sniffImageType(buffer, reportedType);
   if (!type) throw new Error(`could not identify image bytes${declared ? ` (reported ${declared})` : ''}`);
+  const digest = crypto.createHash('sha256').update(buffer).digest('hex');
+  const duplicate = state.byDigest.get(digest);
+  if (duplicate) {
+    for (const alias of aliases) {
+      state.records.set(alias, duplicate);
+      state.failures.delete(alias);
+    }
+    return duplicate;
+  }
+  if (state.totalBytes + buffer.length > MAX_CACHE_BYTES) throw new Error(`main-image retention cache exceeds ${MAX_CACHE_BYTES / 1024 / 1024} MiB`);
   const record = {
     type,
     reportedType,
@@ -81,6 +96,7 @@ function storeBuffer(page, urls, buffer, declared, source) {
     source
   };
   state.totalBytes += buffer.length;
+  state.byDigest.set(digest, record);
   for (const url of aliases) {
     state.records.set(url, record);
     state.failures.delete(url);
