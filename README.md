@@ -31,7 +31,8 @@ It is designed for long conversations where a normal browser save can miss conte
 - Generates live-preview snapshots only while a preview window is active.
 - Detects the shared conversation name from the page `<title>` and uses it for the downloaded HTML filename when available.
 - Preserves ChatGPT formula source and renders inline/display formulas as native **MathML** in live previews and final archives, with visible original-TeX fallback if rendering fails.
-- Embeds retrievable HTTP(S) **and `blob:` images** into the final HTML as data URLs.
+- Recursively captures mounted **app block preview** iframe contents, retains them across conversation virtualization, preserves inline SVG, and converts serializable canvases to PNG data URLs.
+- Embeds retrievable HTTP(S) **and `blob:` images** from the main conversation into the final HTML as data URLs.
 - Preserves captured image display dimensions and intrinsic dimensions when available.
 - Falls back to the original image URL and records diagnostics when an image cannot be embedded.
 - Preserves assistant-generated download names when they are visibly present in the shared conversation; it does not infer missing names for user-uploaded files or images.
@@ -52,7 +53,7 @@ It is designed for long conversations where a normal browser save can miss conte
 Finished versions are published as formal GitHub Releases. Download the versioned cross-platform ZIP from the repository's **Releases** page, for example:
 
 ```text
-chatgpt-conversation-crawler-v1.6.3.zip
+chatgpt-conversation-crawler-v1.6.4.zip
 ```
 
 The release workflow reads the version from `package.json`, creates a `vX.Y.Z` release when that version is new, and attaches a ZIP made from that exact commit.
@@ -168,6 +169,28 @@ The archive retains the original source in `data-math-source`. Display formulas 
 
 Formula conversion runs for both live previews and final archives. Image embedding remains a separate finalization step.
 
+## App block previews
+
+ChatGPT can place generated visual/interactive content inside a `data-app-block-preview="true"` wrapper whose visible content lives in a cross-origin `iframe`. That iframe can itself contain one or more nested iframes. Copying only the conversation-turn HTML therefore captures the outer shell but loses the actual app content.
+
+While the relevant turn is mounted, Playwright now follows the app-preview frame tree recursively and stores the best static snapshot keyed by the outer iframe source. Capture is cumulative, so a later ChatGPT virtualizer unmount does not discard a preview that was already seen. The current recursion limit is **8 frame levels**.
+
+For each captured frame the archiver:
+
+- clones the rendered body;
+- inlines a bounded set of computed layout, typography, border, color, flex/grid and SVG presentation properties;
+- strips scripts, stylesheets, forms, event-handler attributes and further executable frame behavior;
+- recursively substitutes nested iframes with their captured child-frame contents;
+- preserves inline SVG elements as real searchable/scalable SVG;
+- converts readable `<canvas>` content to a PNG `data:` URL when browser security permits it;
+- normalizes links and ordinary raster-image sources to absolute URLs.
+
+The app block is inserted into the final archive **after** the ordinary conversation sanitizer, so the main sanitizer's deliberate `iframe`/`svg` removal cannot erase the retained static app snapshot.
+
+Current app-block safety limits are **50 mounted app blocks**, **4 MiB serialized HTML per unique block**, **32 MiB total serialized app-block HTML**, and at most **8 nested frame levels**. If a preview cannot be captured or matched to its retained conversation turn, the archive shows a fallback/diagnostic rather than silently rendering an empty shell.
+
+Inline SVG and successfully serialized canvases are self-contained. Ordinary raster `<img>` elements inside app blocks currently retain normalized absolute source URLs; they are not reprocessed through the main conversation's final image-embedding budget after app-block insertion.
+
 ## Traversal and convergence
 
 The sequence is:
@@ -269,6 +292,8 @@ The richness score strongly favors, in order:
 4. more text;
 5. larger retained HTML.
 
+App-block frame snapshots are stored separately from the turn-richness score. They are keyed by the outer app iframe source and retained cumulatively whenever the corresponding preview is mounted.
+
 ## Live preview performance
 
 The live preview is demand-driven rather than continuously generated.
@@ -280,7 +305,7 @@ The live preview is demand-driven rather than continuously generated.
 - During oldest-edge verification, preview generation is paused completely.
 - Closing the preview stops its activity signal; preview generation automatically becomes inactive shortly afterward.
 
-Preview images remain external URLs to keep preview reconstruction lightweight. The final archive performs image embedding once after crawling is complete.
+Preview images remain external URLs to keep preview reconstruction lightweight. The final archive performs image embedding once after crawling is complete. Retained app-block snapshots can appear in preview/final HTML without reactivating their original scripts or iframe applications.
 
 ## Heartbeat and substantive progress
 
@@ -290,14 +315,14 @@ The worker heartbeat is maintained independently of crawler state at approximate
 
 ## Embedded images and image dimensions
 
-During capture, each live image is resolved to its current source URL. When available, the crawler also records:
+During capture, each live image in the main conversation is resolved to its current source URL. When available, the crawler also records:
 
 - displayed width/height from `getBoundingClientRect()`;
 - intrinsic `naturalWidth` / `naturalHeight`.
 
 The static archive preserves the displayed `width` and `height`, and stores intrinsic dimensions in `data-natural-width` and `data-natural-height`.
 
-At finalization, unique image sources are converted to `data:` URLs:
+At finalization, unique main-conversation image sources are converted to `data:` URLs:
 
 - HTTP(S) images are fetched through Playwright's browser-context request client;
 - `blob:` images are resolved inside the still-open ChatGPT page and read as data URLs before Chromium closes;
@@ -324,10 +349,11 @@ The final archive is script-free but preserves readable semantic content and ric
 - reasoning labels converted to static text;
 - prose, lists, headings, tables and links;
 - native MathML for ChatGPT formulas, with original TeX retained and visible TeX fallback on conversion errors;
+- recursively flattened app-block iframe content with inlined computed presentation, retained SVG, and serializable canvas snapshots;
 - `<pre>` and `<code>` plus inline-code styling;
 - blockquote styling;
 - responsive images/video;
-- disclosure, formula-rendering, oldest-edge and image-embedding diagnostics;
+- disclosure, formula-rendering, app-block, oldest-edge and image-embedding diagnostics;
 - archive metadata and scope statement;
 - print-oriented styling.
 
@@ -356,6 +382,7 @@ The old synchronous `POST /api/archive` compatibility endpoint is intentionally 
 - arbitrary hosts are rejected;
 - Playwright uses a clean browser context rather than the user's browser profile;
 - formula conversion uses local KaTeX MathML generation with untrusted features disabled;
+- app-block snapshots remove scripts, stylesheets, forms, event-handler attributes and nested executable iframe behavior before insertion;
 - the final HTML contains no copied ChatGPT scripts;
 - the local server has no authentication layer because it is designed as a local utility.
 
@@ -370,6 +397,8 @@ It does not:
 - recover content the share page does not expose;
 - infer timestamps that ChatGPT does not visibly expose;
 - reconstruct original filenames of user-uploaded files or images when the shared page omits them;
+- keep app-block applications interactive or execute their original scripts in the archive;
+- guarantee offline embedding of ordinary raster images referenced only from inside an app-block snapshot;
 - extract private model-internal chain-of-thought;
 - preserve ChatGPT as an interactive application;
 - guarantee compatibility with future ChatGPT DOM changes without maintenance.
@@ -379,7 +408,10 @@ It does not:
 ```bash
 node --check server.mjs
 node --check src/crawler.mjs
+node --check src/crawler-core.mjs
+node --check src/app-blocks.mjs
 node --check src/snapshot.mjs
+node --check src/snapshot-core.mjs
 bash -n setup-linux.sh start-linux.sh setup-macos.sh start-macos.sh
 ```
 
@@ -398,7 +430,8 @@ For crawler changes, test at least:
 11. **Oldest retained** vs **Mounted first** behavior during virtualization;
 12. timestamp separators such as `Today 9:09 AM` and explicit calendar labels;
 13. **Branched from** ancestry markers and source links;
-14. inline and display formulas containing fractions, roots, subscripts/superscripts, and a forced invalid-TeX fallback case.
+14. inline and display formulas containing fractions, roots, subscripts/superscripts, and a forced invalid-TeX fallback case;
+15. an app block with at least two nested iframe levels and inline SVG, plus a canvas fallback/serialization case when available.
 
 ## Version history
 
@@ -418,7 +451,8 @@ For crawler changes, test at least:
 - **v1.6.1** — keeps **Expanding** coherent with the currently mounted range and emits fresh retained/mounted boundaries on lightweight expansion updates.
 - **v1.6.2** — documents that shared links can omit original user-uploaded file/image names; no runtime filename inference or tracking is added.
 - **v1.6.3** — preserves ChatGPT formula TeX before sanitization, renders formulas as native MathML in preview/final archives, and falls back to visible source TeX with diagnostics if rendering fails.
+- **v1.6.4** — recursively captures mounted app-block preview iframe trees, retains static app contents across virtualization, preserves inline SVG, and serializes readable canvases without reactivating app scripts.
 
 ## Maintenance note
 
-ChatGPT's frontend is not a stable public DOM API. Prefer adapting to user-facing structural semantics—conversation-turn boundaries, accessibility disclosure state, visible timeline markers, and mounted-scroll behavior—rather than generated CSS class names.
+ChatGPT's frontend is not a stable public DOM API. Prefer adapting to user-facing structural semantics—conversation-turn boundaries, accessibility disclosure state, visible timeline markers, app-block preview markers, and mounted-scroll behavior—rather than generated CSS class names.
