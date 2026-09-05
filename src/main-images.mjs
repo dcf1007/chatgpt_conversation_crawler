@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 const MAIN_IMAGE_STORE = Symbol.for('chatgpt-conversation-crawler.main-images');
 const TURN_SELECTOR = 'section[data-testid^="conversation-turn-"]';
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
@@ -248,4 +249,137 @@ export async function resolveMainImage(page, url) {
   const earlier = state.failures.get(url);
   if (earlier) errors.unshift(`earlier retention: ${earlier}`);
   throw new Error([...new Set(errors)].join('; ') || 'image embedding failed');
+}
+
+const esc = value => String(value).replace(/[&<>"']/g, char => ({
+  '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+}[char]));
+
+export async function prepareMainImages(page) {
+  await captureMountedMainImages(page, { settleMs: 1200 }).catch(() => {});
+  await flushPending(page);
+
+  const urls = await page.evaluate(() => {
+    const turns = window.__archiveCrawler?.state?.turns;
+    if (!turns) return [];
+    const found = new Set();
+    for (const turn of Object.values(turns)) {
+      if (!turn?.html) continue;
+      const holder = document.createElement('div');
+      holder.innerHTML = turn.html;
+      for (const img of holder.querySelectorAll('img[src]')) {
+        const src = img.getAttribute('src') || '';
+        if (/^(?:https?:|blob:)/i.test(src)) found.add(src);
+      }
+    }
+    return [...found];
+  });
+
+  const prefix = crypto.randomUUID().replaceAll('-', '');
+  const records = new Array(urls.length);
+  let next = 0;
+  let totalBytes = 0;
+
+  async function worker() {
+    while (true) {
+      const index = next++;
+      if (index >= urls.length) return;
+      const url = urls[index];
+      const token = `__ARCHIVE_MAIN_IMAGE_${prefix}_${String(index).padStart(5, '0')}__`;
+      try {
+        const image = await resolveMainImage(page, url);
+        if (totalBytes + image.size > MAX_CACHE_BYTES) {
+          throw new Error(`archive image budget exceeds ${MAX_CACHE_BYTES / 1024 / 1024} MiB`);
+        }
+        totalBytes += image.size;
+        records[index] = { url, token, image, error: '' };
+      } catch (error) {
+        records[index] = { url, token, image: null, error: error?.message || 'embedding failed' };
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(4, Math.max(1, urls.length)) }, () => worker()));
+  const tokenByUrl = Object.fromEntries(records.map(record => [record.url, record.token]));
+
+  const rewrite = await page.evaluate(tokenByUrl => {
+    const turns = window.__archiveCrawler?.state?.turns;
+    if (!turns) return { originals: [] };
+    const originals = [];
+    for (const turn of Object.values(turns)) {
+      if (!turn?.id || !turn?.html) continue;
+      const holder = document.createElement('div');
+      holder.innerHTML = turn.html;
+      let changed = false;
+      for (const img of holder.querySelectorAll('img[src]')) {
+        const src = img.getAttribute('src') || '';
+        const token = tokenByUrl[src];
+        if (!token) continue;
+        img.setAttribute('src', token);
+        changed = true;
+      }
+      if (changed) {
+        originals.push({ id: turn.id, html: turn.html });
+        turn.html = holder.innerHTML;
+      }
+    }
+    return { originals };
+  }, tokenByUrl);
+
+  return { records, rewrite, totalBytes };
+}
+
+export async function restoreMainImages(page, prepared) {
+  const originals = prepared?.rewrite?.originals || [];
+  if (!originals.length) return;
+  await page.evaluate(items => {
+    const turns = window.__archiveCrawler?.state?.turns;
+    if (!turns) return;
+    for (const item of items) if (turns[item.id]) turns[item.id].html = item.html;
+  }, originals).catch(() => {});
+}
+
+export function finalizeMainImages(snapshot, prepared) {
+  const records = prepared?.records || [];
+  let embedded = 0;
+  let retainedDuringCrawl = 0;
+  let recoveredAtFinal = 0;
+  let mimeCorrections = 0;
+  const failures = [];
+
+  for (const record of records) {
+    if (record.image?.dataUrl) {
+      snapshot.html = snapshot.html.replaceAll(record.token, record.image.dataUrl);
+      embedded++;
+      if (record.image.source === 'browser-response' || record.image.source === 'mounted-blob') retainedDuringCrawl++;
+      else recoveredAtFinal++;
+      if (record.image.mimeCorrected) mimeCorrections++;
+    } else {
+      snapshot.html = snapshot.html.replaceAll(record.token, esc(record.url));
+      failures.push(`${record.url} — ${record.error || 'embedding failed'}`);
+    }
+  }
+
+  const parts = [`${embedded}/${records.length} embedded`, `${retainedDuringCrawl} retained during crawl`];
+  if (recoveredAtFinal) parts.push(`${recoveredAtFinal} recovered at finalization`);
+  if (mimeCorrections) parts.push(`${mimeCorrections} MIME type${mimeCorrections === 1 ? '' : 's'} corrected from image bytes`);
+  const summary = records.length ? parts.join('; ') : 'No images captured';
+  snapshot.html = snapshot.html.replace(/<div><strong>Images<\/strong>[^<]*<\/div>/, `<div><strong>Images</strong>${summary}</div>`);
+
+  if (failures.length) {
+    const diagnostic = `<details class="archive-diagnostics"><summary>${failures.length} main-chat image(s) could not be embedded and use their original URL instead</summary><ul>${failures.slice(0, 30).map(item => `<li>${esc(item)}</li>`).join('')}</ul>${failures.length > 30 ? `<p>${failures.length - 30} additional failure(s) omitted.</p>` : ''}</details>`;
+    snapshot.html = snapshot.html.replace('</div></body></html>', `${diagnostic}</div></body></html>`);
+  }
+
+  snapshot.stats = {
+    ...snapshot.stats,
+    imagesTotal: records.length,
+    imagesEmbedded: embedded,
+    imageEmbeddingFailures: failures.length,
+    imagesRetainedDuringCrawl: retainedDuringCrawl,
+    imagesRecoveredAtFinalization: recoveredAtFinal,
+    imageMimeCorrections: mimeCorrections,
+    embeddedImageSourceBytes: prepared?.totalBytes || 0
+  };
+  return snapshot;
 }
