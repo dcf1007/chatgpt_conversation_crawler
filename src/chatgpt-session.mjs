@@ -5,6 +5,8 @@ import { chromium } from 'playwright';
 
 const LOGIN_URL = 'https://chatgpt.com/';
 const PROFILE_NAME = 'browser-profile';
+const HOME_SCREENSHOT_NAME = 'session-home-diagnostic.png';
+const SHARE_SCREENSHOT_NAME = 'session-share-diagnostic.png';
 const AUTH_COOKIE_RE = /^(?:(?:__Secure|__Host)-)?(?:next-auth|authjs)\.session-token(?:\.\d+)?$/i;
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -16,12 +18,20 @@ function codedError(message, code) {
 
 export function createChatGptSessionManager(projectRoot) {
   const profileDir = path.join(projectRoot, PROFILE_NAME);
+  const publicDir = path.join(projectRoot, 'public');
+  const homeScreenshotPath = path.join(publicDir, HOME_SCREENSHOT_NAME);
+  const shareScreenshotPath = path.join(publicDir, SHARE_SCREENSHOT_NAME);
   let profileOwner = '';
   let loginProcess = null;
   let loginFinalizePromise = null;
   let lastAuthenticated = null;
   let lastCheckedAt = 0;
   let lastCheckDetail = 'Session has not been checked yet.';
+
+  void Promise.all([
+    fs.rm(homeScreenshotPath, { force: true }),
+    fs.rm(shareScreenshotPath, { force: true })
+  ]).catch(() => {});
 
   async function profileExists() {
     try {
@@ -60,6 +70,17 @@ export function createChatGptSessionManager(projectRoot) {
     };
   }
 
+  async function captureDiagnosticScreenshot(page, outputPath, { settleMs = 1500 } = {}) {
+    await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
+    if (settleMs > 0) await delay(settleMs);
+    await page.screenshot({
+      path: outputPath,
+      type: 'png',
+      fullPage: false,
+      animations: 'disabled'
+    });
+  }
+
   async function probeContext(context) {
     try {
       const evidence = await authCookieEvidence(context);
@@ -83,6 +104,7 @@ export function createChatGptSessionManager(projectRoot) {
   }
 
   async function probePage(page) {
+    await captureDiagnosticScreenshot(page, shareScreenshotPath, { settleMs: 500 }).catch(() => {});
     return probeContext(page.context());
   }
 
@@ -118,10 +140,15 @@ export function createChatGptSessionManager(projectRoot) {
     throw lastError;
   }
 
-  async function verifyOwnedProfile() {
+  async function verifyOwnedProfile({ captureHome = false } = {}) {
     let context;
     try {
-      context = await launchPersistentProfile({ headless: true, viewport: { width: 1280, height: 900 } });
+      context = await launchPersistentProfile({ headless: true, viewport: { width: 1440, height: 1000 } });
+      if (captureHome) {
+        const page = context.pages()[0] || await context.newPage();
+        await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {});
+        await captureDiagnosticScreenshot(page, homeScreenshotPath).catch(() => {});
+      }
       return await probeContext(context);
     } finally {
       await context?.close().catch(() => {});
@@ -136,7 +163,7 @@ export function createChatGptSessionManager(projectRoot) {
     lastCheckDetail = 'Login browser closed; checking the saved ChatGPT authentication state.';
     try {
       await delay(750);
-      await verifyOwnedProfile();
+      await verifyOwnedProfile({ captureHome: true });
     } catch (error) {
       lastAuthenticated = null;
       lastCheckedAt = Date.now();
@@ -219,7 +246,7 @@ export function createChatGptSessionManager(projectRoot) {
     }
     const release = await acquire('session check');
     try {
-      await verifyOwnedProfile();
+      await verifyOwnedProfile({ captureHome: true });
     } finally {
       release();
     }
@@ -251,6 +278,10 @@ export function createChatGptSessionManager(projectRoot) {
     const release = await acquire('profile deletion');
     try {
       await fs.rm(profileDir, { recursive: true, force: true });
+      await Promise.all([
+        fs.rm(homeScreenshotPath, { force: true }),
+        fs.rm(shareScreenshotPath, { force: true })
+      ]).catch(() => {});
       lastAuthenticated = false;
       lastCheckedAt = Date.now();
       lastCheckDetail = 'Saved ChatGPT browser profile was deleted.';
