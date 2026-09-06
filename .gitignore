@@ -3,5 +3,6 @@ playwright-report/
 test-results/
 *.log
 chatgpt-share-*.html
+browser-profile/
 .DS_Store
 Thumbs.db
