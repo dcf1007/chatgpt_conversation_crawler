@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { chromium } from 'playwright';
 
 const LOGIN_URL = 'https://chatgpt.com/';
@@ -15,8 +16,8 @@ function codedError(message, code) {
 export function createChatGptSessionManager(projectRoot) {
   const profileDir = path.join(projectRoot, PROFILE_NAME);
   let profileOwner = '';
-  let loginContext = null;
-  let loginPoll = null;
+  let loginProcess = null;
+  let loginFinalizePromise = null;
   let lastAuthenticated = null;
   let lastCheckedAt = 0;
   let lastCheckDetail = 'Session has not been checked yet.';
@@ -50,7 +51,7 @@ export function createChatGptSessionManager(projectRoot) {
       if (!/^https:\/\/(?:www\.)?chatgpt\.com(?:\/|$)/i.test(page.url())) {
         lastAuthenticated = null;
         lastCheckedAt = Date.now();
-        lastCheckDetail = 'Login flow is currently outside chatgpt.com; waiting for it to return before checking the session.';
+        lastCheckDetail = 'The browser is not currently on chatgpt.com, so the ChatGPT session could not be verified.';
         return { authenticated: null, status: 0, detail: lastCheckDetail };
       }
       const result = await page.evaluate(async () => {
@@ -109,59 +110,121 @@ export function createChatGptSessionManager(projectRoot) {
       profileExists: exists,
       busy: Boolean(profileOwner),
       owner: profileOwner,
-      loginWindowOpen: Boolean(loginContext),
+      loginWindowOpen: Boolean(loginProcess),
       authenticated: exists ? lastAuthenticated : false,
       lastCheckedAt: exists ? lastCheckedAt : 0,
-      detail: exists ? lastCheckDetail : 'No saved browser profile exists yet. Open the ChatGPT login window to create one.'
+      detail: exists ? lastCheckDetail : 'No saved browser profile exists yet. Open the ChatGPT login browser to create one.'
     };
   }
 
-  function clearLoginState(release) {
-    if (loginPoll) clearInterval(loginPoll);
-    loginPoll = null;
-    loginContext = null;
-    release?.();
+  async function launchPersistentProfile({ headless, viewport }) {
+    let lastError;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        return await chromium.launchPersistentContext(profileDir, {
+          headless,
+          viewport,
+          javaScriptEnabled: true
+        });
+      } catch (error) {
+        lastError = error;
+        if (attempt < 3) await delay(400 * (attempt + 1));
+      }
+    }
+    throw lastError;
+  }
+
+  async function verifyOwnedProfile() {
+    let context;
+    try {
+      context = await launchPersistentProfile({ headless: true, viewport: { width: 1280, height: 900 } });
+      const page = context.pages()[0] || await context.newPage();
+      await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {});
+      return await probePage(page);
+    } finally {
+      await context?.close().catch(() => {});
+    }
+  }
+
+  async function finalizeLoginProcess(child, release, exitCode, signal) {
+    if (loginProcess !== child) return;
+    loginProcess = null;
+    lastAuthenticated = null;
+    lastCheckedAt = 0;
+    lastCheckDetail = 'Login browser closed; checking the saved ChatGPT session.';
+    try {
+      await delay(500);
+      await verifyOwnedProfile();
+    } catch (error) {
+      lastAuthenticated = null;
+      lastCheckedAt = Date.now();
+      const suffix = signal ? ` (browser signal ${signal})` : (Number.isInteger(exitCode) ? ` (browser exit ${exitCode})` : '');
+      lastCheckDetail = `The login browser closed${suffix}, but the saved ChatGPT session could not be verified: ${error?.message || 'unknown error'}`;
+    } finally {
+      release();
+      loginFinalizePromise = null;
+    }
   }
 
   async function openLoginWindow() {
-    if (loginContext) return status();
-    const release = await acquire('login window');
+    if (loginProcess) return status();
+    const release = await acquire('standalone login browser');
     try {
       await fs.mkdir(profileDir, { recursive: true });
-      const context = await chromium.launchPersistentContext(profileDir, {
-        headless: false,
-        viewport: { width: 1280, height: 900 },
-        javaScriptEnabled: true
+      const executable = chromium.executablePath();
+      const child = spawn(executable, [
+        `--user-data-dir=${profileDir}`,
+        '--no-first-run',
+        '--no-default-browser-check',
+        LOGIN_URL
+      ], {
+        stdio: 'ignore',
+        windowsHide: false
       });
-      loginContext = context;
-      const page = context.pages()[0] || await context.newPage();
-      context.once('close', () => clearLoginState(release));
-      await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {});
-      await probePage(page).catch(() => {});
-      loginPoll = setInterval(() => {
-        if (!loginContext) return;
-        const activePage = context.pages().find(candidate => /^https:\/\/(?:www\.)?chatgpt\.com(?:\/|$)/i.test(candidate.url()));
-        if (activePage) void probePage(activePage).catch(() => {});
-        else {
-          lastAuthenticated = null;
-          lastCheckedAt = Date.now();
-          lastCheckDetail = 'Login flow is currently outside chatgpt.com; waiting for it to return before checking the session.';
-        }
-      }, 2000);
-      loginPoll.unref?.();
+
+      loginProcess = child;
+      lastAuthenticated = null;
+      lastCheckedAt = 0;
+      lastCheckDetail = 'Standalone Playwright-bundled Chromium is open without a Playwright connection. Complete the ChatGPT sign-in there, then close the browser; the crawler will verify the saved session afterward.';
+
+      child.once('error', error => {
+        if (loginProcess !== child) return;
+        loginProcess = null;
+        lastAuthenticated = null;
+        lastCheckedAt = Date.now();
+        lastCheckDetail = `The standalone login browser could not be started: ${error?.message || 'unknown error'}`;
+        release();
+      });
+
+      child.once('exit', (code, signal) => {
+        if (loginProcess !== child) return;
+        loginFinalizePromise = finalizeLoginProcess(child, release, code, signal);
+        void loginFinalizePromise.catch(() => {});
+      });
+
       return status();
     } catch (error) {
-      clearLoginState(release);
+      loginProcess = null;
+      release();
       throw error;
     }
   }
 
   async function closeLoginWindow() {
-    if (!loginContext) return status();
-    const context = loginContext;
-    const page = context.pages().find(candidate => /^https:\/\/(?:www\.)?chatgpt\.com(?:\/|$)/i.test(candidate.url()));
-    if (page) await probePage(page).catch(() => {});
-    await context.close().catch(() => {});
+    const child = loginProcess;
+    if (!child) {
+      if (loginFinalizePromise) await loginFinalizePromise.catch(() => {});
+      return status();
+    }
+
+    const exited = new Promise(resolve => child.once('exit', resolve));
+    try { child.kill('SIGTERM'); } catch {}
+    await Promise.race([exited, delay(5000)]);
+    if (loginProcess === child) {
+      try { child.kill('SIGKILL'); } catch {}
+      await Promise.race([exited, delay(2000)]);
+    }
+    if (loginFinalizePromise) await loginFinalizePromise.catch(() => {});
     return status();
   }
 
@@ -173,18 +236,9 @@ export function createChatGptSessionManager(projectRoot) {
       return status();
     }
     const release = await acquire('session check');
-    let context;
     try {
-      context = await chromium.launchPersistentContext(profileDir, {
-        headless: true,
-        viewport: { width: 1280, height: 900 },
-        javaScriptEnabled: true
-      });
-      const page = context.pages()[0] || await context.newPage();
-      await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {});
-      await probePage(page);
+      await verifyOwnedProfile();
     } finally {
-      await context?.close().catch(() => {});
       release();
     }
     return status();
@@ -194,11 +248,7 @@ export function createChatGptSessionManager(projectRoot) {
     const release = await acquire(owner, { wait: true, shouldCancel, onWait });
     try {
       await fs.mkdir(profileDir, { recursive: true });
-      const context = await chromium.launchPersistentContext(profileDir, {
-        headless: true,
-        viewport: { width: 1440, height: 1000 },
-        javaScriptEnabled: true
-      });
+      const context = await launchPersistentProfile({ headless: true, viewport: { width: 1440, height: 1000 } });
       const page = context.pages()[0] || await context.newPage();
       return {
         context,
