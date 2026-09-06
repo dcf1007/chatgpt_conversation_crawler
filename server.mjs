@@ -18,11 +18,14 @@ import {
   restoreMainImages,
   finalizeMainImages
 } from './src/main-images.mjs';
+import { createChatGptSessionManager } from './src/chatgpt-session.mjs';
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || '127.0.0.1';
 const root = path.dirname(fileURLToPath(import.meta.url));
 const jobs = new Map();
+const sessionManager = createChatGptSessionManager(root);
 const PREVIEW_ACTIVE_MS = 10_000;
 const PREVIEW_MIN_INTERVAL_MS = 20_000;
 const PREVIEW_UNCHANGED_INTERVAL_MS = 45_000;
@@ -89,6 +92,7 @@ function publicJob(job) {
   const scrollPercent = Math.max(0, Math.min(100, ((job.scrollTop || 0) / max) * 100));
   return {
     id: job.id,
+    sessionMode: job.sessionMode || 'anonymous',
     chatName: job.chatName || '',
     downloadFilename: job.downloadFilename || '',
     status: job.state === 'complete' ? 'done' : job.state,
@@ -206,30 +210,70 @@ async function maybeRefreshPreview(job, { force = false } = {}) {
   return job.previewBuildPromise;
 }
 
+async function launchJobBrowser(job) {
+  if (job.sessionMode === 'authenticated') {
+    update(job, {
+      phase: 'Opening saved ChatGPT session',
+      detail: 'Waiting for exclusive access to ./browser-profile.',
+      scanningStatus: 'Not started'
+    });
+    const handle = await sessionManager.openAuthenticatedContext(`archive ${job.id.slice(0, 8)}`, {
+      shouldCancel: () => job.cancelRequested,
+      onWait: owner => update(job, {
+        phase: 'Waiting for saved ChatGPT session',
+        detail: `The persistent browser profile is currently in use by ${owner}. This archive will start when it is released.`
+      }, false)
+    });
+    job.authenticatedHandle = handle;
+    job.context = handle.context;
+    job.page = handle.page;
+    return;
+  }
+
+  update(job, {
+    phase: 'Launching Chromium',
+    detail: 'Starting a clean anonymous headless browser.',
+    scanningStatus: 'Not started'
+  });
+  job.browser = await chromium.launch({ headless: true });
+  job.context = await job.browser.newContext({ viewport: { width: 1440, height: 1000 }, javaScriptEnabled: true });
+  job.page = await job.context.newPage();
+}
+
 async function runJob(job) {
   const heartbeat = setInterval(() => { job.heartbeatAt = now(); }, 2000);
   heartbeat.unref?.();
   try {
-    update(job, {
-      state: 'running',
-      phase: 'Launching Chromium',
-      detail: 'Starting a clean headless browser.',
-      scanningStatus: 'Not started'
-    });
-    job.browser = await chromium.launch({ headless: true });
-    const context = await job.browser.newContext({ viewport: { width: 1440, height: 1000 }, javaScriptEnabled: true });
-    job.page = await context.newPage();
+    await launchJobBrowser(job);
+    assertNotCancelled(job);
     installMainImageCapture(job.page);
 
     update(job, {
+      state: 'running',
       phase: 'Loading share',
-      detail: 'Opening the ChatGPT share page and waiting for its initial render.',
+      detail: job.sessionMode === 'authenticated'
+        ? 'Opening the ChatGPT share page with the saved browser profile.'
+        : 'Opening the ChatGPT share page in an anonymous browser.',
       scanningStatus: 'Not started'
     });
     await job.page.goto(job.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await job.page.waitForLoadState('networkidle', { timeout: 12_000 }).catch(() => {});
     await captureMountedMainImages(job.page).catch(() => {});
     assertNotCancelled(job);
+
+    if (job.sessionMode === 'authenticated') {
+      const auth = await sessionManager.probePage(job.page);
+      if (auth.authenticated === false) {
+        const error = new Error('The saved ChatGPT session is not authenticated. Open the ChatGPT login window, sign in, close the window, and try the authenticated archive again.');
+        error.code = 'AUTH_REQUIRED';
+        throw error;
+      }
+      if (auth.authenticated === null) {
+        update(job, {
+          detail: `The saved profile is being used, but ChatGPT session verification was inconclusive (${auth.detail}). Continuing with the page content exposed to this profile.`
+        }, true);
+      }
+    }
 
     const text = (await job.page.locator('body').innerText().catch(() => '')).slice(0, 6000);
     if (/page not found|conversation not found|link.*(expired|deleted)|access denied/i.test(text)) {
@@ -312,23 +356,81 @@ async function runJob(job) {
     });
   } finally {
     clearInterval(heartbeat);
-    await job.browser?.close().catch(() => {});
+    if (job.authenticatedHandle) {
+      await job.authenticatedHandle.close().catch(() => {});
+    } else {
+      await job.context?.close().catch(() => {});
+      await job.browser?.close().catch(() => {});
+    }
+    job.authenticatedHandle = null;
+    job.context = null;
     job.browser = null;
     job.page = null;
   }
 }
 
-app.post('/api/archive/start', (req, res) => {
+function sessionErrorStatus(error) {
+  return error?.code === 'PROFILE_BUSY' ? 409 : 500;
+}
+
+app.get('/api/session/status', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(await sessionManager.status());
+});
+
+app.post('/api/session/login', async (req, res) => {
+  try {
+    const status = await sessionManager.openLoginWindow();
+    res.status(202).json(status);
+  } catch (error) {
+    res.status(sessionErrorStatus(error)).json({ error: error?.message || 'Could not open the ChatGPT login window.' });
+  }
+});
+
+app.post('/api/session/close-login', async (req, res) => {
+  try {
+    res.json(await sessionManager.closeLoginWindow());
+  } catch (error) {
+    res.status(sessionErrorStatus(error)).json({ error: error?.message || 'Could not close the ChatGPT login window.' });
+  }
+});
+
+app.post('/api/session/check', async (req, res) => {
+  try {
+    res.json(await sessionManager.checkSession());
+  } catch (error) {
+    res.status(sessionErrorStatus(error)).json({ error: error?.message || 'Could not check the saved ChatGPT session.' });
+  }
+});
+
+app.post('/api/session/forget', async (req, res) => {
+  try {
+    res.json(await sessionManager.forgetProfile());
+  } catch (error) {
+    res.status(sessionErrorStatus(error)).json({ error: error?.message || 'Could not delete the saved ChatGPT browser profile.' });
+  }
+});
+
+app.post('/api/archive/start', async (req, res) => {
   try {
     const url = validateShareUrl(req.body?.url);
+    const sessionMode = req.body?.sessionMode === 'anonymous' ? 'anonymous' : 'authenticated';
+    if (!['authenticated', 'anonymous'].includes(sessionMode)) throw new Error('Unknown browser session mode.');
+    if (sessionMode === 'authenticated') {
+      const session = await sessionManager.status();
+      if (!session.profileExists) {
+        return res.status(409).json({ error: 'No saved ChatGPT browser profile exists yet. Open the ChatGPT login window and sign in first.' });
+      }
+    }
+
     const id = crypto.randomUUID();
     const t = now();
     const job = {
-      id, url,
+      id, url, sessionMode,
       chatName: '', downloadFilename: `chatgpt-share-${id.slice(0, 8)}.html`,
       state: 'queued',
       phase: 'Queued',
-      detail: 'Waiting to start.',
+      detail: sessionMode === 'authenticated' ? 'Waiting to use the saved ChatGPT browser profile.' : 'Waiting to start an anonymous browser.',
       scanningStatus: 'Not started',
       oldestRetained: 'none', newestRetained: 'none', mountedFirst: 'none', mountedLast: 'none',
       oldestConverged: null, oldestQuietChecks: 0, oldestChecks: 0,
@@ -341,7 +443,9 @@ app.post('/api/archive/start', (req, res) => {
       pass: 0, direction: '', step: 0, scrollTop: 0, scrollHeight: 0, scrollClient: 0,
       previewVersion: 0, previewHtml: '', previewPaused: false, previewLastAccessAt: 0,
       previewBuiltAt: 0, previewSignature: '', previewBuildPromise: null,
-      html: '', error: '', cancelRequested: false, browser: null, page: null, materialSignature: '', maxObservedScrollHeight: 0
+      html: '', error: '', cancelRequested: false,
+      browser: null, context: null, authenticatedHandle: null, page: null,
+      materialSignature: '', maxObservedScrollHeight: 0
     };
     jobs.set(id, job);
     setImmediate(() => runJob(job));
@@ -389,6 +493,7 @@ app.post('/api/archive/cancel/:id', async (req, res) => {
   if (['complete','error','cancelled'].includes(job.state)) return res.json(publicJob(job));
   job.cancelRequested = true;
   update(job, { detail: 'Cancellation requested; stopping Chromium…' }, true);
+  await job.context?.close().catch(() => {});
   await job.browser?.close().catch(() => {});
   res.json(publicJob(job));
 });
@@ -398,4 +503,4 @@ setInterval(() => {
   for (const [id, job] of jobs) if (job.finishedAt && job.finishedAt < cutoff) jobs.delete(id);
 }, 10 * 60 * 1000).unref();
 
-app.listen(PORT, () => console.log(`ChatGPT Conversation Crawler: http://localhost:${PORT}`));
+app.listen(PORT, HOST, () => console.log(`ChatGPT Conversation Crawler: http://${HOST}:${PORT}`));
