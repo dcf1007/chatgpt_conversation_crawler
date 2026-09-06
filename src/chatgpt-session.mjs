@@ -8,6 +8,8 @@ const PROFILE_NAME = 'browser-profile';
 const HOME_SCREENSHOT_NAME = 'session-home-diagnostic.png';
 const SHARE_SCREENSHOT_NAME = 'session-share-diagnostic.png';
 const AUTH_COOKIE_RE = /^(?:(?:__Secure|__Host)-)?(?:next-auth|authjs)\.session-token(?:\.\d+)?$/i;
+const HUMAN_VERIFY_RE = /verify you are human|checking your browser|performing security verification|security verification/i;
+const INTERACTIVE_VERIFY_TIMEOUT_MS = 10 * 60 * 1000;
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function codedError(message, code) {
@@ -24,6 +26,8 @@ export function createChatGptSessionManager(projectRoot) {
   let profileOwner = '';
   let loginProcess = null;
   let loginFinalizePromise = null;
+  let interactiveCheckContext = null;
+  let interactiveCheckPromise = null;
   let lastAuthenticated = null;
   let lastCheckedAt = 0;
   let lastCheckDetail = 'Session has not been checked yet.';
@@ -81,13 +85,59 @@ export function createChatGptSessionManager(projectRoot) {
     });
   }
 
+  async function challengeState(page) {
+    if (!page || page.isClosed()) return { challenged: false, closed: true };
+    const bodyText = await page.locator('body').innerText({ timeout: 1500 }).catch(() => '');
+    const frameUrls = page.frames().slice(1).map(frame => frame.url()).filter(Boolean);
+    const challenged = HUMAN_VERIFY_RE.test(bodyText)
+      || frameUrls.some(url => /challenges\.cloudflare\.com|turnstile/i.test(url));
+    return { challenged, closed: false };
+  }
+
+  async function waitForHumanVerification(page, {
+    timeoutMs = INTERACTIVE_VERIFY_TIMEOUT_MS,
+    screenshotPath,
+    purpose = 'ChatGPT page'
+  } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let challengeSeen = false;
+    let clearChecks = 0;
+
+    while (Date.now() < deadline) {
+      const state = await challengeState(page);
+      if (state.closed) {
+        throw codedError(`The ${purpose} browser window was closed before verification completed.`, 'VERIFICATION_CLOSED');
+      }
+
+      if (state.challenged) {
+        challengeSeen = true;
+        clearChecks = 0;
+        lastAuthenticated = null;
+        lastCheckedAt = Date.now();
+        lastCheckDetail = `Cloudflare human verification is visible in the ${purpose} browser. Complete it manually in that Chromium window; the crawler will continue automatically when the challenge clears.`;
+        if (screenshotPath) await captureDiagnosticScreenshot(page, screenshotPath, { settleMs: 100 }).catch(() => {});
+        await delay(750);
+        continue;
+      }
+
+      clearChecks += 1;
+      if (clearChecks >= 2) {
+        if (screenshotPath) await captureDiagnosticScreenshot(page, screenshotPath, { settleMs: challengeSeen ? 750 : 1200 }).catch(() => {});
+        return { challengeSeen };
+      }
+      await delay(750);
+    }
+
+    throw codedError(`Timed out waiting for manual Cloudflare verification in the ${purpose} browser.`, 'VERIFICATION_TIMEOUT');
+  }
+
   async function probeContext(context) {
     try {
       const evidence = await authCookieEvidence(context);
       lastAuthenticated = evidence.present;
       lastCheckedAt = Date.now();
       lastCheckDetail = evidence.present
-        ? 'A saved ChatGPT authentication session token is present in this browser profile. The crawler uses the requested share page as the final access check instead of probing ChatGPT\'s internal /api/auth/session endpoint.'
+        ? 'A saved ChatGPT authentication session token is present in this browser profile. The requested ChatGPT page is used as the final access check.'
         : 'No current ChatGPT authentication session token was found in this browser profile. Open ChatGPT login and sign in again.';
       return {
         authenticated: evidence.present,
@@ -104,7 +154,11 @@ export function createChatGptSessionManager(projectRoot) {
   }
 
   async function probePage(page) {
-    await captureDiagnosticScreenshot(page, shareScreenshotPath, { settleMs: 500 }).catch(() => {});
+    await captureDiagnosticScreenshot(page, shareScreenshotPath, { settleMs: 300 }).catch(() => {});
+    await waitForHumanVerification(page, {
+      screenshotPath: shareScreenshotPath,
+      purpose: 'authenticated share-page'
+    });
     return probeContext(page.context());
   }
 
@@ -117,6 +171,7 @@ export function createChatGptSessionManager(projectRoot) {
       busy: Boolean(profileOwner),
       owner: profileOwner,
       loginWindowOpen: Boolean(loginProcess),
+      verificationWindowOpen: Boolean(interactiveCheckContext),
       authenticated: exists ? lastAuthenticated : false,
       lastCheckedAt: exists ? lastCheckedAt : 0,
       detail: exists ? lastCheckDetail : 'No saved browser profile exists yet. Open the ChatGPT login browser to create one.'
@@ -237,6 +292,33 @@ export function createChatGptSessionManager(projectRoot) {
     return status();
   }
 
+  async function runInteractiveCheck(release) {
+    let context;
+    try {
+      context = await launchPersistentProfile({ headless: false, viewport: { width: 1440, height: 1000 } });
+      interactiveCheckContext = context;
+      const page = context.pages()[0] || await context.newPage();
+      lastAuthenticated = null;
+      lastCheckedAt = Date.now();
+      lastCheckDetail = 'Interactive Playwright session check is open. If ChatGPT shows Cloudflare verification, complete it manually in that Chromium window; it will close automatically after the challenge clears.';
+      await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {});
+      await waitForHumanVerification(page, {
+        screenshotPath: homeScreenshotPath,
+        purpose: 'interactive session-check'
+      });
+      await probeContext(context);
+    } catch (error) {
+      lastAuthenticated = null;
+      lastCheckedAt = Date.now();
+      lastCheckDetail = error?.message || 'Interactive ChatGPT session verification failed.';
+    } finally {
+      interactiveCheckContext = null;
+      await context?.close().catch(() => {});
+      release();
+      interactiveCheckPromise = null;
+    }
+  }
+
   async function checkSession() {
     if (!await profileExists()) {
       lastAuthenticated = false;
@@ -244,12 +326,11 @@ export function createChatGptSessionManager(projectRoot) {
       lastCheckDetail = 'No saved browser profile exists yet.';
       return status();
     }
-    const release = await acquire('session check');
-    try {
-      await verifyOwnedProfile({ captureHome: true });
-    } finally {
-      release();
-    }
+    if (interactiveCheckPromise) return status();
+    const release = await acquire('interactive session check');
+    interactiveCheckPromise = runInteractiveCheck(release);
+    void interactiveCheckPromise.catch(() => {});
+    await delay(150);
     return status();
   }
 
@@ -257,7 +338,7 @@ export function createChatGptSessionManager(projectRoot) {
     const release = await acquire(owner, { wait: true, shouldCancel, onWait });
     try {
       await fs.mkdir(profileDir, { recursive: true });
-      const context = await launchPersistentProfile({ headless: true, viewport: { width: 1440, height: 1000 } });
+      const context = await launchPersistentProfile({ headless: false, viewport: { width: 1440, height: 1000 } });
       const page = context.pages()[0] || await context.newPage();
       return {
         context,
