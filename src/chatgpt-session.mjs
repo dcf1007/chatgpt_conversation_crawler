@@ -5,6 +5,7 @@ import { chromium } from 'playwright';
 
 const LOGIN_URL = 'https://chatgpt.com/';
 const PROFILE_NAME = 'browser-profile';
+const AUTH_COOKIE_RE = /^(?:(?:__Secure|__Host)-)?(?:next-auth|authjs)\.session-token(?:\.\d+)?$/i;
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function codedError(message, code) {
@@ -46,60 +47,43 @@ export function createChatGptSessionManager(projectRoot) {
     };
   }
 
-  async function probePage(page) {
+  async function authCookieEvidence(context) {
+    const nowSeconds = Date.now() / 1000;
+    const cookies = await context.cookies([LOGIN_URL]).catch(() => []);
+    const authCookies = cookies.filter(cookie => {
+      if (!AUTH_COOKIE_RE.test(cookie.name || '')) return false;
+      return !Number.isFinite(cookie.expires) || cookie.expires < 0 || cookie.expires > nowSeconds;
+    });
+    return {
+      present: authCookies.length > 0,
+      count: authCookies.length
+    };
+  }
+
+  async function probeContext(context) {
     try {
-      if (!/^https:\/\/(?:www\.)?chatgpt\.com(?:\/|$)/i.test(page.url())) {
-        lastAuthenticated = null;
-        lastCheckedAt = Date.now();
-        lastCheckDetail = 'The browser is not currently on chatgpt.com, so the ChatGPT session could not be verified.';
-        return { authenticated: null, status: 0, detail: lastCheckDetail };
-      }
-      const result = await page.evaluate(async () => {
-        try {
-          const response = await fetch('/api/auth/session', {
-            method: 'GET',
-            credentials: 'include',
-            cache: 'no-store',
-            headers: { accept: 'application/json' }
-          });
-          const text = await response.text();
-          let data = null;
-          try { data = text ? JSON.parse(text) : null; } catch {}
-          if (response.status === 200) {
-            return {
-              authenticated: Boolean(data?.user || data?.accessToken),
-              status: response.status,
-              detail: data?.user || data?.accessToken
-                ? 'ChatGPT reports an authenticated browser session.'
-                : 'ChatGPT reports no authenticated user in this browser profile.'
-            };
-          }
-          if (response.status === 401) {
-            return { authenticated: false, status: 401, detail: 'ChatGPT reports that the saved session is not authenticated.' };
-          }
-          return {
-            authenticated: null,
-            status: response.status,
-            detail: `ChatGPT session check returned HTTP ${response.status}; authentication could not be verified.`
-          };
-        } catch (error) {
-          return {
-            authenticated: null,
-            status: 0,
-            detail: error?.message || 'ChatGPT session check could not be completed.'
-          };
-        }
-      });
-      lastAuthenticated = result.authenticated;
+      const evidence = await authCookieEvidence(context);
+      lastAuthenticated = evidence.present;
       lastCheckedAt = Date.now();
-      lastCheckDetail = result.detail;
-      return result;
+      lastCheckDetail = evidence.present
+        ? 'A saved ChatGPT authentication session token is present in this browser profile. The crawler uses the requested share page as the final access check instead of probing ChatGPT\'s internal /api/auth/session endpoint.'
+        : 'No current ChatGPT authentication session token was found in this browser profile. Open ChatGPT login and sign in again.';
+      return {
+        authenticated: evidence.present,
+        status: evidence.present ? 200 : 401,
+        detail: lastCheckDetail,
+        evidence: evidence.present ? 'auth-cookie' : 'none'
+      };
     } catch (error) {
       lastAuthenticated = null;
       lastCheckedAt = Date.now();
-      lastCheckDetail = error?.message || 'ChatGPT session check could not be completed.';
-      return { authenticated: null, status: 0, detail: lastCheckDetail };
+      lastCheckDetail = error?.message || 'The saved ChatGPT authentication state could not be inspected.';
+      return { authenticated: null, status: 0, detail: lastCheckDetail, evidence: 'error' };
     }
+  }
+
+  async function probePage(page) {
+    return probeContext(page.context());
   }
 
   async function status() {
@@ -138,9 +122,7 @@ export function createChatGptSessionManager(projectRoot) {
     let context;
     try {
       context = await launchPersistentProfile({ headless: true, viewport: { width: 1280, height: 900 } });
-      const page = context.pages()[0] || await context.newPage();
-      await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {});
-      return await probePage(page);
+      return await probeContext(context);
     } finally {
       await context?.close().catch(() => {});
     }
@@ -151,15 +133,15 @@ export function createChatGptSessionManager(projectRoot) {
     loginProcess = null;
     lastAuthenticated = null;
     lastCheckedAt = 0;
-    lastCheckDetail = 'Login browser closed; checking the saved ChatGPT session.';
+    lastCheckDetail = 'Login browser closed; checking the saved ChatGPT authentication state.';
     try {
-      await delay(500);
+      await delay(750);
       await verifyOwnedProfile();
     } catch (error) {
       lastAuthenticated = null;
       lastCheckedAt = Date.now();
       const suffix = signal ? ` (browser signal ${signal})` : (Number.isInteger(exitCode) ? ` (browser exit ${exitCode})` : '');
-      lastCheckDetail = `The login browser closed${suffix}, but the saved ChatGPT session could not be verified: ${error?.message || 'unknown error'}`;
+      lastCheckDetail = `The login browser closed${suffix}, but the saved ChatGPT authentication state could not be inspected: ${error?.message || 'unknown error'}`;
     } finally {
       release();
       loginFinalizePromise = null;
@@ -185,7 +167,7 @@ export function createChatGptSessionManager(projectRoot) {
       loginProcess = child;
       lastAuthenticated = null;
       lastCheckedAt = 0;
-      lastCheckDetail = 'Standalone Playwright-bundled Chromium is open without a Playwright connection. Complete the ChatGPT sign-in there, then close the browser; the crawler will verify the saved session afterward.';
+      lastCheckDetail = 'Standalone Playwright-bundled Chromium is open without a Playwright connection. Complete the ChatGPT sign-in there, then close the browser; the crawler will inspect the saved authentication state afterward.';
 
       child.once('error', error => {
         if (loginProcess !== child) return;
