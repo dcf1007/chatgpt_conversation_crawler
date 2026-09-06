@@ -10,10 +10,10 @@ It is designed for long conversations where a normal browser save can miss conte
 
 - Accepts only `https://chatgpt.com/share/...` URLs.
 - Supports a clean **Anonymous** browser mode and an optional persistent **Authenticated** ChatGPT browser profile.
-- Opens the real ChatGPT site in a headed Chromium window for manual sign-in; the crawler never asks for or stores the account password itself.
+- For manual sign-in, launches Playwright's bundled Chromium executable as a standalone OS process with no Playwright connection to the login browser.
 - Stores the persistent profile locally at `./browser-profile`, beside the setup/start scripts, and reuses its cookies/browser storage across crawler restarts until ChatGPT expires or revokes the session.
 - Serializes authenticated jobs so only one browser process uses the persistent profile at a time.
-- Can check the saved ChatGPT session, close the login window, or delete the saved profile from the local UI.
+- Can check the saved ChatGPT session, close the login browser, or delete the saved profile from the local UI.
 - Detects ChatGPT's internal conversation scroller instead of assuming `window` scrolls.
 - Progressively retains virtualized turns so previously seen content is not lost.
 - Retains visible timestamp/date separators and **Branched from** ancestry notices across virtualization.
@@ -46,17 +46,17 @@ It is designed for long conversations where a normal browser save can miss conte
 - Node.js **20 or newer**
 - npm for the active Node.js installation
 - Internet access while crawling the ChatGPT share URL
-- A graphical desktop session when opening the interactive ChatGPT login window
+- A graphical desktop session when opening the interactive ChatGPT login browser
 - Enough memory for Chromium plus retained HTML and embedded image data
 
 ## Downloading a release
 
-Finished versions are published on the repository's **Releases** page. The release workflow syntax-checks the Node/inline-browser source, reads the version from `package.json`, creates the corresponding tag when that version is new, and attaches a ZIP produced from that exact commit. Versions containing a prerelease suffix such as `-beta1` are published as GitHub prereleases.
+Finished versions are published on the repository's **Releases** page. The release workflow syntax-checks the Node/inline-browser source, reads the version from `package.json`, creates the corresponding tag when that version is new, and attaches a ZIP produced from that exact commit. Versions containing a prerelease suffix such as `-beta2` are published as GitHub prereleases.
 
 Example:
 
 ```text
-chatgpt-conversation-crawler-v1.6.7-beta1.zip
+chatgpt-conversation-crawler-v1.6.7-beta2.zip
 ```
 
 ## Quick start
@@ -132,18 +132,21 @@ chatgpt-conversation-crawler-vX.Y.Z/
 1. Start the crawler normally.
 2. Open `http://localhost:3000`.
 3. Click **Open ChatGPT login**.
-4. A headed Playwright-controlled Chromium window opens at `https://chatgpt.com/` using `./browser-profile`.
-5. Sign in through ChatGPT normally, including any Google/Apple/SSO/MFA/device verification that ChatGPT requests.
-6. The crawler periodically checks ChatGPT's own `/api/auth/session` endpoint from that browser context.
-7. Close the login window after the UI reports an authenticated session, or use **Close login window**.
+4. The crawler resolves Playwright's bundled Chromium executable with `chromium.executablePath()` and starts it as a normal child process using `./browser-profile` as its user-data directory.
+5. Playwright does **not** connect to, inspect, script, or poll that browser while the login process is open.
+6. Sign in through ChatGPT normally, including any Google/Apple/SSO/MFA/device verification that ChatGPT requests.
+7. Close the login browser when sign-in is complete, or use **Close login window** in the crawler UI.
+8. After the standalone Chromium process exits, the crawler briefly reopens the same profile under Playwright and probes ChatGPT's `/api/auth/session` endpoint.
+
+The standalone login process is launched with only the dedicated user-data directory plus ordinary first-run/default-browser suppression arguments. It is not launched with a Playwright remote-debugging connection or the previous Playwright persistent-context login path.
 
 The crawler never asks for the password and does not implement a separate credential-login protocol. Authentication happens in ChatGPT's own page.
 
-**Beta note:** this Playwright-controlled login mechanism is the `v1.6.7-beta1` experiment. Google can reject Playwright-controlled Chromium with a “browser or app may not be secure” message. `v1.6.7-beta2` tests an unmanaged bundled-Chromium login process instead.
+**Beta note:** `v1.6.7-beta1` used a headed Playwright-controlled Chromium login window and can trigger Google's “browser or app may not be secure” rejection. `v1.6.7-beta2` keeps the same persistent Chromium profile design but makes the manual login browser an unmanaged standalone bundled-Chromium process. If Google still rejects the bundled Chromium distribution itself, the next fallback experiment is Firefox-based login/state transfer.
 
 ### Persistent reuse
 
-Authenticated archive jobs launch a Playwright persistent context backed by the same `browser-profile` directory. Cookies and browser storage therefore survive crawler/process restarts in the same way a normal browser profile does.
+Authenticated archive jobs still launch a Playwright persistent context backed by the same `browser-profile` directory. Cookies and browser storage therefore survive crawler/process restarts in the same way a normal browser profile does.
 
 If ChatGPT expires, revokes, or challenges the saved session, use **Open ChatGPT login** again. **Check session** launches the saved profile briefly and probes `/api/auth/session` without deleting it. **Forget saved session** deletes `./browser-profile` entirely.
 
@@ -151,12 +154,12 @@ If ChatGPT expires, revokes, or challenges the saved session, use **Open ChatGPT
 
 Chromium does not safely support multiple processes using the same user-data directory at once. The crawler therefore gives `browser-profile` an exclusive in-process lock:
 
-- the interactive login window owns it while open;
-- an authenticated archive waits while the login window or another authenticated archive owns it;
+- the standalone login browser owns it while open and while the post-close session check is running;
+- an authenticated archive waits while the login browser or another authenticated archive owns it;
 - anonymous archives use disposable contexts and do not need the persistent-profile lock;
 - session checking/deletion returns a busy error instead of racing an active owner.
 
-If an authenticated job is queued behind the login window, closing the login window releases the profile and the job continues automatically.
+If an authenticated job is queued behind the login browser, closing the login browser triggers the saved-session check and then releases the profile so the archive can continue.
 
 ### Security of the profile
 
@@ -367,7 +370,7 @@ Security constraints include:
 - only HTTPS `chatgpt.com/share/...` input URLs;
 - anonymous mode uses a clean disposable browser context;
 - authenticated mode uses only the dedicated local `./browser-profile` chosen by the user;
-- login occurs in the real ChatGPT page rather than through crawler-owned password fields;
+- manual login occurs in the real ChatGPT page in a standalone bundled-Chromium process that Playwright does not control while sign-in is happening;
 - the persistent profile is ignored by Git and never inserted into archive HTML;
 - the local server binds to loopback by default;
 - no copied ChatGPT scripts;
@@ -382,8 +385,8 @@ Do not expose the local server port or `browser-profile/` to untrusted systems.
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/session/status` | Read persistent-profile/session state |
-| `POST` | `/api/session/login` | Open the real ChatGPT site in the headed persistent profile |
-| `POST` | `/api/session/close-login` | Close the interactive login browser |
+| `POST` | `/api/session/login` | Open the real ChatGPT site in standalone Playwright-bundled Chromium using the persistent profile |
+| `POST` | `/api/session/close-login` | Close the standalone interactive login browser and verify the saved session afterward |
 | `POST` | `/api/session/check` | Probe ChatGPT authentication using the saved profile |
 | `POST` | `/api/session/forget` | Delete `./browser-profile` when it is not in use |
 | `POST` | `/api/archive/start` | Start a tracked archive job; body accepts `sessionMode: "authenticated"` or `"anonymous"` |
@@ -407,6 +410,7 @@ It does not:
 - extract private model-internal chain-of-thought;
 - preserve app blocks as interactive applications;
 - guarantee that an image remains available when every early/fallback embedding path and its original remote URL fail;
+- guarantee that Google accepts Playwright's bundled Chromium distribution for SSO even when it is launched outside Playwright;
 - guarantee compatibility with future ChatGPT DOM/auth changes without maintenance.
 
 ## Development checks
@@ -422,10 +426,10 @@ bash -n setup-linux.sh start-linux.sh setup-macos.sh start-macos.sh
 For crawler/archive changes, test at least:
 
 1. a short anonymous conversation;
-2. authenticated login → close login window → authenticated archive;
+2. standalone bundled-Chromium login → close login browser → automatic saved-session verification → authenticated archive;
 3. process restart → **Check session** → authenticated archive using the same `browser-profile`;
 4. session expiry/logout and re-login behavior;
-5. profile lock behavior while the login window or another authenticated archive owns it;
+5. profile lock behavior while the standalone login browser or another authenticated archive owns it;
 6. **Forget saved session** while idle and refusal while busy;
 7. code blocks and disclosure expansion;
 8. a heavily virtualized long conversation;
@@ -461,6 +465,7 @@ For crawler/archive changes, test at least:
 - **v1.6.5** — removes the temporary crawler/snapshot wrapper-core split, makes app-block detection structural rather than title-dependent, embeds app-block raster/background/SVG-image assets while frames are alive, and preserves meaningful non-formula SVG in the main conversation.
 - **v1.6.6** — retains main-chat image response bytes during crawling, resolves mounted blobs early, corrects MIME type from actual image bytes, and uses final URL fetching only as fallback.
 - **v1.6.7-beta1** — experimental persistent authenticated ChatGPT browser-profile mode using a headed Playwright-controlled Chromium login window, session checking/deletion, authenticated-job serialization, anonymous fallback mode, and loopback-only server binding by default.
+- **v1.6.7-beta2** — changes only the manual-login path to launch Playwright's bundled Chromium as an unmanaged standalone OS process, keeps the same `browser-profile`, and verifies the ChatGPT session only after that browser exits.
 
 ## Maintenance note
 
