@@ -175,11 +175,11 @@ export function createChatGptSessionManager(projectRoot) {
       const page = context.pages()[0] || await context.newPage();
       await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {});
       await probePage(page);
-      return status();
     } finally {
       await context?.close().catch(() => {});
       release();
     }
+    return status();
   }
 
   async function openAuthenticatedContext(owner, { shouldCancel, onWait } = {}) {
@@ -214,10 +214,10 @@ export function createChatGptSessionManager(projectRoot) {
       lastAuthenticated = false;
       lastCheckedAt = Date.now();
       lastCheckDetail = 'Saved ChatGPT browser profile was deleted.';
-      return status();
     } finally {
       release();
     }
+    return status();
   }
 
   return {
