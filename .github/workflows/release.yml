@@ -30,14 +30,25 @@ jobs:
           for file in src/*.mjs; do
             node --check "$file"
           done
+          rm -f /tmp/crawler-inline-*.js
           node - <<'NODE'
           const fs = require('fs');
-          const html = fs.readFileSync('public/index.html', 'utf8');
-          const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)].map(match => match[1]);
-          if (!scripts.length) throw new Error('No inline script found in public/index.html');
-          fs.writeFileSync('/tmp/crawler-index-inline.js', scripts.join('\n'));
+          const path = require('path');
+          const htmlFiles = fs.readdirSync('public').filter(name => name.endsWith('.html')).sort();
+          let written = 0;
+          for (const name of htmlFiles) {
+            const html = fs.readFileSync(path.join('public', name), 'utf8');
+            const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)].map(match => match[1]);
+            if (!scripts.length) continue;
+            const safe = name.replace(/[^A-Za-z0-9_.-]/g, '_');
+            fs.writeFileSync(`/tmp/crawler-inline-${written}-${safe}.js`, scripts.join('\n'));
+            written++;
+          }
+          if (!written) throw new Error('No inline public scripts found to syntax-check.');
           NODE
-          node --check /tmp/crawler-index-inline.js
+          for file in /tmp/crawler-inline-*.js; do
+            node --check "$file"
+          done
 
       - name: Read package version
         id: version
