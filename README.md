@@ -51,12 +51,12 @@ It is designed for long conversations where a normal browser save can miss conte
 
 ## Downloading a release
 
-Finished versions are published on the repository's **Releases** page. The release workflow syntax-checks the Node/inline-browser source, reads the version from `package.json`, creates `vX.Y.Z` when that version is new, and attaches a ZIP produced from that exact commit.
+Finished versions are published on the repository's **Releases** page. The release workflow syntax-checks the Node/inline-browser source, reads the version from `package.json`, creates the corresponding tag when that version is new, and attaches a ZIP produced from that exact commit. Versions containing a prerelease suffix such as `-beta1` are published as GitHub prereleases.
 
 Example:
 
 ```text
-chatgpt-conversation-crawler-v1.6.7.zip
+chatgpt-conversation-crawler-v1.6.7-beta1.zip
 ```
 
 ## Quick start
@@ -132,12 +132,14 @@ chatgpt-conversation-crawler-vX.Y.Z/
 1. Start the crawler normally.
 2. Open `http://localhost:3000`.
 3. Click **Open ChatGPT login**.
-4. A normal headed Chromium window opens at `https://chatgpt.com/` using `./browser-profile`.
+4. A headed Playwright-controlled Chromium window opens at `https://chatgpt.com/` using `./browser-profile`.
 5. Sign in through ChatGPT normally, including any Google/Apple/SSO/MFA/device verification that ChatGPT requests.
 6. The crawler periodically checks ChatGPT's own `/api/auth/session` endpoint from that browser context.
 7. Close the login window after the UI reports an authenticated session, or use **Close login window**.
 
 The crawler never asks for the password and does not implement a separate credential-login protocol. Authentication happens in ChatGPT's own page.
+
+**Beta note:** this Playwright-controlled login mechanism is the `v1.6.7-beta1` experiment. Google can reject Playwright-controlled Chromium with a “browser or app may not be secure” message. `v1.6.7-beta2` tests an unmanaged bundled-Chromium login process instead.
 
 ### Persistent reuse
 
@@ -458,7 +460,7 @@ For crawler/archive changes, test at least:
 - **v1.6.4** — recursively captures mounted app-block iframe trees, retains static app contents across virtualization, preserves inline SVG and serializes readable canvases.
 - **v1.6.5** — removes the temporary crawler/snapshot wrapper-core split, makes app-block detection structural rather than title-dependent, embeds app-block raster/background/SVG-image assets while frames are alive, and preserves meaningful non-formula SVG in the main conversation.
 - **v1.6.6** — retains main-chat image response bytes during crawling, resolves mounted blobs early, corrects MIME type from actual image bytes, and uses final URL fetching only as fallback.
-- **v1.6.7** — adds optional persistent authenticated ChatGPT browser-profile mode with manual headed login, session checking/deletion, authenticated-job serialization, anonymous fallback mode, and loopback-only server binding by default.
+- **v1.6.7-beta1** — experimental persistent authenticated ChatGPT browser-profile mode using a headed Playwright-controlled Chromium login window, session checking/deletion, authenticated-job serialization, anonymous fallback mode, and loopback-only server binding by default.
 
 ## Maintenance note
 
