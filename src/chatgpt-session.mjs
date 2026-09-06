@@ -88,10 +88,21 @@ export function createChatGptSessionManager(projectRoot) {
   async function challengeState(page) {
     if (!page || page.isClosed()) return { challenged: false, closed: true };
     const bodyText = await page.locator('body').innerText({ timeout: 1500 }).catch(() => '');
-    const frameUrls = page.frames().slice(1).map(frame => frame.url()).filter(Boolean);
-    const challenged = HUMAN_VERIFY_RE.test(bodyText)
-      || frameUrls.some(url => /challenges\.cloudflare\.com|turnstile/i.test(url));
-    return { challenged, closed: false };
+    const visibleChallengeFrame = await page.locator('iframe').evaluateAll(nodes => nodes.some(node => {
+      const src = String(node.getAttribute('src') || '');
+      if (!/challenges\.cloudflare\.com|turnstile/i.test(src)) return false;
+      const rect = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      return rect.width > 5
+        && rect.height > 5
+        && style.display !== 'none'
+        && style.visibility !== 'hidden'
+        && Number(style.opacity || '1') > 0;
+    })).catch(() => false);
+    return {
+      challenged: HUMAN_VERIFY_RE.test(bodyText) || visibleChallengeFrame,
+      closed: false
+    };
   }
 
   async function waitForHumanVerification(page, {
@@ -110,12 +121,20 @@ export function createChatGptSessionManager(projectRoot) {
       }
 
       if (state.challenged) {
+        const firstChallenge = !challengeSeen;
         challengeSeen = true;
         clearChecks = 0;
         lastAuthenticated = null;
         lastCheckedAt = Date.now();
         lastCheckDetail = `Cloudflare human verification is visible in the ${purpose} browser. Complete it manually in that Chromium window; the crawler will continue automatically when the challenge clears.`;
-        if (screenshotPath) await captureDiagnosticScreenshot(page, screenshotPath, { settleMs: 100 }).catch(() => {});
+        if (firstChallenge && screenshotPath) {
+          await page.screenshot({
+            path: screenshotPath,
+            type: 'png',
+            fullPage: false,
+            animations: 'disabled'
+          }).catch(() => {});
+        }
         await delay(750);
         continue;
       }
