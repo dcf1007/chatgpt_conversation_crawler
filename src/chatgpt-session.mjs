@@ -48,7 +48,10 @@ export function createChatGptSessionManager(projectRoot) {
   async function probePage(page) {
     try {
       if (!/^https:\/\/(?:www\.)?chatgpt\.com(?:\/|$)/i.test(page.url())) {
-        await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+        lastAuthenticated = null;
+        lastCheckedAt = Date.now();
+        lastCheckDetail = 'Login flow is currently outside chatgpt.com; waiting for it to return before checking the session.';
+        return { authenticated: null, status: 0, detail: lastCheckDetail };
       }
       const result = await page.evaluate(async () => {
         try {
@@ -137,8 +140,13 @@ export function createChatGptSessionManager(projectRoot) {
       await probePage(page).catch(() => {});
       loginPoll = setInterval(() => {
         if (!loginContext) return;
-        const activePage = context.pages().find(candidate => /^https:\/\/(?:www\.)?chatgpt\.com(?:\/|$)/i.test(candidate.url())) || context.pages()[0];
+        const activePage = context.pages().find(candidate => /^https:\/\/(?:www\.)?chatgpt\.com(?:\/|$)/i.test(candidate.url()));
         if (activePage) void probePage(activePage).catch(() => {});
+        else {
+          lastAuthenticated = null;
+          lastCheckedAt = Date.now();
+          lastCheckDetail = 'Login flow is currently outside chatgpt.com; waiting for it to return before checking the session.';
+        }
       }, 2000);
       loginPoll.unref?.();
       return status();
@@ -151,7 +159,7 @@ export function createChatGptSessionManager(projectRoot) {
   async function closeLoginWindow() {
     if (!loginContext) return status();
     const context = loginContext;
-    const page = context.pages().find(candidate => /^https:\/\/(?:www\.)?chatgpt\.com(?:\/|$)/i.test(candidate.url())) || context.pages()[0];
+    const page = context.pages().find(candidate => /^https:\/\/(?:www\.)?chatgpt\.com(?:\/|$)/i.test(candidate.url()));
     if (page) await probePage(page).catch(() => {});
     await context.close().catch(() => {});
     return status();
