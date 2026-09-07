@@ -1,9 +1,22 @@
 import assert from 'node:assert/strict';
-import { selectTargetFromTurns } from '../src/manual-inspection.mjs';
+import {
+  KNOWN_PROBLEM_TURN_ID,
+  selectKnownProblemTarget,
+  selectTargetFromTurns
+} from '../src/manual-inspection.mjs';
 
-const collapsedTurn = selectTargetFromTurns([
+const turns = [
   {
-    id: 'conversation-turn-10',
+    id: KNOWN_PROBLEM_TURN_ID,
+    role: 'assistant',
+    remaining: 0,
+    preCount: 47,
+    codeCount: 31,
+    textLength: 16000,
+    html: '<section><pre>known problem turn</pre></section>'
+  },
+  {
+    id: 'conversation-turn-60',
     role: 'assistant',
     remaining: 0,
     preCount: 20,
@@ -12,7 +25,7 @@ const collapsedTurn = selectTargetFromTurns([
     html: '<section><pre>rich automatic turn</pre></section>'
   },
   {
-    id: 'conversation-turn-12',
+    id: 'conversation-turn-62',
     role: 'assistant',
     remaining: 0,
     preCount: 1,
@@ -20,34 +33,24 @@ const collapsedTurn = selectTargetFromTurns([
     textLength: 1000,
     html: '<section><button aria-expanded="false">nested result</button></section>'
   }
-]);
+];
 
-assert.equal(collapsedTurn.id, 'conversation-turn-12');
+const known = selectKnownProblemTarget(turns);
+assert.equal(known.id, KNOWN_PROBLEM_TURN_ID);
+assert.match(known.reason, /known problematic turn/);
+
+const collapsedTurn = selectTargetFromTurns(turns, { excludeIds: [KNOWN_PROBLEM_TURN_ID] });
+assert.equal(collapsedTurn.id, 'conversation-turn-62');
 assert.equal(collapsedTurn.allCollapsedControls, 1);
 assert.match(collapsedTurn.reason, /collapsed control/);
 
 const richestToolTurn = selectTargetFromTurns([
-  {
-    id: 'conversation-turn-20',
-    role: 'assistant',
-    remaining: 0,
-    preCount: 1,
-    codeCount: 1,
-    textLength: 4000,
-    html: '<section></section>'
-  },
-  {
-    id: 'conversation-turn-22',
-    role: 'assistant',
-    remaining: 0,
-    preCount: 12,
-    codeCount: 8,
-    textLength: 8000,
-    html: '<section></section>'
-  }
-]);
-
-assert.equal(richestToolTurn.id, 'conversation-turn-22');
+  turns[0],
+  turns[1]
+], { excludeIds: [KNOWN_PROBLEM_TURN_ID] });
+assert.equal(richestToolTurn.id, 'conversation-turn-60');
 assert.match(richestToolTurn.reason, /richest retained tool\/code turn/);
 
-console.log('manual inspection target-selection smoke test passed');
+assert.equal(selectKnownProblemTarget(turns, 'conversation-turn-999'), null);
+
+console.log('two-step manual inspection target-selection smoke test passed');
