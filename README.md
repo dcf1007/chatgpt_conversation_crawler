@@ -16,10 +16,11 @@ It is designed for long conversations where a normal browser save can miss conte
 - Can check the saved ChatGPT session, close the login browser, or delete the saved profile from the local UI.
 - Detects ChatGPT's internal conversation scroller instead of assuming `window` scrolls.
 - Progressively retains virtualized turns so previously seen content is not lost.
+- Reconciles the richest retained corpus after the normal three-pass traversal when retained turns still prove that recognized disclosures remain collapsed.
 - Retains visible timestamp/date separators and **Branched from** ancestry notices across virtualization.
 - Preserves exposed message UUIDs and visible timestamp labels as archive metadata.
 - Expands conversation-scoped disclosures, including native `<details>` and reasoning/tool controls.
-- Performs down → up → strict oldest-edge verification → down traversal.
+- Performs down → up → strict oldest-edge verification → down traversal, followed by retained-disclosure reconciliation when needed.
 - Scans up to **2,000 steps per directional pass**.
 - Requires **6 stable observations** at ordinary endpoints.
 - Requires **12 consecutive stable observations while actually at the top** for oldest-edge convergence, with a **180-check safety limit**.
@@ -51,7 +52,7 @@ It is designed for long conversations where a normal browser save can miss conte
 
 ## Downloading a release
 
-Finished versions are published on the repository's **Releases** page. The release workflow syntax-checks the Node/inline-browser source, reads the version from `package.json`, creates the corresponding tag when that version is new, and attaches a ZIP produced from that exact commit. Versions containing a prerelease suffix such as `-beta2` are published as GitHub prereleases.
+Finished versions are published on the repository's **Releases** page. The release workflow syntax-checks the Node/inline-browser source, runs the runtime smoke tests, reads the version from `package.json`, creates the corresponding tag when that version is new, and attaches a ZIP produced from that exact commit. Versions containing a prerelease suffix such as `-beta2` are published as GitHub prereleases.
 
 Example:
 
@@ -75,7 +76,7 @@ Then:
 start-windows.bat
 ```
 
-The Windows setup locates `npm.cmd` beside the active `node.exe`; the launcher starts `node server.mjs` directly.
+The Windows setup locates `npm.cmd` beside the active `node.exe`; the launcher starts the configured server entrypoint directly.
 
 ### Linux
 
@@ -136,19 +137,21 @@ chatgpt-conversation-crawler-vX.Y.Z/
 5. Playwright does **not** connect to, inspect, script, or poll that browser while the login process is open.
 6. Sign in through ChatGPT normally, including any Google/Apple/SSO/MFA/device verification that ChatGPT requests.
 7. Close the login browser when sign-in is complete, or use **Close login window** in the crawler UI.
-8. After the standalone Chromium process exits, the crawler briefly reopens the same profile under Playwright and probes ChatGPT's `/api/auth/session` endpoint.
+8. After the standalone Chromium process exits, the crawler briefly reopens the same profile under Playwright and checks whether current ChatGPT authentication-session cookie metadata is present. Cookie values are not exposed.
 
 The standalone login process is launched with only the dedicated user-data directory plus ordinary first-run/default-browser suppression arguments. It is not launched with a Playwright remote-debugging connection or the previous Playwright persistent-context login path.
 
 The crawler never asks for the password and does not implement a separate credential-login protocol. Authentication happens in ChatGPT's own page.
 
-**Beta note:** `v1.6.7-beta1` used a headed Playwright-controlled Chromium login window and can trigger Google's “browser or app may not be secure” rejection. `v1.6.7-beta2` keeps the same persistent Chromium profile design but makes the manual login browser an unmanaged standalone bundled-Chromium process. If Google still rejects the bundled Chromium distribution itself, the next fallback experiment is Firefox-based login/state transfer.
+**Beta note:** `v1.6.7-beta1` used a headed Playwright-controlled Chromium login window and can trigger Google's “browser or app may not be secure” rejection. `v1.6.7-beta2` keeps the same persistent Chromium profile design but makes the manual login browser an unmanaged standalone bundled-Chromium process.
 
 ### Persistent reuse
 
-Authenticated archive jobs still launch a Playwright persistent context backed by the same `browser-profile` directory. Cookies and browser storage therefore survive crawler/process restarts in the same way a normal browser profile does.
+Authenticated archive jobs launch a Playwright persistent context backed by the same `browser-profile` directory. Cookies and browser storage therefore survive crawler/process restarts in the same way a normal browser profile does.
 
-If ChatGPT expires, revokes, or challenges the saved session, use **Open ChatGPT login** again. **Check session** launches the saved profile briefly and probes `/api/auth/session` without deleting it. **Forget saved session** deletes `./browser-profile` entirely.
+If ChatGPT expires, revokes, or challenges the saved session, use **Open ChatGPT login** again. **Check session** opens the saved profile briefly, allows visible Cloudflare verification when necessary, and checks authentication-cookie metadata without deleting the profile. The requested share page remains the final practical access check. **Forget saved session** deletes `./browser-profile` entirely.
+
+The old beta5 viewport PNG diagnostics are gone. Session checking no longer writes `public/session-home-diagnostic.png` or `public/session-share-diagnostic.png`; development archive runs use the MHTML recorder for browser-state diagnostics instead.
 
 ### Profile locking
 
@@ -187,6 +190,8 @@ Verify oldest edge
     ↓
 Pass 3: down
     ↓
+Retained-disclosure reconciliation, only while retained turns remain unresolved
+    ↓
 Final expansion sweep
     ↓
 Build static archive
@@ -196,21 +201,29 @@ Long ChatGPT conversations can virtualize old DOM nodes out of the document. Eve
 
 If the same turn is encountered later in a richer state, the retained copy is replaced. The turn richness score strongly favors, in order:
 
-1. no remaining detected collapsed disclosures;
-2. more `<pre>` blocks;
-3. more `<code>` elements;
-4. more text;
-5. larger retained HTML.
+1. more `<pre>` blocks;
+2. more `<code>` elements;
+3. more text;
+4. larger retained HTML;
+5. fewer remaining recognized collapsed disclosures as the final tie-breaker.
 
 Timestamp/branch markers and app-block snapshots are retained separately from the turn richness score so virtualization cannot discard them.
 
 ### Directional convergence
 
-Each directional pass allows up to **2,000** steps. An endpoint needs six matching observations. The signature includes scroll geometry, retained/mounted turn boundaries, expansion/failure counters, `<pre>`/`<code>` counts, and timeline-marker count.
+Each directional pass allows up to **2,000** steps. An endpoint needs six matching observations. The signature includes scroll geometry, retained/mounted turn boundaries, expansion/failure counters, `<pre>`/`<code>` counts, timeline-marker count, collapsed-disclosure diagnostics, expansion generation, and quiescence state.
 
 ### Oldest-edge verification
 
 The crawler repeatedly returns to the actual top (`scrollTop <= 4`) and requires twelve unchanged observations there. After several quiet checks it nudges away from the top and returns to retrigger lazy-loading/virtualizer boundaries. If the **180-check** safety limit is reached first, the archive continues but records the actual result instead of claiming false 12/12 convergence.
+
+### Retained-disclosure reconciliation
+
+Mounted-DOM quiescence cannot by itself prove that the retained conversation is complete. ChatGPT may virtualize away a turn and later remount its root reasoning/tool disclosure collapsed.
+
+After pass 3, the crawler inspects the richest retained version of every turn. If any retained turn still records recognized collapsed disclosures, it performs additional full traversals while continuing the normal mounted fixed-point expansion/hydration logic. Reconciliation alternates traversal direction, recomputes the unresolved retained corpus after each pass, and stops when the corpus reaches zero or bounded no-progress/safety limits are reached.
+
+This is specifically designed for cases where opening one remounted parent disclosure causes an entire previously unmounted child disclosure tree to appear.
 
 ## Disclosure expansion
 
@@ -222,7 +235,7 @@ section[data-testid^="conversation-turn-"]
 
 A collapsed control is eligible when it structurally controls content (`aria-expanded="false"` with `aria-controls`) or is a recognized parent reasoning control such as **Worked for**, **Thought**, **Thinking**, or **Reasoning**. Obvious menus are excluded.
 
-Each click is confirmed. A disclosure that remains collapsed after three attempts is recorded as a failure. The final mounted expansion sweep allows up to **500** remaining disclosures.
+Each click is confirmed. A disclosure that remains collapsed after three attempts is recorded as a failure. A successful activation clears that disclosure's attempt counter, so the same logical control gets a fresh retry budget if ChatGPT later virtualizes it away and remounts it collapsed. The final mounted expansion sweep allows up to **500** remaining disclosures.
 
 Complete retained-turn statistics and scroll metrics are recomputed every eight expansions and at the end of a sweep; lightweight expansion updates keep the status UI current between those full reports.
 
@@ -361,6 +374,10 @@ The worker heartbeat is independent of crawler progress and updates approximatel
 
 `Last substantive progress` excludes ordinary scan-step churn. Retained content, mounted boundaries, timeline markers, expansion/failure state, app-block capture count/failures, and maximum observed scroll height can contribute to substantive progress.
 
+## Development MHTML diagnostics
+
+Development builds record Chromium MHTML snapshots so browser-state changes can be compared against crawler retention. Event-driven captures for material DOM changes, manual-inspection changes, lazy resources, initial load, and context close are retained. The 10-second periodic snapshot is only an **idle safety net**: any other capture request restarts the idle timer, which avoids a second redundant clock-driven stream during active crawling.
+
 ## Static output and security model
 
 The final HTML is script-free. It preserves semantic turn structure, code blocks, links, tables, blockquotes, formulas as MathML, timeline/branch markers, embedded images, flattened app-block contents, retained static SVG, and diagnostics.
@@ -386,8 +403,8 @@ Do not expose the local server port or `browser-profile/` to untrusted systems.
 | --- | --- | --- |
 | `GET` | `/api/session/status` | Read persistent-profile/session state |
 | `POST` | `/api/session/login` | Open the real ChatGPT site in standalone Playwright-bundled Chromium using the persistent profile |
-| `POST` | `/api/session/close-login` | Close the standalone interactive login browser and verify the saved session afterward |
-| `POST` | `/api/session/check` | Probe ChatGPT authentication using the saved profile |
+| `POST` | `/api/session/close-login` | Close the standalone interactive login browser and check the saved authentication state afterward |
+| `POST` | `/api/session/check` | Open the saved profile for interactive verification when needed and inspect authentication-cookie metadata |
 | `POST` | `/api/session/forget` | Delete `./browser-profile` when it is not in use |
 | `POST` | `/api/archive/start` | Start a tracked archive job; body accepts `sessionMode: "authenticated"` or `"anonymous"` |
 | `GET` | `/api/archive/status/:id` | Poll status/progress |
@@ -415,12 +432,13 @@ It does not:
 
 ## Development checks
 
-The release workflow runs syntax checks before packaging. Locally, the core checks are:
+The release workflow syntax-checks the Node and inline-browser source and runs every runtime smoke test in `tests/*.mjs` before packaging. Locally, the core checks are:
 
 ```bash
 node --check server.mjs
-for file in src/*.mjs; do node --check "$file"; done
+for file in src/*.mjs tests/*.mjs; do node --check "$file"; done
 bash -n setup-linux.sh start-linux.sh setup-macos.sh start-macos.sh
+for test_file in tests/*.mjs; do node "$test_file"; done
 ```
 
 For crawler/archive changes, test at least:
@@ -441,7 +459,10 @@ For crawler/archive changes, test at least:
 14. inline/display formulas including a forced TeX-render fallback;
 15. an app block with at least two iframe levels;
 16. app-block `<img>`, SVG `<image>`, CSS background images and canvas where available;
-17. meaningful inline SVG in the main conversation outside formula/app-block content.
+17. meaningful inline SVG in the main conversation outside formula/app-block content;
+18. remounted reasoning/tool disclosures after multiple successful prior mounts, verifying that successful activation resets the retry budget;
+19. retained-disclosure reconciliation on a long virtualized conversation;
+20. development MHTML idle-periodic behavior and single-recorder startup.
 
 ## Version history
 
@@ -465,8 +486,12 @@ For crawler/archive changes, test at least:
 - **v1.6.5** — removes the temporary crawler/snapshot wrapper-core split, makes app-block detection structural rather than title-dependent, embeds app-block raster/background/SVG-image assets while frames are alive, and preserves meaningful non-formula SVG in the main conversation.
 - **v1.6.6** — retains main-chat image response bytes during crawling, resolves mounted blobs early, corrects MIME type from actual image bytes, and uses final URL fetching only as fallback.
 - **v1.6.7-beta1** — experimental persistent authenticated ChatGPT browser-profile mode using a headed Playwright-controlled Chromium login window, session checking/deletion, authenticated-job serialization, anonymous fallback mode, and loopback-only server binding by default.
-- **v1.6.7-beta2** — changes only the manual-login path to launch Playwright's bundled Chromium as an unmanaged standalone OS process, keeps the same `browser-profile`, and verifies the ChatGPT session only after that browser exits.
+- **v1.6.7-beta2** — changes only the manual-login path to launch Playwright's bundled Chromium as an unmanaged standalone OS process, keeps the same `browser-profile`, and verifies the saved authentication state only after that browser exits.
+- **v1.6.7-beta3 through beta6** — iterative authenticated-browser, capture-fidelity, app-block, image, and diagnostic improvements leading into the beta7 fixed-point crawler experiments.
+- **v1.6.7-beta7-dev through dev2.3** — MHTML/manual diagnostic series that isolated sparse virtualizer remounting, nested disclosure hydration, duplicate-recorder startup, partial-capture salvage, and background-renderer behavior.
+- **v1.6.7-beta7-dev2.4** — resets disclosure retry budgets after successful activation, adds retained-corpus disclosure reconciliation, makes periodic MHTML capture idle-driven, and removes obsolete PNG diagnostics.
+- **v1.6.7-beta7-dev2.4.1** — cleanup release: removes the stale beta5 session-diagnostics document and reconciles README documentation with the dev2.4 implementation; crawler behavior is unchanged from dev2.4.
 
 ## Maintenance note
 
-ChatGPT's frontend and authentication flow are not stable public APIs. Prefer user-facing structural semantics—conversation-turn boundaries, accessibility disclosure state, visible timeline markers, `data-app-block-preview`, mounted-scroll behavior, and ChatGPT's own browser session endpoint—over generated CSS class names or localized presentation labels.
+ChatGPT's frontend and authentication flow are not stable public APIs. Prefer user-facing structural semantics—conversation-turn boundaries, accessibility disclosure state, visible timeline markers, `data-app-block-preview`, mounted-scroll behavior, and observable browser-session evidence—over generated CSS class names or localized presentation labels.

@@ -1,6 +1,6 @@
-# beta7-dev2.4 retained-disclosure reconciliation diagnostic
+# beta7-dev2.4.1 retained-disclosure reconciliation diagnostic
 
-`v1.6.7-beta7-dev2.4` keeps the sparse-aware manual target remounting, single MHTML recorder, two-step manual comparison, partial-capture salvage, and headed-Chromium background protections from dev2.3. It changes the automatic crawler where the dev2.3 MHTML timeline identified the remaining disclosure-loss mechanism.
+`v1.6.7-beta7-dev2.4.1` is the cleaned-up packaging of the dev2.4 crawler. The crawler behavior is unchanged from dev2.4: it keeps the sparse-aware manual target remounting, single MHTML recorder, two-step manual comparison, partial-capture salvage, headed-Chromium background protections, disclosure retry reset, and retained-corpus reconciliation. This patch release removes the stale beta5 session-diagnostics document that still described PNG diagnostics which dev2.4 no longer creates.
 
 ## Root cause found from dev2.3
 
@@ -8,11 +8,11 @@ The crawler keys disclosure retry state by turn, `aria-controls`, and label. A l
 
 After the same logical disclosure accumulated three successful activation attempts across earlier mounts, a later collapsed remount could therefore be recognized while already carrying `attempts=3`. The beta7 diagnostics then reported it as recognized but non-actionable. This matches the dev2.3 MHTML evidence immediately before the human root-disclosure clicks on turns 54 and 38.
 
-In dev2.4, a successful confirmation clears both the transient failure and its attempt counter. The three-attempt limit remains intact for a genuinely failing activation; it is no longer a lifetime cap across successful virtualizer remounts.
+In dev2.4 and dev2.4.1, a successful confirmation clears both the transient failure and its attempt counter. The three-attempt limit remains intact for a genuinely failing activation; it is no longer a lifetime cap across successful virtualizer remounts.
 
 ## Retained-corpus reconciliation
 
-Mounted-DOM quiescence alone cannot prove the retained conversation is complete because ChatGPT may virtualize away a turn and later remount its root disclosure collapsed. The automatic crawler now performs a retained-corpus reconciliation after the established three traversals.
+Mounted-DOM quiescence alone cannot prove the retained conversation is complete because ChatGPT may virtualize away a turn and later remount its root disclosure collapsed. The automatic crawler performs retained-corpus reconciliation after the established three traversals.
 
 The reconciliation uses each richest retained turn's `remaining` count as the authority for unresolved recognized disclosures:
 
@@ -28,7 +28,7 @@ The dev diagnostics expose retained unresolved turn/disclosure counts, represent
 
 ## Two-step manual validation remains
 
-The manual diagnostic remains intentionally independent so dev2.4 can be tested against the same human baseline:
+The manual diagnostic remains intentionally independent so dev2.4.1 can be tested against the same human baseline:
 
 1. Automatic traversal plus retained-corpus reconciliation completes.
 2. Save `automatic-before-manual.html`.
@@ -39,7 +39,7 @@ The manual diagnostic remains intentionally independent so dev2.4 can be tested 
 7. Remount it with the sparse-aware dev2.3 algorithm, fully expand it, and click **Finish manual inspection**.
 8. Save the second human checkpoint, reconverge, save `post-manual.html` and `summary.json`, then build the ordinary final archive.
 
-If dev2.4 is working as intended, the automatic baseline should be much closer to the human checkpoints, ideally with no additional tool/code leaves exposed by the manual root activation.
+If dev2.4.1 is working as intended, the automatic baseline should be much closer to the human checkpoints, ideally with no additional tool/code leaves exposed by the manual root activation.
 
 ## Sparse virtualizer remounting
 
@@ -47,13 +47,13 @@ The dev2.3 remount fix is unchanged. Manual target search uses the actual mounte
 
 ## MHTML volume reduction without removing event evidence
 
-The dev2.3 run produced many redundant clock-driven periodic MHTML files while material DOM and resource events were already being captured. In dev2.4:
+The dev2.3 run produced many redundant clock-driven periodic MHTML files while material DOM and resource events were already being captured. In dev2.4 and dev2.4.1:
 
 - `material-dom-change` capture is unchanged.
 - `manual-inspection-change` capture is unchanged.
 - `lazy-resource-loaded` capture is unchanged.
 - initial and context-closing captures are unchanged.
-- the 10-second periodic capture is now an **idle safety net**.
+- the 10-second periodic capture is an **idle safety net**.
 
 Any event-driven capture request restarts the 10-second idle timer. A `periodic-10s` snapshot is written only after a full 10 seconds without another capture request, then the idle timer starts again. This preserves periodic coverage during quiet intervals without duplicating the dense event-driven timeline.
 
@@ -61,7 +61,9 @@ Any event-driven capture request restarts the 10-second idle timer. A `periodic-
 
 The old runtime files `public/session-home-diagnostic.png` and `public/session-share-diagnostic.png` are no longer generated. Their screenshot-only code paths and `.gitignore` entries are removed, and the stale `public/session-diagnostics.html` screenshot viewer is deleted.
 
-Authentication behavior itself is unchanged: the standalone bundled Chromium login remains unmanaged for Google/SSO compatibility, session checks still inspect cookie metadata, and Cloudflare human-verification detection still pauses in visible Chromium for manual completion.
+The old `SESSION_DIAGNOSTICS.md` beta5 document is also removed in dev2.4.1 because it described those deleted PNG files and screenshot viewer.
+
+Authentication behavior itself is unchanged: the standalone bundled Chromium login remains unmanaged for Google/SSO compatibility, session checks inspect authentication-cookie metadata, and Cloudflare human-verification detection pauses in visible Chromium for manual completion.
 
 ## Background execution
 
