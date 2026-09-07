@@ -1,31 +1,51 @@
-# beta7-dev2.2 two-step manual inspection diagnostic
+# beta7-dev2.3 two-step manual inspection diagnostic
 
-`v1.6.7-beta7-dev2.2` keeps the beta7 fixed-point crawler, the single-recorder MHTML diagnostics, and the two-step manual inspection flow from dev2.1, while adding two safeguards discovered during the first real dev2.1 run.
+`v1.6.7-beta7-dev2.3` keeps the beta7 fixed-point crawler, single MHTML recorder, two-step manual comparison, partial-capture salvage, and headed-Chromium background-throttling protections from dev2.2.
 
-## What changed in dev2.2
+## Why this revision exists
 
-1. Headed authenticated Chromium is launched with Chromium's background-throttling protections enabled for Playwright persistent contexts: `--disable-background-timer-throttling`, `--disable-backgrounding-occluded-windows`, and `--disable-renderer-backgrounding`. This is development-only and does not alter the standalone unmanaged login browser used for Google/SSO.
-2. Manual inspection is now failure-tolerant after the automatic beta7 crawl has completed. If a diagnostic-only manual step fails (for example, a selected virtualized turn cannot be remounted), the crawler retains the automatic capture plus every richer turn already exposed manually, removes the manual overlay, and proceeds through the ordinary final archive builder instead of discarding the run. Cancellation still cancels normally.
+The dev2.1 run completed the automatic crawler and the turn-54 manual step, then failed while trying to remount the crawler-selected second target (`conversation-turn-38`). Visual observation showed Chromium repeatedly trying to scroll upward, being moved back down by ChatGPT's virtualizer, and entering a loop.
 
-The first dev2.1 run reached the second-target remount stage and failed while trying to remount `conversation-turn-38`. The generated `automatic-before-manual.html` and `after-turn-54-manual-before-reconvergence.html` remain valid diagnostic checkpoints from that run; dev2.2 is specifically designed so an equivalent diagnostic failure no longer removes the downloadable archive.
+The cause was in the diagnostic remount algorithm, not in beta7's retained-turn capture. The old search treated `mountedFirst`/`mountedLast` as if every intervening turn were mounted, chose an up/down direction from the numeric midpoint of that apparent range, and judged a scroll as successful immediately after assigning `scrollTop`. ChatGPT can mount a sparse set of turns and can subsequently rewrite `scrollTop` to preserve its visual anchor, so both assumptions were unsafe.
 
-## Flow
+## Remount fix in dev2.3
+
+Manual target remounting now uses the retained turn order plus the **actual set of mounted turn IDs**:
+
+1. If the target is already mounted, it is centered and verified after settling.
+2. If mounted turns bracket the missing target (for example, turn 37 and turn 39 are mounted while turn 38 is absent), the crawler anchors the end of the nearest preceding turn and probes **forward** in small increments.
+3. If all mounted retained turns are before the target, the crawler continues forward from the actual post-set position.
+4. Otherwise it repeatedly asserts the real top edge until `scrollTop=0` survives virtualizer settling, then performs a monotonic top-to-bottom sweep.
+5. If a coarse sweep skips the target, it restarts from the stable top with a finer forward step. It never reverses locally into the old `scroll up -> virtualizer bounces down -> scroll up again` loop.
+6. Progress is judged from the scroll position and mounted-turn set **after** ChatGPT has had time to react, not from the requested position in the same JavaScript turn.
+7. When forward scrolling stalls, the crawler uses the nearest mounted predecessor as a DOM anchor instead of blindly repeating the same pixel delta.
+
+The manual-step summary now records the remount strategy, sweep/step counts, and predecessor/successor information when available.
+
+## Two-step flow
 
 1. The automatic beta7 crawler completes all three traversals and nested-disclosure fixed-point checks.
-2. The development build saves `automatic-before-manual.html`.
-3. **Step 1:** Chromium is scrolled to `conversation-turn-54` and that turn is highlighted with an amber outline.
+2. Save `automatic-before-manual.html`.
+3. **Step 1:** remount and highlight `conversation-turn-54`.
 4. Fully expand turn 54 through every nested disclosure and wait for each tool/code/result leaf to finish loading.
-5. Click **Turn 54 is fully expanded — continue to step 2** in the ChatGPT overlay.
-6. The human-revealed turn-54 state is saved before beta7 reconverges the mounted range.
-7. The retained turns are re-read and a second diagnostic target is selected, excluding turn 54. A turn with retained collapsed controls is preferred; otherwise the richest assistant/tool turn is selected.
-8. **Step 2:** Chromium automatically scrolls to that second target and highlights it.
-9. Fully expand the second highlighted turn through every nested layer and wait for leaf content to finish loading.
-10. Click **Finish manual inspection**.
-11. The crawler saves the second human-revealed state, reruns beta7 fixed-point expansion on the mounted range, saves `post-manual.html` plus `summary.json`, and then builds the ordinary final archive.
+5. Click **Turn 54 is fully expanded — continue to step 2**.
+6. Save `after-turn-54-manual-before-reconvergence.html`, then run beta7 convergence.
+7. Re-read retained turns and select a second diagnostic target, excluding turn 54.
+8. **Step 2:** remount that target with the sparse-aware forward-only remount algorithm and highlight it.
+9. Fully expand the second target and click **Finish manual inspection**.
+10. Save `after-preferred-turn-manual-before-reconvergence.html`, reconverge, save `post-manual.html` and `summary.json`, then build the ordinary final archive.
 
-If turn 54 is unexpectedly absent from the retained automatic crawl, that fact is recorded in `summary.json` and the build proceeds to the crawler-selected target instead of silently substituting another turn for step 1.
+If the diagnostic still fails after the automatic crawl has completed, dev2.2's salvage behavior remains active: the diagnostic UI is removed, retained automatic/manual state is frozen, and the normal server finalizes a downloadable partial archive instead of discarding the job.
 
-If a non-cancellation manual diagnostic error occurs after the automatic crawl, dev2.2 finalizes the retained state available at that exact point. The resulting archive is intentionally a partial-manual diagnostic result, not proof that both manual steps completed.
+## Background execution
+
+The development launcher applies these Chromium flags to headed Playwright persistent contexts:
+
+- `--disable-background-timer-throttling`
+- `--disable-backgrounding-occluded-windows`
+- `--disable-renderer-backgrounding`
+
+This is intentionally limited to the development build while minimized/background behavior is validated empirically. The standalone unmanaged Chromium login window remains unchanged for Google/SSO compatibility.
 
 ## Diagnostic files
 
@@ -33,20 +53,14 @@ Each authenticated development run creates one directory under:
 
 `./manual-inspection-diagnostics/<timestamp>-two-step-manual-inspection/`
 
-A fully completed run contains:
+It contains:
 
-- `automatic-before-manual.html` — crawler output before any manual action;
-- `after-turn-54-manual-before-reconvergence.html` — state after the human finishes turn 54, before beta7 gets another chance to expand it;
-- `after-preferred-turn-manual-before-reconvergence.html` — equivalent human-only state for the second target;
-- `post-manual.html` — crawler output after both manual steps and final reconvergence;
-- `summary.json` — both targets, before/after richness metrics, fixed-point state, and bounded event logs of manual interactions.
+- `automatic-before-manual.html`
+- `after-turn-54-manual-before-reconvergence.html`
+- `after-preferred-turn-manual-before-reconvergence.html`
+- `post-manual.html`
+- `summary.json`
 
-If a manual diagnostic fails before the flow reaches a later checkpoint, files that require that later checkpoint will naturally be absent. The normal downloadable archive is nevertheless finalized from the retained crawler state in dev2.2.
+The existing `./mhtml-diagnostics/` capture remains active throughout the run. A single archive page should create a single MHTML diagnostic directory.
 
-The existing `./mhtml-diagnostics/` capture remains active throughout both pauses. Its manifest records manual step number/label, target, interaction count, crawler disclosure diagnostics, and MHTML capture reasons so browser state can be aligned with each manual action.
-
-A single archive page should create a single `mhtml-diagnostics/dev-.../` directory. Startup is guarded against concurrent `DOMContentLoaded`/`load` events and restored/stale tabs in the persistent profile are not selected as additional recorder targets.
-
-Both diagnostic directories may contain private ChatGPT content and signed resource URLs. They are ignored by Git and must never be committed or shared unintentionally. `./browser-profile/` remains separate and should never be uploaded.
-
-Anonymous mode remains headless and does not pause for manual inspection. This preserves the public-view crawling environment while still recording its MHTML.
+Both diagnostic directories may contain private ChatGPT content and signed resource URLs. They are ignored by Git and must never be committed or shared unintentionally. `./browser-profile/` remains separate and must never be uploaded.
