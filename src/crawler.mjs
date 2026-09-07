@@ -1,3 +1,10 @@
+const DISCLOSURE_STABLE_SAMPLES = 3;
+const DISCLOSURE_SAMPLE_INTERVAL_MS = 120;
+const DISCLOSURE_MAX_SETTLE_MS = 3600;
+const MOUNTED_STABLE_SAMPLES = 3;
+const MOUNTED_SAMPLE_INTERVAL_MS = 120;
+const MOUNTED_MAX_SETTLE_MS = 1200;
+
 export async function installCrawler(page) {
   await page.evaluate(() => {
     const state = {
@@ -129,11 +136,31 @@ export async function installCrawler(page) {
           kind: candidate.kind,
           label: candidate.label,
           text: candidate.text,
-          href: candidate.href,
+          href,
           title: candidate.title || '',
           order
         };
       }
+    }
+
+    function richnessVector(turn) {
+      return [
+        Number(turn.preCount || 0),
+        Number(turn.codeCount || 0),
+        Number(turn.textLength || 0),
+        Number(turn.htmlLength || turn.html?.length || 0),
+        -Number(turn.remaining || 0)
+      ];
+    }
+
+    function isRicher(candidate, previous) {
+      if (!previous) return true;
+      const a = richnessVector(candidate);
+      const b = richnessVector(previous);
+      for (let i = 0; i < a.length; i++) {
+        if (a[i] !== b[i]) return a[i] > b[i];
+      }
+      return false;
     }
 
     function capture() {
@@ -178,14 +205,10 @@ export async function installCrawler(page) {
         const codeCount = section.querySelectorAll('code').length;
         const textLength = (section.innerText || section.textContent || '').length;
         const html = clone.outerHTML;
-        const score = (remaining === 0 ? 1e9 : 0)
-          + preCount * 1e6
-          + codeCount * 1e5
-          + textLength * 10
-          + Math.min(html.length, 99999);
+        const candidate = { remaining, preCount, codeCount, textLength, htmlLength: html.length, html };
         const previous = state.turns[id];
 
-        if (!previous || score > previous.score || (score === previous.score && html.length > previous.html.length)) {
+        if (isRicher(candidate, previous)) {
           const message = section.querySelector('[data-message-id]');
           const timestamp = Object.values(state.timelineMarkers)
             .filter(marker => marker.beforeTurn === id && marker.kind === 'timestamp')
@@ -195,11 +218,11 @@ export async function installCrawler(page) {
             messageId: message?.getAttribute('data-message-id') || previous?.messageId || '',
             role: section.querySelector('[data-message-author-role]')?.getAttribute('data-message-author-role') || '',
             timestampLabel: timestamp?.text || previous?.timestampLabel || '',
-            score,
             remaining,
             preCount,
             codeCount,
             textLength,
+            htmlLength: html.length,
             html
           };
         }
@@ -231,7 +254,7 @@ export async function installCrawler(page) {
           state.successfulExpansions++;
           state.lastExpansionTurn = turnId(details);
           state.lastExpansion = `${state.lastExpansionTurn} — opened native <details>`;
-          return { kind: 'details', description: state.lastExpansion };
+          return { kind: 'details', description: state.lastExpansion, turnId: state.lastExpansionTurn };
         }
       }
 
@@ -245,6 +268,7 @@ export async function installCrawler(page) {
           const shortLabel = label(el).slice(0, 180) || el.getAttribute('aria-controls') || 'unlabelled disclosure';
           state.lastExpansionTurn = turnId(el);
           state.lastExpansion = `${state.lastExpansionTurn} — ${shortLabel}`;
+          const controls = el.getAttribute('aria-controls') || '';
           try {
             el.scrollIntoView({ block: 'center', inline: 'nearest' });
             el.click();
@@ -252,10 +276,63 @@ export async function installCrawler(page) {
           } catch (error) {
             state.failures[key] = `${shortLabel}: ${error?.message || 'click failed'}`;
           }
-          return { kind: 'click', key, description: state.lastExpansion };
+          return { kind: 'click', key, controls, turnId: state.lastExpansionTurn, description: state.lastExpansion };
         }
       }
       return null;
+    }
+
+    function findDisclosureByKey(key) {
+      for (const section of turns()) {
+        for (const el of section.querySelectorAll('[aria-expanded]')) {
+          if (keyFor(el) === key) return el;
+        }
+      }
+      return null;
+    }
+
+    function sampleNode(node) {
+      if (!node) return { textLength: 0, htmlLength: 0, preCount: 0, codeCount: 0, mediaCount: 0, childCount: 0 };
+      return {
+        textLength: (node.innerText || node.textContent || '').length,
+        htmlLength: (node.outerHTML || '').length,
+        preCount: node.querySelectorAll?.('pre').length || 0,
+        codeCount: node.querySelectorAll?.('code').length || 0,
+        mediaCount: node.querySelectorAll?.('img,svg,canvas,video').length || 0,
+        childCount: node.querySelectorAll?.('*').length || 0
+      };
+    }
+
+    function disclosureSample(key) {
+      const el = findDisclosureByKey(key);
+      if (!el) return { present: false, expanded: false, targetExists: false, signature: 'missing' };
+      const controls = el.getAttribute('aria-controls') || '';
+      const turn = el.closest(turnSelector);
+      const target = controls ? document.getElementById(controls) : turn;
+      const targetMetrics = sampleNode(target || turn);
+      const turnMetrics = sampleNode(turn);
+      return {
+        present: true,
+        expanded: el.getAttribute('aria-expanded') !== 'false',
+        targetExists: !controls || Boolean(target),
+        controls,
+        signature: [
+          targetMetrics.textLength, targetMetrics.htmlLength, targetMetrics.preCount, targetMetrics.codeCount, targetMetrics.mediaCount, targetMetrics.childCount,
+          turnMetrics.textLength, turnMetrics.htmlLength, turnMetrics.preCount, turnMetrics.codeCount, turnMetrics.mediaCount, turnMetrics.childCount
+        ].join('|')
+      };
+    }
+
+    function mountedSample() {
+      const parts = [];
+      for (const section of turns()) {
+        const id = section.getAttribute('data-testid') || '';
+        const metrics = sampleNode(section);
+        const collapsed = [...section.querySelectorAll('[aria-expanded="false"]')].filter(isDisclosure).length
+          + section.querySelectorAll('details:not([open])').length;
+        parts.push([id, metrics.textLength, metrics.htmlLength, metrics.preCount, metrics.codeCount, metrics.mediaCount, metrics.childCount, collapsed].join(':'));
+      }
+      return parts.join('|');
     }
 
     function confirm(key) {
@@ -299,7 +376,10 @@ export async function installCrawler(page) {
       state.oldestVerification = { ...state.oldestVerification, ...result };
     }
 
-    window.__archiveCrawler = { state, capture, activity, expandOne, confirm, metrics, setTop, stats, markOldestVerification };
+    window.__archiveCrawler = {
+      state, capture, activity, expandOne, confirm, disclosureSample, mountedSample,
+      metrics, setTop, stats, markOldestVerification
+    };
     capture();
   });
 }
@@ -317,14 +397,56 @@ async function report(page, onProgress, extra = {}) {
   return { stats, metrics };
 }
 
+async function waitForDisclosureHydration(page, result, shouldCancel) {
+  if (!result?.key) return;
+  const deadline = Date.now() + DISCLOSURE_MAX_SETTLE_MS;
+  let previous = '';
+  let stable = 0;
+
+  while (Date.now() < deadline) {
+    if (shouldCancel?.()) throw new Error('Archive cancelled.');
+    const sample = await page.evaluate(key => window.__archiveCrawler.disclosureSample(key), result.key);
+    if (sample.expanded && sample.targetExists) {
+      stable = sample.signature === previous ? stable + 1 : 1;
+      previous = sample.signature;
+      if (stable >= DISCLOSURE_STABLE_SAMPLES) return;
+    } else {
+      stable = 0;
+      previous = '';
+    }
+    await page.waitForTimeout(DISCLOSURE_SAMPLE_INTERVAL_MS);
+  }
+}
+
+async function stabilizeMounted(page, shouldCancel, maxMs = MOUNTED_MAX_SETTLE_MS) {
+  const deadline = Date.now() + maxMs;
+  let previous = '';
+  let stable = 0;
+
+  while (Date.now() < deadline) {
+    if (shouldCancel?.()) throw new Error('Archive cancelled.');
+    const signature = await page.evaluate(() => window.__archiveCrawler.mountedSample());
+    stable = signature === previous ? stable + 1 : 1;
+    previous = signature;
+    if (stable >= MOUNTED_STABLE_SAMPLES) return;
+    await page.waitForTimeout(MOUNTED_SAMPLE_INTERVAL_MS);
+  }
+}
+
 async function expandMounted(page, max, onProgress, shouldCancel) {
   let expandedSinceFullReport = 0;
   for (let i = 0; i < max; i++) {
     if (shouldCancel?.()) throw new Error('Archive cancelled.');
     const result = await page.evaluate(() => window.__archiveCrawler.expandOne());
     if (!result) break;
-    await page.waitForTimeout(result.kind === 'details' ? 40 : 180);
-    if (result.key) await page.evaluate(key => window.__archiveCrawler.confirm(key), result.key);
+
+    if (result.kind === 'details') {
+      await page.waitForTimeout(80);
+    } else {
+      await waitForDisclosureHydration(page, result, shouldCancel);
+      await page.evaluate(key => window.__archiveCrawler.confirm(key), result.key);
+    }
+
     const activity = await page.evaluate(() => window.__archiveCrawler.capture());
     expandedSinceFullReport++;
 
@@ -337,6 +459,9 @@ async function expandMounted(page, max, onProgress, shouldCancel) {
       expandedSinceFullReport = 0;
     }
   }
+
+  await stabilizeMounted(page, shouldCancel);
+  await page.evaluate(() => window.__archiveCrawler.capture());
   if (expandedSinceFullReport) await report(page, onProgress);
 }
 
@@ -388,7 +513,7 @@ async function scan(page, direction, pass, onProgress, shouldCancel, maxSteps = 
     await onProgress?.({
       ...stats,
       phase: 'Scanning conversation',
-      detail: 'Capturing mounted turns, timeline markers, and disclosures as they appear.',
+      detail: 'Capturing mounted turns, timeline markers, disclosures, and asynchronously hydrated tool content as they appear.',
       scanningStatus: `Pass ${pass}/3 ${arrow} · step ${step + 1}/${maxSteps} · ${positionPercent.toFixed(1)}% mounted range · mounted first ${stats.mountedFirst}${edgeStatus}`,
       scanComplete: false,
       pass,
@@ -548,8 +673,8 @@ export async function crawlConversation(page, { onProgress, shouldCancel } = {})
   await onProgress?.({
     phase: 'Final expansion sweep',
     detail: oldest.converged
-      ? 'Traversal is complete; opening any disclosures still mounted before the final snapshot.'
-      : 'Traversal is complete but the oldest edge hit its safety limit; opening remaining mounted disclosures before the final snapshot.',
+      ? 'Traversal is complete; opening and stabilizing any disclosures still mounted before the final snapshot.'
+      : 'Traversal is complete but the oldest edge hit its safety limit; opening and stabilizing remaining mounted disclosures before the final snapshot.',
     scanningStatus: traversalSummary,
     scanComplete: true,
     pass: 0,
@@ -561,10 +686,11 @@ export async function crawlConversation(page, { onProgress, shouldCancel } = {})
     oldestChecks: oldest.checks
   });
   await expandMounted(page, 500, onProgress, shouldCancel);
+  await stabilizeMounted(page, shouldCancel, 1800);
   await page.evaluate(() => window.__archiveCrawler.capture());
   await report(page, onProgress, {
     phase: 'Final expansion sweep',
-    detail: 'Expansion sweep complete; preparing the final static page.',
+    detail: 'Expansion and hydration sweep complete; preparing the final static page.',
     scanningStatus: traversalSummary,
     scanComplete: true,
     pass: 0,
