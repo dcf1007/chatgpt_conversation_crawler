@@ -19,6 +19,7 @@ import {
   finalizeMainImages
 } from './src/main-images.mjs';
 import { createChatGptSessionManager } from './src/chatgpt-session.mjs';
+import { finalizeConversationFidelity } from './src/archive-fidelity.mjs';
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -183,7 +184,8 @@ async function assembleSnapshot(page, sourceUrl, options = {}) {
     if (mainImages) await restoreMainImages(page, mainImages);
   }
   snapshot = finalizeEmbeddedContent(snapshot, prepared);
-  return mainImages ? finalizeMainImages(snapshot, mainImages) : snapshot;
+  if (mainImages) snapshot = finalizeMainImages(snapshot, mainImages);
+  return finalizeConversationFidelity(snapshot);
 }
 
 async function maybeRefreshPreview(job, { force = false } = {}) {
