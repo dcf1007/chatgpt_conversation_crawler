@@ -171,13 +171,12 @@ async function startRecorder(page, mode) {
 
 async function stopRecorder(state, reason = 'context-closing') {
   if (!state || state.closing) return;
-  state.closing = true;
   if (state.sampleTimer) clearInterval(state.sampleTimer);
   if (state.resourceTimer) clearTimeout(state.resourceTimer);
-  const page = [...pageState.entries?.() || []];
   try {
     await state.recorder.capture(reason).catch(() => {});
   } finally {
+    state.closing = true;
     await state.recorder.close().catch(() => {});
   }
 }
