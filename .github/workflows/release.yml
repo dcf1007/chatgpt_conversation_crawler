@@ -49,6 +49,12 @@ jobs:
             node --check "$file"
           done
 
+      - name: Run crawler install smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tests/crawler-install-smoke.mjs
+
       - name: Read package version
         id: version
         shell: bash
