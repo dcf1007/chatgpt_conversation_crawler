@@ -2,13 +2,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { createMhtmlRecorder } from './mhtml-recorder.mjs';
+import { createAsyncStartGate } from './mhtml-start-gate.mjs';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SAMPLE_INTERVAL_MS = 1000;
 const MATERIAL_CAPTURE_COOLDOWN_MS = 2000;
 const RESOURCE_CAPTURE_COOLDOWN_MS = 3000;
+
 const pageState = new WeakMap();
 const contextState = new WeakMap();
+const runRecorderStart = createAsyncStartGate();
 let diagnosticSequence = 0;
 
 function isShareUrl(value) {
@@ -32,10 +35,9 @@ function createDiagnosticId(mode) {
 }
 
 /**
- * Sample both raw live DOM state and crawler/manual-inspection diagnostics.
- * Keeping both matters: a discrepancy between raw collapsed controls and the
- * crawler's recognized controls is exactly the kind of classifier gap this
- * development build is meant to expose.
+ * Sample raw browser state alongside crawler and manual-inspection diagnostics.
+ * Raw collapsed controls are intentionally kept separate from the crawler's
+ * recognized controls so a classifier miss is visible in the manifest.
  */
 async function samplePage(page) {
   return page.evaluate(() => {
@@ -86,6 +88,9 @@ async function samplePage(page) {
         ? crawlerStats.unrecognizedCollapsedLabels.slice(0, 12)
         : [],
       manualPhase: String(manualState.phase || ''),
+      manualStepIndex: Number(manualState.stepIndex || 0),
+      manualStepCount: Number(manualState.stepCount || 0),
+      manualStepLabel: String(manualState.stepLabel || ''),
       manualTargetTurnId: String(manualState.targetTurnId || ''),
       manualTargetReason: String(manualState.targetReason || ''),
       manualInteractionCount: Number(manualState.interactionCount || 0),
@@ -117,6 +122,9 @@ function sampleSignature(sample) {
     sample.expansionGeneration,
     sample.quiescentRounds,
     sample.manualPhase,
+    sample.manualStepIndex,
+    sample.manualStepCount,
+    sample.manualStepLabel,
     sample.manualTargetTurnId,
     sample.manualInteractionCount,
     sample.manualFinishRequested,
@@ -127,6 +135,9 @@ function sampleSignature(sample) {
 function manualStateChanged(previousSample, currentSample) {
   if (!previousSample) return Boolean(currentSample.manualPhase);
   return previousSample.manualPhase !== currentSample.manualPhase ||
+    previousSample.manualStepIndex !== currentSample.manualStepIndex ||
+    previousSample.manualStepCount !== currentSample.manualStepCount ||
+    previousSample.manualStepLabel !== currentSample.manualStepLabel ||
     previousSample.manualTargetTurnId !== currentSample.manualTargetTurnId ||
     previousSample.manualInteractionCount !== currentSample.manualInteractionCount ||
     previousSample.manualFinishRequested !== currentSample.manualFinishRequested ||
@@ -141,114 +152,127 @@ async function markPageMode(page, mode) {
 
 async function startRecorder(page, mode) {
   if (pageState.has(page) || !isShareUrl(page.url())) return;
-  await markPageMode(page, mode);
 
-  const diagnosticState = {
-    id: createDiagnosticId(mode),
-    sessionMode: normalizeMode(mode),
-    url: page.url(),
-    phase: 'Browser MHTML diagnostic',
-    pass: 0,
-    direction: '',
-    step: 0,
-    turns: 0,
-    oldestRetained: 'none',
-    newestRetained: 'none',
-    mountedFirst: 'none',
-    mountedLast: 'none',
-    scrollHeight: 0,
-    preBlocks: 0,
-    codeBlocks: 0,
-    appBlocks: 0
-  };
+  return runRecorderStart(page, async () => {
+    // DOMContentLoaded and load can fire close together. Check again after the
+    // asynchronous start gate is acquired so only one recorder can win.
+    if (pageState.has(page) || !isShareUrl(page.url())) return;
 
-  const recorder = await createMhtmlRecorder(PROJECT_ROOT, diagnosticState, page).catch(() => null);
-  if (!recorder) return;
+    const owningContext = contextState.get(page.context());
+    if (owningContext?.targetPage && owningContext.targetPage !== page) return;
 
-  const state = {
-    recorder,
-    diagnosticState,
-    sampleTimer: null,
-    previousSample: null,
-    lastSignature: '',
-    lastMaterialCaptureAt: 0,
-    lastResourceCaptureAt: 0,
-    resourceTimer: null,
-    closing: false
-  };
-  pageState.set(page, state);
-  contextState.get(page.context())?.recorders.add(state);
+    await markPageMode(page, mode);
 
-  const capture = async (reason, sample = null) => {
-    if (state.closing) return;
-    if (sample) {
-      Object.assign(diagnosticState, {
-        url: page.url(),
-        turns: sample.turns,
-        mountedFirst: sample.mountedFirst,
-        mountedLast: sample.mountedLast,
-        scrollHeight: sample.scrollHeight,
-        preBlocks: sample.preBlocks,
-        codeBlocks: sample.codeBlocks,
-        appBlocks: sample.appBlocks
-      });
+    const diagnosticState = {
+      id: createDiagnosticId(mode),
+      sessionMode: normalizeMode(mode),
+      url: page.url(),
+      phase: 'Browser MHTML diagnostic',
+      pass: 0,
+      direction: '',
+      step: 0,
+      turns: 0,
+      oldestRetained: 'none',
+      newestRetained: 'none',
+      mountedFirst: 'none',
+      mountedLast: 'none',
+      scrollHeight: 0,
+      preBlocks: 0,
+      codeBlocks: 0,
+      appBlocks: 0
+    };
+
+    const recorder = await createMhtmlRecorder(PROJECT_ROOT, diagnosticState, page).catch(() => null);
+    if (!recorder) return;
+
+    const state = {
+      recorder,
+      diagnosticState,
+      sampleTimer: null,
+      previousSample: null,
+      lastSignature: '',
+      lastMaterialCaptureAt: 0,
+      lastResourceCaptureAt: 0,
+      resourceTimer: null,
+      closing: false
+    };
+    pageState.set(page, state);
+    if (owningContext) {
+      owningContext.recorderState = state;
+      owningContext.recorders.add(state);
     }
-    await recorder.capture(reason, sample || {}).catch(() => {});
-  };
 
-  await page.waitForTimeout(300).catch(() => {});
-  const initialSample = await samplePage(page).catch(() => null);
-  if (initialSample) {
-    state.previousSample = initialSample;
-    state.lastSignature = sampleSignature(initialSample);
-    state.lastMaterialCaptureAt = Date.now();
-  }
-  await capture('initial-loaded', initialSample);
-  recorder.startPeriodic();
-
-  state.sampleTimer = setInterval(async () => {
-    if (state.closing || page.isClosed() || !isShareUrl(page.url())) return;
-    const currentSample = await samplePage(page).catch(() => null);
-    if (!currentSample) return;
-
-    const signature = sampleSignature(currentSample);
-    if (signature !== state.lastSignature) {
-      const previousSample = state.previousSample;
-      state.lastSignature = signature;
-      state.previousSample = currentSample;
-      const now = Date.now();
-
-      if (now - state.lastMaterialCaptureAt >= MATERIAL_CAPTURE_COOLDOWN_MS) {
-        state.lastMaterialCaptureAt = now;
-        const reason = manualStateChanged(previousSample, currentSample)
-          ? 'manual-inspection-change'
-          : 'material-dom-change';
-        void capture(reason, currentSample);
+    const capture = async (reason, sample = null) => {
+      if (state.closing) return;
+      if (sample) {
+        Object.assign(diagnosticState, {
+          url: page.url(),
+          turns: sample.turns,
+          mountedFirst: sample.mountedFirst,
+          mountedLast: sample.mountedLast,
+          scrollHeight: sample.scrollHeight,
+          preBlocks: sample.preBlocks,
+          codeBlocks: sample.codeBlocks,
+          appBlocks: sample.appBlocks
+        });
       }
-    } else {
-      state.previousSample = currentSample;
+      await recorder.capture(reason, sample || {}).catch(() => {});
+    };
+
+    await page.waitForTimeout(300).catch(() => {});
+    const initialSample = await samplePage(page).catch(() => null);
+    if (initialSample) {
+      state.previousSample = initialSample;
+      state.lastSignature = sampleSignature(initialSample);
+      state.lastMaterialCaptureAt = Date.now();
     }
-  }, SAMPLE_INTERVAL_MS);
-  state.sampleTimer.unref?.();
+    await capture('initial-loaded', initialSample);
+    recorder.startPeriodic();
 
-  page.on('requestfinished', request => {
-    if (state.closing || !isShareUrl(page.url())) return;
-    const resourceType = request.resourceType();
-    if (!['image', 'fetch', 'xhr'].includes(resourceType)) return;
-
-    const resourceUrl = request.url();
-    if (!/(?:chatgpt\.com\/(?:backend-api|backend-anon)|oaiusercontent\.com|oaistatic\.com)/i.test(resourceUrl)) return;
-
-    const now = Date.now();
-    if (now - state.lastResourceCaptureAt < RESOURCE_CAPTURE_COOLDOWN_MS) return;
-    state.lastResourceCaptureAt = now;
-    clearTimeout(state.resourceTimer);
-    state.resourceTimer = setTimeout(async () => {
-      if (state.closing || page.isClosed()) return;
+    state.sampleTimer = setInterval(async () => {
+      if (state.closing || page.isClosed() || !isShareUrl(page.url())) return;
       const currentSample = await samplePage(page).catch(() => null);
-      await capture('lazy-resource-loaded', currentSample);
-    }, 700);
-    state.resourceTimer.unref?.();
+      if (!currentSample) return;
+
+      const signature = sampleSignature(currentSample);
+      if (signature !== state.lastSignature) {
+        const previousSample = state.previousSample;
+        state.lastSignature = signature;
+        state.previousSample = currentSample;
+        const currentTime = Date.now();
+
+        if (currentTime - state.lastMaterialCaptureAt >= MATERIAL_CAPTURE_COOLDOWN_MS) {
+          state.lastMaterialCaptureAt = currentTime;
+          const reason = manualStateChanged(previousSample, currentSample)
+            ? 'manual-inspection-change'
+            : 'material-dom-change';
+          void capture(reason, currentSample);
+        }
+      } else {
+        state.previousSample = currentSample;
+      }
+    }, SAMPLE_INTERVAL_MS);
+    state.sampleTimer.unref?.();
+
+    page.on('requestfinished', request => {
+      if (state.closing || !isShareUrl(page.url())) return;
+      const resourceType = request.resourceType();
+      if (!['image', 'fetch', 'xhr'].includes(resourceType)) return;
+
+      const resourceUrl = request.url();
+      if (!/(?:chatgpt\.com\/(?:backend-api|backend-anon)|oaiusercontent\.com|oaistatic\.com)/i.test(resourceUrl)) return;
+
+      const currentTime = Date.now();
+      if (currentTime - state.lastResourceCaptureAt < RESOURCE_CAPTURE_COOLDOWN_MS) return;
+      state.lastResourceCaptureAt = currentTime;
+      clearTimeout(state.resourceTimer);
+      state.resourceTimer = setTimeout(async () => {
+        if (state.closing || page.isClosed()) return;
+        const currentSample = await samplePage(page).catch(() => null);
+        await capture('lazy-resource-loaded', currentSample);
+      }, 700);
+      state.resourceTimer.unref?.();
+    });
   });
 }
 
@@ -265,7 +289,7 @@ async function stopRecorder(state, reason = 'context-closing') {
   }
 }
 
-function attachPage(page, mode) {
+function attachTargetPage(page, mode) {
   const maybeStart = () => {
     void markPageMode(page, mode);
     void startRecorder(page, mode);
@@ -273,16 +297,35 @@ function attachPage(page, mode) {
 
   page.on('domcontentloaded', maybeStart);
   page.on('load', maybeStart);
-  if (isShareUrl(page.url())) maybeStart();
+
+  // Do not immediately start on an already-open restored tab. The archive
+  // server will navigate its chosen page to the requested /share/ URL, and
+  // that navigation event becomes the authoritative recorder start.
 }
 
 function instrumentContext(context, mode) {
   if (contextState.has(context)) return context;
 
-  const state = { recorders: new Set(), closing: false };
+  const existingPages = context.pages();
+  const state = {
+    recorders: new Set(),
+    recorderState: null,
+    closing: false,
+    targetPage: existingPages[0] || null
+  };
   contextState.set(context, state);
-  context.on('page', page => attachPage(page, mode));
-  for (const page of context.pages()) attachPage(page, mode);
+
+  if (state.targetPage) attachTargetPage(state.targetPage, mode);
+
+  context.on('page', page => {
+    // server.mjs uses the first page in the context. Restrict diagnostics to
+    // that same page so restored/stale ChatGPT tabs cannot create extra MHTML
+    // folders for one archive job.
+    if (!state.targetPage) {
+      state.targetPage = page;
+      attachTargetPage(page, mode);
+    }
+  });
 
   const originalClose = context.close.bind(context);
   context.close = async (...args) => {
