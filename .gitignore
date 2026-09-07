@@ -5,6 +5,7 @@ test-results/
 chatgpt-share-*.html
 browser-profile/
 mhtml-diagnostics/
+manual-inspection-diagnostics/
 public/session-home-diagnostic.png
 public/session-share-diagnostic.png
 .DS_Store
