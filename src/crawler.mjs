@@ -5,10 +5,114 @@ const DISCLOSURE_SAMPLE_INTERVAL_MS = 120;
 const DISCLOSURE_MAX_SETTLE_MS = 3600;
 const MOUNTED_STABLE_SAMPLES = 3;
 const MOUNTED_SAMPLE_INTERVAL_MS = 120;
-const MOUNTED_MAX_SETTLE_MS = 1200;
+const MOUNTED_MAX_SETTLE_MS = 1800;
+const QUIESCENT_REQUIRED_ROUNDS = 3;
+const QUIESCENT_ROUND_INTERVAL_MS = 180;
+const MAX_UNRECOGNIZED_LABELS = 12;
 
 export async function installCrawler(page) {
   await installBaseCrawler(page);
+  await page.evaluate(({ requiredRounds, maxLabels }) => {
+    const crawler = window.__archiveCrawler;
+    if (!crawler || crawler.__beta7DiagnosticsInstalled) return;
+
+    const turnSelector = 'section[data-testid^="conversation-turn-"]';
+    const turns = () => [...document.querySelectorAll(turnSelector)];
+    const label = el => [el.getAttribute('aria-label'), el.textContent, el.getAttribute('title')]
+      .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    const turnId = el => el.closest(turnSelector)?.getAttribute('data-testid') || 'unknown-turn';
+    const keyFor = el => [turnId(el), el.getAttribute('aria-controls') || '', label(el).slice(0, 240)].join('|');
+
+    function isRecognizedDisclosure(el) {
+      if (!(el instanceof HTMLElement) || el.getAttribute('aria-expanded') !== 'false') return false;
+      if (el.matches('[aria-haspopup],[role="menuitem"]')) return false;
+      if (el.getAttribute('aria-controls')) return true;
+      return /^(worked for|thought(?: for)?|thinking(?: for)?|reasoning(?: for)?)\b/i.test(label(el));
+    }
+
+    function collapsedDiagnostics() {
+      let allCollapsedControls = 0;
+      let recognizedCollapsed = 0;
+      let actionableCollapsed = 0;
+      let closedDetails = 0;
+      const unrecognizedCollapsedLabels = [];
+
+      for (const section of turns()) {
+        const collapsed = [...section.querySelectorAll('[aria-expanded="false"]')];
+        allCollapsedControls += collapsed.length;
+        for (const el of collapsed) {
+          if (isRecognizedDisclosure(el)) {
+            recognizedCollapsed++;
+            const attempts = Number(crawler.state?.attempts?.[keyFor(el)] || 0);
+            if (attempts < 3) actionableCollapsed++;
+          } else if (unrecognizedCollapsedLabels.length < maxLabels) {
+            const text = label(el).slice(0, 180) || el.tagName?.toLowerCase?.() || 'unlabelled control';
+            unrecognizedCollapsedLabels.push(`${turnId(el)} — ${text}`);
+          }
+        }
+        const details = section.querySelectorAll('details:not([open])').length;
+        closedDetails += details;
+        actionableCollapsed += details;
+      }
+
+      return {
+        allCollapsedControls,
+        recognizedCollapsed,
+        actionableCollapsed,
+        closedDetails,
+        unrecognizedCollapsedLabels
+      };
+    }
+
+    function mountedQuiescenceSample() {
+      const collapsed = collapsedDiagnostics();
+      const mountedSignature = crawler.mountedSample();
+      const signature = [
+        mountedSignature,
+        collapsed.allCollapsedControls,
+        collapsed.recognizedCollapsed,
+        collapsed.actionableCollapsed,
+        collapsed.closedDetails,
+        collapsed.unrecognizedCollapsedLabels.join('~')
+      ].join('|');
+      return { ...collapsed, signature };
+    }
+
+    crawler.state.expansionGeneration = Number(crawler.state.expansionGeneration || 0);
+    crawler.state.quiescence = {
+      rounds: 0,
+      requiredRounds,
+      lastSignature: '',
+      converged: false
+    };
+
+    crawler.noteExpansionGeneration = () => {
+      crawler.state.expansionGeneration++;
+      crawler.state.quiescence.rounds = 0;
+      crawler.state.quiescence.lastSignature = '';
+      crawler.state.quiescence.converged = false;
+      return crawler.state.expansionGeneration;
+    };
+    crawler.markQuiescence = value => {
+      crawler.state.quiescence = { ...crawler.state.quiescence, ...value };
+    };
+    crawler.collapsedDiagnostics = collapsedDiagnostics;
+    crawler.mountedQuiescenceSample = mountedQuiescenceSample;
+
+    const baseStats = crawler.stats.bind(crawler);
+    crawler.stats = () => {
+      const collapsed = collapsedDiagnostics();
+      return {
+        ...baseStats(),
+        ...collapsed,
+        expansionGeneration: crawler.state.expansionGeneration,
+        quiescentRounds: crawler.state.quiescence.rounds,
+        requiredQuiescentRounds: crawler.state.quiescence.requiredRounds,
+        quiescenceConverged: crawler.state.quiescence.converged
+      };
+    };
+    crawler.__beta7DiagnosticsInstalled = true;
+  }, { requiredRounds: QUIESCENT_REQUIRED_ROUNDS, maxLabels: MAX_UNRECOGNIZED_LABELS });
 }
 
 async function report(page, onProgress, extra = {}) {
@@ -49,56 +153,103 @@ async function stabilizeMounted(page, shouldCancel, maxMs = MOUNTED_MAX_SETTLE_M
   const deadline = Date.now() + maxMs;
   let previous = '';
   let stable = 0;
+  let latest = null;
 
   while (Date.now() < deadline) {
     if (shouldCancel?.()) throw new Error('Archive cancelled.');
-    const signature = await page.evaluate(() => window.__archiveCrawler.mountedSample());
-    stable = signature === previous ? stable + 1 : 1;
-    previous = signature;
-    if (stable >= MOUNTED_STABLE_SAMPLES) return;
+    latest = await page.evaluate(() => window.__archiveCrawler.mountedQuiescenceSample());
+    stable = latest.signature === previous ? stable + 1 : 1;
+    previous = latest.signature;
+    if (stable >= MOUNTED_STABLE_SAMPLES) return latest;
     await page.waitForTimeout(MOUNTED_SAMPLE_INTERVAL_MS);
   }
+  return latest || page.evaluate(() => window.__archiveCrawler.mountedQuiescenceSample());
 }
 
-async function settleAndRescan(page, shouldCancel) {
-  await stabilizeMounted(page, shouldCancel);
-  await page.evaluate(() => window.__archiveCrawler.capture());
-  return page.evaluate(() => window.__archiveCrawler.expandOne());
+async function processExpansion(page, result, shouldCancel) {
+  await page.evaluate(() => window.__archiveCrawler.noteExpansionGeneration());
+  if (result.kind === 'details') {
+    await page.waitForTimeout(80);
+  } else {
+    await waitForDisclosureHydration(page, result, shouldCancel);
+    await page.evaluate(key => window.__archiveCrawler.confirm(key), result.key);
+  }
+  return page.evaluate(() => window.__archiveCrawler.capture());
 }
 
 async function expandMounted(page, max, onProgress, shouldCancel) {
   let expandedSinceFullReport = 0;
   let processed = 0;
+  let quietRounds = 0;
+  let previousQuietSignature = '';
 
   while (processed < max) {
     if (shouldCancel?.()) throw new Error('Archive cancelled.');
     let result = await page.evaluate(() => window.__archiveCrawler.expandOne());
 
-    // beta6-dev3 race fix: a parent disclosure can finish hydration with a new
-    // nested disclosure mounted after the first empty expandOne() result.
-    // Stabilize/capture and rescan before allowing the mounted range to leave.
-    if (!result) result = await settleAndRescan(page, shouldCancel);
-    if (!result) break;
+    if (result) {
+      const activity = await processExpansion(page, result, shouldCancel);
+      processed++;
+      expandedSinceFullReport++;
+      quietRounds = 0;
+      previousQuietSignature = '';
+      await page.evaluate(requiredRounds => window.__archiveCrawler.markQuiescence({
+        rounds: 0, requiredRounds, lastSignature: '', converged: false
+      }), QUIESCENT_REQUIRED_ROUNDS);
 
-    if (result.kind === 'details') {
-      await page.waitForTimeout(80);
-    } else {
-      await waitForDisclosureHydration(page, result, shouldCancel);
-      await page.evaluate(key => window.__archiveCrawler.confirm(key), result.key);
+      await onProgress?.({
+        ...activity,
+        expandingStatus: activity.expandingStatus || 'No disclosure expansion active in current mounted range'
+      });
+      if (expandedSinceFullReport >= 8) {
+        await report(page, onProgress);
+        expandedSinceFullReport = 0;
+      }
+      continue;
     }
 
-    const activity = await page.evaluate(() => window.__archiveCrawler.capture());
-    processed++;
-    expandedSinceFullReport++;
+    // Fixed-point completion: settle the mounted range, retain any richer DOM,
+    // then rescan. A newly mounted nested disclosure starts a new generation.
+    const settled = await stabilizeMounted(page, shouldCancel);
+    await page.evaluate(() => window.__archiveCrawler.capture());
+    result = await page.evaluate(() => window.__archiveCrawler.expandOne());
+    if (result) {
+      const activity = await processExpansion(page, result, shouldCancel);
+      processed++;
+      expandedSinceFullReport++;
+      quietRounds = 0;
+      previousQuietSignature = '';
+      await onProgress?.({
+        ...activity,
+        expandingStatus: activity.expandingStatus || 'No disclosure expansion active in current mounted range'
+      });
+      continue;
+    }
 
-    await onProgress?.({
-      ...activity,
-      expandingStatus: activity.expandingStatus || 'No disclosure expansion active in current mounted range'
+    const sample = settled || await page.evaluate(() => window.__archiveCrawler.mountedQuiescenceSample());
+    const eligible = Number(sample.actionableCollapsed || 0) === 0;
+    if (eligible && sample.signature === previousQuietSignature) quietRounds++;
+    else if (eligible) quietRounds = 1;
+    else quietRounds = 0;
+    previousQuietSignature = sample.signature;
+
+    await page.evaluate(value => window.__archiveCrawler.markQuiescence(value), {
+      rounds: quietRounds,
+      requiredRounds: QUIESCENT_REQUIRED_ROUNDS,
+      lastSignature: sample.signature,
+      converged: quietRounds >= QUIESCENT_REQUIRED_ROUNDS
     });
-    if (expandedSinceFullReport >= 8) {
-      await report(page, onProgress);
-      expandedSinceFullReport = 0;
-    }
+
+    const stats = await page.evaluate(() => window.__archiveCrawler.stats());
+    await onProgress?.({
+      ...stats,
+      expandingStatus: quietRounds >= QUIESCENT_REQUIRED_ROUNDS
+        ? `Mounted disclosure fixed point reached · ${quietRounds}/${QUIESCENT_REQUIRED_ROUNDS} quiet rounds`
+        : `Waiting for nested disclosures · ${quietRounds}/${QUIESCENT_REQUIRED_ROUNDS} quiet rounds · actionable ${stats.actionableCollapsed}`
+    });
+
+    if (quietRounds >= QUIESCENT_REQUIRED_ROUNDS) break;
+    await page.waitForTimeout(QUIESCENT_ROUND_INTERVAL_MS);
   }
 
   await stabilizeMounted(page, shouldCancel);
@@ -140,7 +291,13 @@ async function scan(page, direction, pass, onProgress, shouldCancel, maxSteps = 
       stats.failures,
       stats.preBlocks,
       stats.codeBlocks,
-      stats.timelineMarkers
+      stats.timelineMarkers,
+      stats.allCollapsedControls,
+      stats.recognizedCollapsed,
+      stats.actionableCollapsed,
+      stats.closedDetails,
+      stats.expansionGeneration,
+      stats.quiescentRounds
     ].join('|');
 
     if (atEnd && signature === previous) stable++;
@@ -225,7 +382,13 @@ async function verifyOldestMessages(page, onProgress, shouldCancel) {
       stats.clicks,
       stats.expanded,
       stats.failures,
-      stats.timelineMarkers
+      stats.timelineMarkers,
+      stats.allCollapsedControls,
+      stats.recognizedCollapsed,
+      stats.actionableCollapsed,
+      stats.closedDetails,
+      stats.expansionGeneration,
+      stats.quiescentRounds
     ].join('|');
 
     if (atTop && signature === previousSignature) quietChecks++;
@@ -343,3 +506,5 @@ export async function crawlConversation(page, { onProgress, shouldCancel } = {})
     oldestChecks: oldest.checks
   });
 }
+
+export const __testing = { expandMounted, stabilizeMounted, waitForDisclosureHydration };

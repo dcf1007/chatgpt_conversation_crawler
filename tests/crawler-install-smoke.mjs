@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { installCrawler } from '../src/crawler.mjs';
+import { installCrawler, __testing } from '../src/crawler.mjs';
 
 class MockHTMLElement {}
 globalThis.HTMLElement = MockHTMLElement;
@@ -60,4 +60,113 @@ assert.equal(markers[0].kind, 'timestamp');
 assert.equal(markers[0].text, 'Today 9:09 AM');
 assert.equal(markers[0].href, '');
 assert.equal(markers[0].beforeTurn, 'conversation-turn-1');
-console.log('crawler install smoke test passed');
+
+const installedStats = globalThis.__archiveCrawler.stats();
+assert.equal(installedStats.allCollapsedControls, 0);
+assert.equal(installedStats.recognizedCollapsed, 0);
+assert.equal(installedStats.actionableCollapsed, 0);
+assert.equal(installedStats.closedDetails, 0);
+assert.equal(installedStats.requiredQuiescentRounds, 3);
+assert.deepEqual(installedStats.unrecognizedCollapsedLabels, []);
+
+// Runtime race regression: the nested disclosure does not exist when the
+// parent finishes hydration. It appears only while the mounted range is being
+// stabilized after an empty expansion scan. expandMounted must rescan and
+// process the nested generation before declaring the range quiescent.
+let phase = 'parent-ready';
+let mountedSamples = 0;
+const processed = [];
+const quiescence = { rounds: 0, requiredRounds: 3, converged: false };
+let expansionGeneration = 0;
+
+const fakeCrawler = {
+  expandOne() {
+    if (phase === 'parent-ready') {
+      phase = 'waiting-for-nested';
+      processed.push('parent');
+      return { kind: 'click', key: 'parent' };
+    }
+    if (phase === 'nested-ready') {
+      phase = 'done';
+      processed.push('nested');
+      return { kind: 'click', key: 'nested' };
+    }
+    return null;
+  },
+  disclosureSample(key) {
+    return { present: true, expanded: true, targetExists: true, signature: `${key}-stable` };
+  },
+  confirm() {},
+  capture() {
+    return {
+      expanded: processed.length,
+      clicks: processed.length,
+      failures: 0,
+      timelineMarkers: 0,
+      oldestRetained: 'conversation-turn-1',
+      newestRetained: 'conversation-turn-1',
+      mountedFirst: 'conversation-turn-1',
+      mountedLast: 'conversation-turn-1',
+      expandingStatus: processed.at(-1) || ''
+    };
+  },
+  mountedQuiescenceSample() {
+    mountedSamples++;
+    if (phase === 'waiting-for-nested' && mountedSamples >= 2) phase = 'nested-ready';
+    const actionableCollapsed = phase === 'nested-ready' ? 1 : 0;
+    return {
+      signature: `${phase}|${actionableCollapsed}`,
+      allCollapsedControls: actionableCollapsed,
+      recognizedCollapsed: actionableCollapsed,
+      actionableCollapsed,
+      closedDetails: 0,
+      unrecognizedCollapsedLabels: []
+    };
+  },
+  noteExpansionGeneration() {
+    expansionGeneration++;
+    quiescence.rounds = 0;
+    quiescence.converged = false;
+  },
+  markQuiescence(value) { Object.assign(quiescence, value); },
+  stats() {
+    return {
+      turns: 1,
+      expanded: processed.length,
+      clicks: processed.length,
+      failures: 0,
+      preBlocks: 0,
+      codeBlocks: 0,
+      timelineMarkers: 0,
+      oldestRetained: 'conversation-turn-1',
+      newestRetained: 'conversation-turn-1',
+      mountedFirst: 'conversation-turn-1',
+      mountedLast: 'conversation-turn-1',
+      allCollapsedControls: phase === 'nested-ready' ? 1 : 0,
+      recognizedCollapsed: phase === 'nested-ready' ? 1 : 0,
+      actionableCollapsed: phase === 'nested-ready' ? 1 : 0,
+      closedDetails: 0,
+      expansionGeneration,
+      quiescentRounds: quiescence.rounds,
+      requiredQuiescentRounds: quiescence.requiredRounds,
+      quiescenceConverged: quiescence.converged,
+      unrecognizedCollapsedLabels: []
+    };
+  },
+  metrics() { return { top: 0, height: 1000, client: 1000 }; }
+};
+
+globalThis.__archiveCrawler = fakeCrawler;
+const runtimePage = {
+  async evaluate(fn, arg) { return fn(arg); },
+  async waitForTimeout() {}
+};
+
+await __testing.expandMounted(runtimePage, 20);
+assert.deepEqual(processed, ['parent', 'nested']);
+assert.equal(expansionGeneration, 2);
+assert.equal(quiescence.converged, true);
+assert.equal(quiescence.rounds, 3);
+assert.ok(mountedSamples >= 8, 'expected repeated mounted stabilization across quiescent rounds');
+
+console.log('crawler install + nested quiescence smoke test passed');

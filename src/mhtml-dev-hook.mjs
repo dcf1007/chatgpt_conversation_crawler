@@ -34,6 +34,11 @@ async function samplePage(page) {
     const sections = [...document.querySelectorAll(turnSelector)];
     const ids = sections.map(section => section.getAttribute('data-testid')).filter(Boolean);
     const scrollRoot = document.querySelector('#thread') || document.querySelector('main#main') || document.querySelector('main') || document.scrollingElement || document.documentElement;
+    const crawlerStats = (() => {
+      try { return window.__archiveCrawler?.stats?.() || {}; } catch { return {}; }
+    })();
+    const rawCollapsedControls = document.querySelectorAll(`${turnSelector} [aria-expanded="false"]`).length;
+    const rawClosedDetails = document.querySelectorAll(`${turnSelector} details:not([open])`).length;
     return {
       turns: sections.length,
       mountedFirst: ids[0] || 'none',
@@ -46,8 +51,19 @@ async function samplePage(page) {
       svgs: document.querySelectorAll(`${turnSelector} svg`).length,
       iframes: document.querySelectorAll('iframe').length,
       appBlocks: document.querySelectorAll('[data-app-block-preview="true"]').length,
-      collapsed: document.querySelectorAll(`${turnSelector} [aria-expanded="false"],${turnSelector} details:not([open])`).length,
-      expanded: document.querySelectorAll(`${turnSelector} [aria-expanded="true"],${turnSelector} details[open]`).length
+      collapsed: rawCollapsedControls + rawClosedDetails,
+      expanded: document.querySelectorAll(`${turnSelector} [aria-expanded="true"],${turnSelector} details[open]`).length,
+      allCollapsedControls: Number(crawlerStats.allCollapsedControls ?? rawCollapsedControls),
+      recognizedCollapsed: Number(crawlerStats.recognizedCollapsed || 0),
+      actionableCollapsed: Number(crawlerStats.actionableCollapsed || 0),
+      closedDetails: Number(crawlerStats.closedDetails ?? rawClosedDetails),
+      expansionGeneration: Number(crawlerStats.expansionGeneration || 0),
+      quiescentRounds: Number(crawlerStats.quiescentRounds || 0),
+      requiredQuiescentRounds: Number(crawlerStats.requiredQuiescentRounds || 0),
+      quiescenceConverged: Boolean(crawlerStats.quiescenceConverged),
+      unrecognizedCollapsedLabels: Array.isArray(crawlerStats.unrecognizedCollapsedLabels)
+        ? crawlerStats.unrecognizedCollapsedLabels.slice(0, 12)
+        : []
     };
   });
 }
@@ -66,7 +82,16 @@ function sampleSignature(sample) {
     sample.iframes,
     sample.appBlocks,
     sample.collapsed,
-    sample.expanded
+    sample.expanded,
+    sample.allCollapsedControls,
+    sample.recognizedCollapsed,
+    sample.actionableCollapsed,
+    sample.closedDetails,
+    sample.expansionGeneration,
+    sample.quiescentRounds,
+    sample.requiredQuiescentRounds,
+    sample.quiescenceConverged ? 1 : 0,
+    sample.unrecognizedCollapsedLabels.join('~')
   ].join('|');
 }
 
@@ -89,7 +114,16 @@ async function startRecorder(page, mode) {
     scrollHeight: 0,
     preBlocks: 0,
     codeBlocks: 0,
-    appBlocks: 0
+    appBlocks: 0,
+    allCollapsedControls: 0,
+    recognizedCollapsed: 0,
+    actionableCollapsed: 0,
+    closedDetails: 0,
+    expansionGeneration: 0,
+    quiescentRounds: 0,
+    requiredQuiescentRounds: 0,
+    quiescenceConverged: false,
+    unrecognizedCollapsedLabels: []
   };
 
   const recorder = await createMhtmlRecorder(root, diagnostic, page).catch(() => null);
@@ -119,7 +153,16 @@ async function startRecorder(page, mode) {
         scrollHeight: sample.scrollHeight,
         preBlocks: sample.preBlocks,
         codeBlocks: sample.codeBlocks,
-        appBlocks: sample.appBlocks
+        appBlocks: sample.appBlocks,
+        allCollapsedControls: sample.allCollapsedControls,
+        recognizedCollapsed: sample.recognizedCollapsed,
+        actionableCollapsed: sample.actionableCollapsed,
+        closedDetails: sample.closedDetails,
+        expansionGeneration: sample.expansionGeneration,
+        quiescentRounds: sample.quiescentRounds,
+        requiredQuiescentRounds: sample.requiredQuiescentRounds,
+        quiescenceConverged: sample.quiescenceConverged,
+        unrecognizedCollapsedLabels: sample.unrecognizedCollapsedLabels
       });
     }
     await recorder.capture(reason, sample || {}).catch(() => {});
@@ -141,6 +184,7 @@ async function startRecorder(page, mode) {
     const signature = sampleSignature(sample);
     if (signature !== state.lastSignature) {
       state.lastSignature = signature;
+      Object.assign(diagnostic, sample, { url: page.url() });
       const now = Date.now();
       if (now - state.lastMaterialCaptureAt >= MATERIAL_CAPTURE_COOLDOWN_MS) {
         state.lastMaterialCaptureAt = now;

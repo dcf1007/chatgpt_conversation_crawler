@@ -60,6 +60,17 @@ export async function createMhtmlRecorder(root, job, page) {
         preBlocks: job.preBlocks || 0,
         codeBlocks: job.codeBlocks || 0,
         appBlocks: job.appBlocks || 0,
+        allCollapsedControls: job.allCollapsedControls || 0,
+        recognizedCollapsed: job.recognizedCollapsed || 0,
+        actionableCollapsed: job.actionableCollapsed || 0,
+        closedDetails: job.closedDetails || 0,
+        expansionGeneration: job.expansionGeneration || 0,
+        quiescentRounds: job.quiescentRounds || 0,
+        requiredQuiescentRounds: job.requiredQuiescentRounds || 0,
+        quiescenceConverged: Boolean(job.quiescenceConverged),
+        unrecognizedCollapsedLabels: Array.isArray(job.unrecognizedCollapsedLabels)
+          ? job.unrecognizedCollapsedLabels.slice(0, 12)
+          : [],
         ...meta
       };
 
