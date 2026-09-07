@@ -61,6 +61,11 @@ async function samplePage(page) {
     const manualState = window.__archiveManualInspection || {};
     const rawCollapsedControls = document.querySelectorAll(`${turnSelector} [aria-expanded="false"]`).length;
     const rawClosedDetails = document.querySelectorAll(`${turnSelector} details:not([open])`).length;
+    const reconciliationConverged = crawlerStats.reconciliationConverged === true
+      ? true
+      : crawlerStats.reconciliationConverged === false
+        ? false
+        : null;
 
     return {
       turns: sections.length,
@@ -87,6 +92,14 @@ async function samplePage(page) {
       unrecognizedCollapsedLabels: Array.isArray(crawlerStats.unrecognizedCollapsedLabels)
         ? crawlerStats.unrecognizedCollapsedLabels.slice(0, 12)
         : [],
+      retainedUnresolvedTurns: Number(crawlerStats.retainedUnresolvedTurns || 0),
+      retainedUnresolvedDisclosures: Number(crawlerStats.retainedUnresolvedDisclosures || 0),
+      retainedUnresolvedTurnIds: Array.isArray(crawlerStats.retainedUnresolvedTurnIds)
+        ? crawlerStats.retainedUnresolvedTurnIds.slice(0, 12)
+        : [],
+      reconciliationRounds: Number(crawlerStats.reconciliationRounds || 0),
+      reconciliationStablePasses: Number(crawlerStats.reconciliationStablePasses || 0),
+      reconciliationConverged,
       manualPhase: String(manualState.phase || ''),
       manualStepIndex: Number(manualState.stepIndex || 0),
       manualStepCount: Number(manualState.stepCount || 0),
@@ -121,6 +134,12 @@ function sampleSignature(sample) {
     sample.closedDetails,
     sample.expansionGeneration,
     sample.quiescentRounds,
+    sample.retainedUnresolvedTurns,
+    sample.retainedUnresolvedDisclosures,
+    sample.retainedUnresolvedTurnIds.join(','),
+    sample.reconciliationRounds,
+    sample.reconciliationStablePasses,
+    String(sample.reconciliationConverged),
     sample.manualPhase,
     sample.manualStepIndex,
     sample.manualStepCount,

@@ -1,51 +1,77 @@
-# beta7-dev2.3 two-step manual inspection diagnostic
+# beta7-dev2.4 retained-disclosure reconciliation diagnostic
 
-`v1.6.7-beta7-dev2.3` keeps the beta7 fixed-point crawler, single MHTML recorder, two-step manual comparison, partial-capture salvage, and headed-Chromium background-throttling protections from dev2.2.
+`v1.6.7-beta7-dev2.4` keeps the sparse-aware manual target remounting, single MHTML recorder, two-step manual comparison, partial-capture salvage, and headed-Chromium background protections from dev2.3. It changes the automatic crawler where the dev2.3 MHTML timeline identified the remaining disclosure-loss mechanism.
 
-## Why this revision exists
+## Root cause found from dev2.3
 
-The dev2.1 run completed the automatic crawler and the turn-54 manual step, then failed while trying to remount the crawler-selected second target (`conversation-turn-38`). Visual observation showed Chromium repeatedly trying to scroll upward, being moved back down by ChatGPT's virtualizer, and entering a loop.
+The crawler keys disclosure retry state by turn, `aria-controls`, and label. A logical disclosure could be opened successfully on one virtualizer mount and later remount collapsed. Before dev2.4, a successful confirmation incremented the success count but did **not** clear that disclosure's attempt counter.
 
-The cause was in the diagnostic remount algorithm, not in beta7's retained-turn capture. The old search treated `mountedFirst`/`mountedLast` as if every intervening turn were mounted, chose an up/down direction from the numeric midpoint of that apparent range, and judged a scroll as successful immediately after assigning `scrollTop`. ChatGPT can mount a sparse set of turns and can subsequently rewrite `scrollTop` to preserve its visual anchor, so both assumptions were unsafe.
+After the same logical disclosure accumulated three successful activation attempts across earlier mounts, a later collapsed remount could therefore be recognized while already carrying `attempts=3`. The beta7 diagnostics then reported it as recognized but non-actionable. This matches the dev2.3 MHTML evidence immediately before the human root-disclosure clicks on turns 54 and 38.
 
-## Remount fix in dev2.3
+In dev2.4, a successful confirmation clears both the transient failure and its attempt counter. The three-attempt limit remains intact for a genuinely failing activation; it is no longer a lifetime cap across successful virtualizer remounts.
 
-Manual target remounting now uses the retained turn order plus the **actual set of mounted turn IDs**:
+## Retained-corpus reconciliation
 
-1. If the target is already mounted, it is centered and verified after settling.
-2. If mounted turns bracket the missing target (for example, turn 37 and turn 39 are mounted while turn 38 is absent), the crawler anchors the end of the nearest preceding turn and probes **forward** in small increments.
-3. If all mounted retained turns are before the target, the crawler continues forward from the actual post-set position.
-4. Otherwise it repeatedly asserts the real top edge until `scrollTop=0` survives virtualizer settling, then performs a monotonic top-to-bottom sweep.
-5. If a coarse sweep skips the target, it restarts from the stable top with a finer forward step. It never reverses locally into the old `scroll up -> virtualizer bounces down -> scroll up again` loop.
-6. Progress is judged from the scroll position and mounted-turn set **after** ChatGPT has had time to react, not from the requested position in the same JavaScript turn.
-7. When forward scrolling stalls, the crawler uses the nearest mounted predecessor as a DOM anchor instead of blindly repeating the same pixel delta.
+Mounted-DOM quiescence alone cannot prove the retained conversation is complete because ChatGPT may virtualize away a turn and later remount its root disclosure collapsed. The automatic crawler now performs a retained-corpus reconciliation after the established three traversals.
 
-The manual-step summary now records the remount strategy, sweep/step counts, and predecessor/successor information when available.
+The reconciliation uses each richest retained turn's `remaining` count as the authority for unresolved recognized disclosures:
 
-## Two-step flow
+1. Inspect all retained turns after pass 3.
+2. If no retained turn has a recognized collapsed disclosure, reconciliation is already complete.
+3. Otherwise, perform another full traversal so those turns remount with the corrected retry bookkeeping.
+4. Alternate downward and upward reconciliation traversals so neither virtualizer edge is privileged.
+5. Continue mounted fixed-point expansion and hydration during every reconciliation traversal.
+6. Recompute the retained unresolved corpus after each traversal.
+7. Stop when the retained unresolved count reaches zero, or after bounded no-progress/safety limits.
 
-1. The automatic beta7 crawler completes all three traversals and nested-disclosure fixed-point checks.
+The dev diagnostics expose retained unresolved turn/disclosure counts, representative turn IDs, reconciliation pass count, stability count, and convergence state. These fields are also included in MHTML material-change detection so the next run can align reconciliation progress directly with browser snapshots.
+
+## Two-step manual validation remains
+
+The manual diagnostic remains intentionally independent so dev2.4 can be tested against the same human baseline:
+
+1. Automatic traversal plus retained-corpus reconciliation completes.
 2. Save `automatic-before-manual.html`.
 3. **Step 1:** remount and highlight `conversation-turn-54`.
-4. Fully expand turn 54 through every nested disclosure and wait for each tool/code/result leaf to finish loading.
-5. Click **Turn 54 is fully expanded — continue to step 2**.
-6. Save `after-turn-54-manual-before-reconvergence.html`, then run beta7 convergence.
-7. Re-read retained turns and select a second diagnostic target, excluding turn 54.
-8. **Step 2:** remount that target with the sparse-aware forward-only remount algorithm and highlight it.
-9. Fully expand the second target and click **Finish manual inspection**.
-10. Save `after-preferred-turn-manual-before-reconvergence.html`, reconverge, save `post-manual.html` and `summary.json`, then build the ordinary final archive.
+4. Fully expand every nested layer and click **Turn 54 is fully expanded — continue to step 2**.
+5. Save the human-only checkpoint, then run automatic fixed-point reconvergence.
+6. Select a second diagnostic target excluding turn 54.
+7. Remount it with the sparse-aware dev2.3 algorithm, fully expand it, and click **Finish manual inspection**.
+8. Save the second human checkpoint, reconverge, save `post-manual.html` and `summary.json`, then build the ordinary final archive.
 
-If the diagnostic still fails after the automatic crawl has completed, dev2.2's salvage behavior remains active: the diagnostic UI is removed, retained automatic/manual state is frozen, and the normal server finalizes a downloadable partial archive instead of discarding the job.
+If dev2.4 is working as intended, the automatic baseline should be much closer to the human checkpoints, ideally with no additional tool/code leaves exposed by the manual root activation.
+
+## Sparse virtualizer remounting
+
+The dev2.3 remount fix is unchanged. Manual target search uses the actual mounted turn-ID set rather than assuming `mountedFirst` through `mountedLast` is contiguous. Bracketed targets are probed forward from their nearest mounted predecessor; targets requiring a larger reacquisition use stable-top, monotonic forward sweeps. The old upward-scroll/bounce loop is not reintroduced.
+
+## MHTML volume reduction without removing event evidence
+
+The dev2.3 run produced many redundant clock-driven periodic MHTML files while material DOM and resource events were already being captured. In dev2.4:
+
+- `material-dom-change` capture is unchanged.
+- `manual-inspection-change` capture is unchanged.
+- `lazy-resource-loaded` capture is unchanged.
+- initial and context-closing captures are unchanged.
+- the 10-second periodic capture is now an **idle safety net**.
+
+Any event-driven capture request restarts the 10-second idle timer. A `periodic-10s` snapshot is written only after a full 10 seconds without another capture request, then the idle timer starts again. This preserves periodic coverage during quiet intervals without duplicating the dense event-driven timeline.
+
+## Removed stale PNG diagnostics
+
+The old runtime files `public/session-home-diagnostic.png` and `public/session-share-diagnostic.png` are no longer generated. Their screenshot-only code paths and `.gitignore` entries are removed, and the stale `public/session-diagnostics.html` screenshot viewer is deleted.
+
+Authentication behavior itself is unchanged: the standalone bundled Chromium login remains unmanaged for Google/SSO compatibility, session checks still inspect cookie metadata, and Cloudflare human-verification detection still pauses in visible Chromium for manual completion.
 
 ## Background execution
 
-The development launcher applies these Chromium flags to headed Playwright persistent contexts:
+The development launcher continues to apply these Chromium flags to headed Playwright persistent contexts:
 
 - `--disable-background-timer-throttling`
 - `--disable-backgrounding-occluded-windows`
 - `--disable-renderer-backgrounding`
 
-This is intentionally limited to the development build while minimized/background behavior is validated empirically. The standalone unmanaged Chromium login window remains unchanged for Google/SSO compatibility.
+The standalone unmanaged login Chromium remains unaffected.
 
 ## Diagnostic files
 
@@ -61,6 +87,6 @@ It contains:
 - `post-manual.html`
 - `summary.json`
 
-The existing `./mhtml-diagnostics/` capture remains active throughout the run. A single archive page should create a single MHTML diagnostic directory.
+The MHTML recorder writes its separate run under `./mhtml-diagnostics/`. A single archive page should still create only one MHTML diagnostic directory.
 
 Both diagnostic directories may contain private ChatGPT content and signed resource URLs. They are ignored by Git and must never be committed or shared unintentionally. `./browser-profile/` remains separate and must never be uploaded.

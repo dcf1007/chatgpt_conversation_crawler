@@ -15,6 +15,56 @@ function timestampForFilename(date = new Date()) {
 }
 
 /**
+ * Keep periodic MHTML as an idle safety net instead of an independent stream.
+ * Every event-driven capture postpones the next periodic snapshot. If nothing
+ * else is captured for intervalMs, one periodic snapshot is taken and another
+ * idle interval begins.
+ */
+export function createIdlePeriodicScheduler(onIdle, {
+  intervalMs = PERIODIC_CAPTURE_INTERVAL_MS,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout
+} = {}) {
+  if (typeof onIdle !== 'function') throw new TypeError('onIdle must be a function.');
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) throw new TypeError('intervalMs must be positive.');
+
+  let timer = null;
+  let started = false;
+  let stopped = false;
+
+  const arm = () => {
+    if (!started || stopped) return;
+    if (timer) clearTimer(timer);
+    timer = setTimer(() => {
+      timer = null;
+      if (stopped) return;
+      onIdle();
+      arm();
+    }, intervalMs);
+    timer?.unref?.();
+  };
+
+  return {
+    start() {
+      if (started || stopped) return false;
+      started = true;
+      arm();
+      return true;
+    },
+    noteActivity() {
+      if (!started || stopped) return;
+      arm();
+    },
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      if (timer) clearTimer(timer);
+      timer = null;
+    }
+  };
+}
+
+/**
  * Capture Chromium's own MHTML serialization for a live page. Captures are
  * serialized through one promise chain so overlapping periodic/resource/DOM
  * triggers cannot issue Page.captureSnapshot concurrently.
@@ -28,9 +78,9 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
   await cdpSession.send('Page.enable').catch(() => {});
 
   let sequenceNumber = 0;
-  let periodicTimer = null;
   let closed = false;
   let captureQueue = Promise.resolve();
+  let idlePeriodic;
 
   async function appendManifest(entry) {
     await fs.appendFile(manifestPath, `${JSON.stringify(entry)}\n`, 'utf8');
@@ -39,6 +89,11 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
   function capture(reason, metadata = {}) {
     if (closed) return captureQueue;
     const requestedAt = new Date();
+
+    // Event-driven captures provide better information than a blind clock tick.
+    // Reset the idle timer so periodic MHTML is emitted only when there has
+    // been no other capture request for a full interval.
+    if (reason !== 'periodic-10s') idlePeriodic?.noteActivity();
 
     captureQueue = captureQueue.then(async () => {
       if (closed) return;
@@ -101,18 +156,17 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
     return captureQueue;
   }
 
+  idlePeriodic = createIdlePeriodicScheduler(() => {
+    void capture('periodic-10s');
+  });
+
   function startPeriodic() {
-    if (periodicTimer || closed) return;
-    periodicTimer = setInterval(() => {
-      void capture('periodic-10s');
-    }, PERIODIC_CAPTURE_INTERVAL_MS);
-    periodicTimer.unref?.();
+    idlePeriodic.start();
   }
 
   async function close() {
     if (closed) return;
-    if (periodicTimer) clearInterval(periodicTimer);
-    periodicTimer = null;
+    idlePeriodic.stop();
     await captureQueue.catch(() => {});
     closed = true;
     await cdpSession.detach().catch(() => {});

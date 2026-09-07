@@ -343,6 +343,10 @@ export async function installCrawler(page) {
       );
       if (!collapsed) {
         state.successfulExpansions++;
+        // Attempts are a retry budget for one activation, not a lifetime cap
+        // for the same logical disclosure across virtualizer remounts. Once an
+        // activation succeeds, a later collapsed remount must be actionable.
+        delete state.attempts[key];
         delete state.failures[key];
       } else if ((state.attempts[key] || 0) >= 3) {
         state.failures[key] = `Could not expand after 3 attempts: ${key}`;

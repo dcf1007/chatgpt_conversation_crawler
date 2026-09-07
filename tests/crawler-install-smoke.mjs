@@ -67,7 +67,18 @@ assert.equal(installedStats.recognizedCollapsed, 0);
 assert.equal(installedStats.actionableCollapsed, 0);
 assert.equal(installedStats.closedDetails, 0);
 assert.equal(installedStats.requiredQuiescentRounds, 3);
+assert.equal(installedStats.retainedUnresolvedTurns, 0);
+assert.equal(installedStats.retainedUnresolvedDisclosures, 0);
 assert.deepEqual(installedStats.unrecognizedCollapsedLabels, []);
+
+// Successful activation must reset the retry budget. The same logical
+// disclosure can remount collapsed later; attempts are not a lifetime cap.
+const retryKey = 'conversation-turn-1||synthetic successful remount';
+globalThis.__archiveCrawler.state.attempts[retryKey] = 3;
+globalThis.__archiveCrawler.state.failures[retryKey] = 'synthetic prior failure';
+globalThis.__archiveCrawler.confirm(retryKey);
+assert.equal(globalThis.__archiveCrawler.state.attempts[retryKey], undefined);
+assert.equal(globalThis.__archiveCrawler.state.failures[retryKey], undefined);
 
 // Runtime race regression: the nested disclosure does not exist when the
 // parent finishes hydration. It appears only while the mounted range is being
@@ -169,4 +180,4 @@ assert.equal(quiescence.converged, true);
 assert.equal(quiescence.rounds, 3);
 assert.ok(mountedSamples >= 8, 'expected repeated mounted stabilization across quiescent rounds');
 
-console.log('crawler install + nested quiescence smoke test passed');
+console.log('crawler install + retry reset + nested quiescence smoke test passed');

@@ -9,6 +9,8 @@ const MOUNTED_MAX_SETTLE_MS = 1800;
 const QUIESCENT_REQUIRED_ROUNDS = 3;
 const QUIESCENT_ROUND_INTERVAL_MS = 180;
 const MAX_UNRECOGNIZED_LABELS = 12;
+const RECONCILIATION_MAX_PASSES = 4;
+const RECONCILIATION_STABLE_PASSES = 2;
 
 export async function installCrawler(page) {
   await installBaseCrawler(page);
@@ -21,6 +23,7 @@ export async function installCrawler(page) {
     const label = el => [el.getAttribute('aria-label'), el.textContent, el.getAttribute('title')]
       .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
     const turnId = el => el.closest(turnSelector)?.getAttribute('data-testid') || 'unknown-turn';
+    const turnNumber = id => Number(/conversation-turn-(\d+)/.exec(id || '')?.[1] ?? Number.MAX_SAFE_INTEGER);
     const keyFor = el => [turnId(el), el.getAttribute('aria-controls') || '', label(el).slice(0, 240)].join('|');
 
     function isRecognizedDisclosure(el) {
@@ -64,6 +67,28 @@ export async function installCrawler(page) {
       };
     }
 
+    function retainedDisclosureSummary() {
+      const unresolved = Object.values(crawler.state?.turns || {})
+        .filter(turn => Number(turn.remaining || 0) > 0)
+        .sort((left, right) => turnNumber(left.id) - turnNumber(right.id) || String(left.id).localeCompare(String(right.id)));
+      const retainedUnresolvedDisclosures = unresolved.reduce((total, turn) => total + Number(turn.remaining || 0), 0);
+      const fingerprint = unresolved.map(turn => [
+        turn.id,
+        Number(turn.remaining || 0),
+        Number(turn.preCount || 0),
+        Number(turn.codeCount || 0),
+        Number(turn.textLength || 0),
+        Number(turn.htmlLength || turn.html?.length || 0)
+      ].join(':')).join('|');
+
+      return {
+        retainedUnresolvedTurns: unresolved.length,
+        retainedUnresolvedDisclosures,
+        retainedUnresolvedTurnIds: unresolved.slice(0, maxLabels).map(turn => turn.id),
+        fingerprint
+      };
+    }
+
     function mountedQuiescenceSample() {
       const collapsed = collapsedDiagnostics();
       const mountedSignature = crawler.mountedSample();
@@ -85,6 +110,11 @@ export async function installCrawler(page) {
       lastSignature: '',
       converged: false
     };
+    crawler.state.reconciliation = {
+      converged: null,
+      rounds: 0,
+      stablePasses: 0
+    };
 
     crawler.noteExpansionGeneration = () => {
       crawler.state.expansionGeneration++;
@@ -96,19 +126,30 @@ export async function installCrawler(page) {
     crawler.markQuiescence = value => {
       crawler.state.quiescence = { ...crawler.state.quiescence, ...value };
     };
+    crawler.markReconciliation = value => {
+      crawler.state.reconciliation = { ...crawler.state.reconciliation, ...value };
+    };
     crawler.collapsedDiagnostics = collapsedDiagnostics;
+    crawler.retainedDisclosureSummary = retainedDisclosureSummary;
     crawler.mountedQuiescenceSample = mountedQuiescenceSample;
 
     const baseStats = crawler.stats.bind(crawler);
     crawler.stats = () => {
       const collapsed = collapsedDiagnostics();
+      const retained = retainedDisclosureSummary();
       return {
         ...baseStats(),
         ...collapsed,
+        retainedUnresolvedTurns: retained.retainedUnresolvedTurns,
+        retainedUnresolvedDisclosures: retained.retainedUnresolvedDisclosures,
+        retainedUnresolvedTurnIds: retained.retainedUnresolvedTurnIds,
         expansionGeneration: crawler.state.expansionGeneration,
         quiescentRounds: crawler.state.quiescence.rounds,
         requiredQuiescentRounds: crawler.state.quiescence.requiredRounds,
-        quiescenceConverged: crawler.state.quiescence.converged
+        quiescenceConverged: crawler.state.quiescence.converged,
+        reconciliationConverged: crawler.state.reconciliation.converged,
+        reconciliationRounds: crawler.state.reconciliation.rounds,
+        reconciliationStablePasses: crawler.state.reconciliation.stablePasses
       };
     };
     crawler.__beta7DiagnosticsInstalled = true;
@@ -452,6 +493,108 @@ async function verifyOldestMessages(page, onProgress, shouldCancel) {
   return result;
 }
 
+async function retainedDisclosureSummary(page) {
+  return page.evaluate(() => window.__archiveCrawler.retainedDisclosureSummary());
+}
+
+function rewriteReconciliationProgress(onProgress, round, direction) {
+  if (!onProgress) return undefined;
+  const arrow = direction === 'up' ? '↑' : '↓';
+  return progress => {
+    const rawStatus = String(progress?.scanningStatus || '');
+    const scanStatus = rawStatus
+      .replace(/^Pass 3\/3\s*[↑↓]\s*·\s*/, '')
+      .replace(/^Pass 3\/3\s*/, '');
+    return onProgress({
+      ...progress,
+      phase: 'Reconciling retained disclosures',
+      detail: 'Rich retained turns still contain recognized collapsed disclosures. Revisiting the conversation so remounted root disclosures can reactivate and expose their asynchronously mounted descendants.',
+      scanningStatus: `Reconciliation ${round}/${RECONCILIATION_MAX_PASSES} ${arrow} · ${scanStatus || 'expanding mounted disclosures'}`,
+      scanComplete: false,
+      pass: 0
+    });
+  };
+}
+
+async function reconcileRetainedDisclosures(page, onProgress, shouldCancel) {
+  let summary = await retainedDisclosureSummary(page);
+  let previousFingerprint = summary.fingerprint;
+  let stablePasses = 0;
+  let rounds = 0;
+
+  if (summary.retainedUnresolvedDisclosures === 0) {
+    const result = {
+      converged: true,
+      rounds: 0,
+      stablePasses: 0,
+      unresolvedTurns: 0,
+      unresolvedDisclosures: 0
+    };
+    await page.evaluate(value => window.__archiveCrawler.markReconciliation(value), result);
+    return result;
+  }
+
+  for (let round = 1; round <= RECONCILIATION_MAX_PASSES; round++) {
+    if (shouldCancel?.()) throw new Error('Archive cancelled.');
+    rounds = round;
+    const direction = round % 2 === 1 ? 'down' : 'up';
+    const progress = rewriteReconciliationProgress(onProgress, round, direction);
+
+    await page.evaluate(value => window.__archiveCrawler.markReconciliation(value), {
+      converged: false,
+      rounds: round,
+      stablePasses
+    });
+    const stats = await page.evaluate(() => window.__archiveCrawler.stats());
+    await onProgress?.({
+      ...stats,
+      phase: 'Reconciling retained disclosures',
+      detail: 'The retained corpus still contains disclosures that were captured collapsed. Successful activations now reset their retry budget, so each reconciliation pass can reopen the same logical disclosure after ChatGPT virtualizes and remounts it.',
+      scanningStatus: `Reconciliation ${round}/${RECONCILIATION_MAX_PASSES} · ${summary.retainedUnresolvedTurns} unresolved turn(s), ${summary.retainedUnresolvedDisclosures} disclosure(s)`,
+      scanComplete: false,
+      pass: 0,
+      direction,
+      step: 0
+    });
+
+    await scan(page, direction, 3, progress, shouldCancel);
+    await expandMounted(page, 500, progress, shouldCancel);
+    await stabilizeMounted(page, shouldCancel, 2400);
+    await page.evaluate(() => window.__archiveCrawler.capture());
+
+    summary = await retainedDisclosureSummary(page);
+    if (summary.fingerprint === previousFingerprint) stablePasses++;
+    else stablePasses = 0;
+    previousFingerprint = summary.fingerprint;
+
+    if (summary.retainedUnresolvedDisclosures === 0 || stablePasses >= RECONCILIATION_STABLE_PASSES) break;
+  }
+
+  const result = {
+    converged: summary.retainedUnresolvedDisclosures === 0,
+    rounds,
+    stablePasses,
+    unresolvedTurns: summary.retainedUnresolvedTurns,
+    unresolvedDisclosures: summary.retainedUnresolvedDisclosures
+  };
+  await page.evaluate(value => window.__archiveCrawler.markReconciliation(value), result);
+
+  await report(page, onProgress, {
+    phase: result.converged ? 'Retained-disclosure reconciliation complete' : 'Retained-disclosure reconciliation stopped',
+    detail: result.converged
+      ? `All retained recognized disclosures converged after ${rounds} reconciliation pass(es).`
+      : `Reconciliation stopped after ${rounds} pass(es) with ${result.unresolvedTurns} retained turn(s) and ${result.unresolvedDisclosures} disclosure(s) still unresolved. The diagnostic/manual comparison remains available to identify any remaining browser-side activation gap.`,
+    scanningStatus: result.converged
+      ? `Retained disclosure corpus converged · ${rounds} pass(es)`
+      : `Retained reconciliation stopped · ${result.unresolvedTurns} turn(s) / ${result.unresolvedDisclosures} disclosure(s) remain`,
+    scanComplete: false,
+    pass: 0,
+    direction: '',
+    step: 0
+  });
+  return result;
+}
+
 export async function crawlConversation(page, { onProgress, shouldCancel } = {}) {
   await installCrawler(page);
   await report(page, onProgress, {
@@ -469,16 +612,20 @@ export async function crawlConversation(page, { onProgress, shouldCancel } = {})
   await scan(page, 'up', 2, onProgress, shouldCancel);
   const oldest = await verifyOldestMessages(page, onProgress, shouldCancel);
   await scan(page, 'down', 3, onProgress, shouldCancel);
+  const reconciliation = await reconcileRetainedDisclosures(page, onProgress, shouldCancel);
 
-  const traversalSummary = oldest.converged
+  const traversalBase = oldest.converged
     ? 'Complete — 3 passes + oldest-edge convergence'
     : `Complete — 3 passes; oldest-edge safety limit (${oldest.quietChecks}/${oldest.requiredQuietChecks} stable)`;
+  const traversalSummary = reconciliation.rounds > 0
+    ? `${traversalBase}; retained reconciliation ${reconciliation.converged ? 'converged' : 'stopped'} after ${reconciliation.rounds} pass(es)`
+    : traversalBase;
 
   await onProgress?.({
     phase: 'Final expansion sweep',
     detail: oldest.converged
-      ? 'Traversal is complete; opening and stabilizing any disclosures still mounted before the final snapshot.'
-      : 'Traversal is complete but the oldest edge hit its safety limit; opening and stabilizing remaining mounted disclosures before the final snapshot.',
+      ? 'Traversal and retained-corpus reconciliation are complete; opening and stabilizing any disclosures still mounted before the final snapshot.'
+      : 'Traversal reached the oldest-edge safety limit; retained-corpus reconciliation is complete and the final mounted disclosures are being stabilized before the final snapshot.',
     scanningStatus: traversalSummary,
     scanComplete: true,
     pass: 0,
@@ -494,7 +641,7 @@ export async function crawlConversation(page, { onProgress, shouldCancel } = {})
   await page.evaluate(() => window.__archiveCrawler.capture());
   await report(page, onProgress, {
     phase: 'Final expansion sweep',
-    detail: 'Expansion and hydration sweep complete; preparing the final static page.',
+    detail: 'Expansion, hydration, and retained-disclosure reconciliation are complete; preparing the final static page.',
     scanningStatus: traversalSummary,
     scanComplete: true,
     pass: 0,
@@ -507,4 +654,9 @@ export async function crawlConversation(page, { onProgress, shouldCancel } = {})
   });
 }
 
-export const __testing = { expandMounted, stabilizeMounted, waitForDisclosureHydration };
+export const __testing = {
+  expandMounted,
+  stabilizeMounted,
+  waitForDisclosureHydration,
+  reconcileRetainedDisclosures
+};
