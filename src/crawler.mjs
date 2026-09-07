@@ -136,7 +136,7 @@ export async function installCrawler(page) {
           kind: candidate.kind,
           label: candidate.label,
           text: candidate.text,
-          href,
+          href: candidate.href,
           title: candidate.title || '',
           order
         };
