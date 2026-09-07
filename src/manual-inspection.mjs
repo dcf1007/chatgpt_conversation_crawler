@@ -8,7 +8,9 @@ const MANUAL_POLL_INTERVAL_MS = 250;
 const MANUAL_SAFETY_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const TARGET_SEARCH_MAX_STEPS = 500;
 const TARGET_SEARCH_INTERVAL_MS = 140;
-const MAX_MANUAL_EVENTS = 800;
+const MAX_MANUAL_EVENTS_PER_STEP = 800;
+
+export const KNOWN_PROBLEM_TURN_ID = 'conversation-turn-54';
 
 function countCollapsedControlsInHtml(html) {
   return (String(html || '').match(/aria-expanded\s*=\s*["']false["']/gi) || []).length;
@@ -19,79 +21,89 @@ function countClosedDetailsInHtml(html) {
   return detailsTags.filter(tag => !/\bopen(?:\s|=|>)/i.test(tag)).length;
 }
 
-/**
- * Pick the turn that gives the manual pass the highest diagnostic value.
- *
- * Priority:
- *   1. a retained turn that still contains collapsed controls;
- *   2. otherwise, the richest assistant/tool turn (pre/code/text content);
- *   3. otherwise, the largest retained turn.
- *
- * This is intentionally a pure function so release CI can regression-test the
- * target-selection policy without launching a browser.
- */
-export function selectTargetFromTurns(turns) {
-  const normalizedTurns = (Array.isArray(turns) ? turns : [])
-    .filter(turn => turn && turn.id)
-    .map(turn => {
-      const allCollapsedControls = countCollapsedControlsInHtml(turn.html);
-      const closedDetails = countClosedDetailsInHtml(turn.html);
-      const recognizedCollapsed = Number(turn.remaining || 0);
-      const preBlocks = Number(turn.preCount || 0);
-      const codeBlocks = Number(turn.codeCount || 0);
-      const textLength = Number(turn.textLength || 0);
-      const assistantBonus = turn.role === 'assistant' ? 1 : 0;
-      const collapsedTotal = allCollapsedControls + closedDetails;
+function normalizeTurn(turn) {
+  const allCollapsedControls = countCollapsedControlsInHtml(turn.html);
+  const closedDetails = countClosedDetailsInHtml(turn.html);
+  const recognizedCollapsed = Number(turn.remaining || 0);
+  const preBlocks = Number(turn.preCount || 0);
+  const codeBlocks = Number(turn.codeCount || 0);
+  const textLength = Number(turn.textLength || 0);
+  const assistantBonus = turn.role === 'assistant' ? 1 : 0;
+  const collapsedTotal = allCollapsedControls + closedDetails;
 
-      // Large, separated weights make the policy easy to inspect. Collapsed
-      // content always outranks mere richness; richness breaks ties.
-      const score =
-        (collapsedTotal > 0 ? 10 ** 15 : 0) +
-        collapsedTotal * 10 ** 12 +
-        recognizedCollapsed * 10 ** 10 +
-        assistantBonus * 10 ** 9 +
-        preBlocks * 10 ** 6 +
-        codeBlocks * 10 ** 4 +
-        Math.min(textLength, 9999);
+  const score =
+    (collapsedTotal > 0 ? 10 ** 15 : 0) +
+    collapsedTotal * 10 ** 12 +
+    recognizedCollapsed * 10 ** 10 +
+    assistantBonus * 10 ** 9 +
+    preBlocks * 10 ** 6 +
+    codeBlocks * 10 ** 4 +
+    Math.min(textLength, 9999);
 
-      return {
-        ...turn,
-        allCollapsedControls,
-        closedDetails,
-        recognizedCollapsed,
-        preBlocks,
-        codeBlocks,
-        textLength,
-        score
-      };
-    });
-
-  normalizedTurns.sort((left, right) => right.score - left.score || String(left.id).localeCompare(String(right.id)));
-  const target = normalizedTurns[0];
-  if (!target) return null;
-
-  const collapsedTotal = target.allCollapsedControls + target.closedDetails;
-  let reason;
-  if (collapsedTotal > 0) {
-    reason = `retained turn still contains ${collapsedTotal} collapsed control(s)`;
-  } else if (target.preBlocks || target.codeBlocks) {
-    reason = `richest retained tool/code turn (${target.preBlocks} pre, ${target.codeBlocks} code)`;
-  } else {
-    reason = `largest retained turn (${target.textLength} text characters)`;
-  }
-
-  return { ...target, reason };
+  return {
+    ...turn,
+    allCollapsedControls,
+    closedDetails,
+    recognizedCollapsed,
+    preBlocks,
+    codeBlocks,
+    textLength,
+    score
+  };
 }
 
-function safeDirectoryPart(value) {
-  return String(value || 'manual')
-    .replace(/[^a-z0-9._-]+/gi, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80) || 'manual';
+function reasonForTarget(target) {
+  const collapsedTotal = target.allCollapsedControls + target.closedDetails;
+  if (collapsedTotal > 0) {
+    return `retained turn still contains ${collapsedTotal} collapsed control(s)`;
+  }
+  if (target.preBlocks || target.codeBlocks) {
+    return `richest retained tool/code turn (${target.preBlocks} pre, ${target.codeBlocks} code)`;
+  }
+  return `largest retained turn (${target.textLength} text characters)`;
+}
+
+/**
+ * Select the crawler's preferred diagnostic target. Callers can exclude a turn
+ * already inspected manually so the second pass gives us independent evidence.
+ */
+export function selectTargetFromTurns(turns, { excludeIds = [] } = {}) {
+  const excluded = new Set(excludeIds);
+  const candidates = (Array.isArray(turns) ? turns : [])
+    .filter(turn => turn?.id && !excluded.has(turn.id))
+    .map(normalizeTurn)
+    .sort((left, right) => right.score - left.score || String(left.id).localeCompare(String(right.id)));
+
+  const target = candidates[0];
+  return target ? { ...target, reason: reasonForTarget(target) } : null;
+}
+
+/**
+ * The first manual target is fixed because turn 54 was already proven
+ * problematic by the user's independent browser MHTML capture. Keeping this
+ * lookup explicit lets the diagnostic pass compare the same known turn across
+ * crawler versions before moving to a crawler-selected target.
+ */
+export function selectKnownProblemTarget(turns, turnId = KNOWN_PROBLEM_TURN_ID) {
+  const match = (Array.isArray(turns) ? turns : []).find(turn => turn?.id === turnId);
+  if (!match) return null;
+  const normalized = normalizeTurn(match);
+  return {
+    ...normalized,
+    reason: 'known problematic turn from the independent manual MHTML comparison'
+  };
 }
 
 function timestampForFilename(date = new Date()) {
   return date.toISOString().replace(/[:.]/g, '-');
+}
+
+function turnNumber(turnId) {
+  return Number(/conversation-turn-(\d+)/.exec(turnId || '')?.[1] ?? Number.MAX_SAFE_INTEGER);
+}
+
+function sortTurnIds(turnIds) {
+  return [...turnIds].sort((left, right) => turnNumber(left) - turnNumber(right) || left.localeCompare(right));
 }
 
 async function getSessionMode(page) {
@@ -120,14 +132,6 @@ async function getManualPageMetrics(page, targetTurnId) {
     const turnSelector = 'section[data-testid^="conversation-turn-"]';
     const target = document.querySelector(`${turnSelector}[data-testid="${targetId}"]`);
     const allTurns = [...document.querySelectorAll(turnSelector)];
-    const allCollapsedControls = allTurns.reduce(
-      (total, turn) => total + turn.querySelectorAll('[aria-expanded="false"]').length,
-      0
-    );
-    const closedDetails = allTurns.reduce(
-      (total, turn) => total + turn.querySelectorAll('details:not([open])').length,
-      0
-    );
 
     return {
       targetMounted: Boolean(target),
@@ -137,17 +141,22 @@ async function getManualPageMetrics(page, targetTurnId) {
       targetCodeBlocks: target?.querySelectorAll('code').length || 0,
       targetCollapsedControls: target?.querySelectorAll('[aria-expanded="false"]').length || 0,
       targetClosedDetails: target?.querySelectorAll('details:not([open])').length || 0,
-      allCollapsedControls,
-      closedDetails,
+      allCollapsedControls: allTurns.reduce(
+        (total, turn) => total + turn.querySelectorAll('[aria-expanded="false"]').length,
+        0
+      ),
+      closedDetails: allTurns.reduce(
+        (total, turn) => total + turn.querySelectorAll('details:not([open])').length,
+        0
+      ),
       manualInteractionCount: Number(window.__archiveManualInspection?.interactionCount || 0)
     };
   }, targetTurnId).catch(() => ({}));
 }
 
 /**
- * Virtualized ChatGPT turns may not exist in the DOM when the automatic crawl
- * ends. Jump near the retained turn's proportional position, then refine using
- * the currently mounted turn numbers until the requested turn is mounted.
+ * ChatGPT virtualizes old turns. Use the retained turn order for an initial
+ * proportional jump, then refine against the currently mounted turn numbers.
  */
 async function scrollToRetainedTurn(page, targetTurnId, retainedTurnIds, shouldCancel) {
   const targetIndex = Math.max(0, retainedTurnIds.indexOf(targetTurnId));
@@ -164,7 +173,7 @@ async function scrollToRetainedTurn(page, targetTurnId, retainedTurnIds, shouldC
   for (let step = 0; step < TARGET_SEARCH_MAX_STEPS; step++) {
     if (shouldCancel?.()) throw new Error('Archive cancelled.');
 
-    const result = await page.evaluate(targetId => {
+    const searchResult = await page.evaluate(targetId => {
       const turnSelector = 'section[data-testid^="conversation-turn-"]';
       const mountedTurns = [...document.querySelectorAll(turnSelector)];
       const target = mountedTurns.find(turn => turn.getAttribute('data-testid') === targetId);
@@ -173,17 +182,17 @@ async function scrollToRetainedTurn(page, targetTurnId, retainedTurnIds, shouldC
         return { found: true };
       }
 
-      const turnNumber = id => Number(/conversation-turn-(\d+)/.exec(id || '')?.[1] ?? Number.NaN);
-      const targetNumber = turnNumber(targetId);
+      const parseTurnNumber = id => Number(/conversation-turn-(\d+)/.exec(id || '')?.[1] ?? Number.NaN);
+      const targetNumber = parseTurnNumber(targetId);
       const mountedNumbers = mountedTurns
-        .map(turn => turnNumber(turn.getAttribute('data-testid')))
+        .map(turn => parseTurnNumber(turn.getAttribute('data-testid')))
         .filter(Number.isFinite);
       const crawler = window.__archiveCrawler;
       const metrics = crawler.metrics();
       const maximumTop = Math.max(0, metrics.height - metrics.client);
       const stepSize = Math.max(320, Math.floor(metrics.client * 0.55));
 
-      let direction = 0;
+      let direction;
       if (mountedNumbers.length && Number.isFinite(targetNumber)) {
         const firstMounted = Math.min(...mountedNumbers);
         const lastMounted = Math.max(...mountedNumbers);
@@ -199,30 +208,35 @@ async function scrollToRetainedTurn(page, targetTurnId, retainedTurnIds, shouldC
       return { found: false, moved: nextTop !== metrics.top };
     }, targetTurnId);
 
-    if (result.found) {
+    if (searchResult.found) {
       await page.waitForTimeout(500);
       return true;
     }
-    if (!result.moved) break;
+    if (!searchResult.moved) break;
     await page.waitForTimeout(TARGET_SEARCH_INTERVAL_MS);
   }
 
   return false;
 }
 
-async function installManualInspectionUi(page, target) {
-  await page.evaluate(({ targetTurnId, targetReason, maxEvents }) => {
+async function installManualInspectionUi(page, target, step) {
+  await page.evaluate(({ targetTurnId, targetReason, stepIndex, stepCount, stepLabel, buttonLabel, maxEvents }) => {
     document.getElementById('archive-manual-inspection-panel')?.remove();
     document.getElementById('archive-manual-inspection-style')?.remove();
 
     const existingState = window.__archiveManualInspection;
-    if (existingState?.observer) existingState.observer.disconnect();
-    if (existingState?.clickListener) document.removeEventListener('click', existingState.clickListener, true);
+    existingState?.observer?.disconnect?.();
+    if (existingState?.clickListener) {
+      document.removeEventListener('click', existingState.clickListener, true);
+    }
 
     const events = [];
     const manualState = {
       active: true,
       phase: 'manual-inspection',
+      stepIndex,
+      stepCount,
+      stepLabel,
       targetTurnId,
       targetReason,
       startedAt: new Date().toISOString(),
@@ -267,7 +281,7 @@ async function installManualInspectionUi(page, target) {
         z-index: 2147483647;
         right: 18px;
         top: 18px;
-        width: min(440px, calc(100vw - 36px));
+        width: min(460px, calc(100vw - 36px));
         padding: 16px;
         border: 2px solid #f59e0b;
         border-radius: 12px;
@@ -278,6 +292,7 @@ async function installManualInspectionUi(page, target) {
       }
       #archive-manual-inspection-panel strong { display: block; font-size: 16px; margin-bottom: 6px; }
       #archive-manual-inspection-panel code { color: #fde68a; }
+      #archive-manual-inspection-panel .archive-manual-step { opacity: .72; margin-bottom: 8px; }
       #archive-manual-inspection-panel button {
         margin-top: 12px;
         width: 100%;
@@ -295,11 +310,12 @@ async function installManualInspectionUi(page, target) {
     const panel = document.createElement('div');
     panel.id = 'archive-manual-inspection-panel';
     panel.innerHTML = `
+      <div class="archive-manual-step">Step ${stepIndex} of ${stepCount} · ${stepLabel}</div>
       <strong>Manual crawler inspection</strong>
       Fully expand the highlighted <code>${targetTurnId}</code>.
-      Open every nested layer and wait for each leaf/tool result to finish loading.
+      Open every nested layer and wait for every leaf/tool result to finish loading.
       <div style="margin-top:8px;opacity:.78">Selected because: ${targetReason}</div>
-      <button id="archive-manual-inspection-finish" type="button">Finish manual inspection</button>
+      <button id="archive-manual-inspection-finish" type="button">${buttonLabel}</button>
     `;
     document.body.appendChild(panel);
 
@@ -307,8 +323,8 @@ async function installManualInspectionUi(page, target) {
       event.preventDefault();
       event.stopPropagation();
       manualState.finishRequested = true;
-      manualState.phase = 'finish-requested';
-      recordEvent('finish-requested');
+      manualState.phase = stepIndex < stepCount ? 'step-complete-requested' : 'finish-requested';
+      recordEvent('step-finish-requested', { stepIndex, stepLabel });
     });
 
     const clickListener = event => {
@@ -383,17 +399,20 @@ async function installManualInspectionUi(page, target) {
     });
 
     markTargetTurn();
-    recordEvent('manual-inspection-started', { targetTurnId, targetReason });
+    recordEvent('manual-step-started', { stepIndex, stepLabel, targetTurnId, targetReason });
   }, {
     targetTurnId: target.id,
     targetReason: target.reason,
-    maxEvents: MAX_MANUAL_EVENTS
+    stepIndex: step.index,
+    stepCount: step.count,
+    stepLabel: step.label,
+    buttonLabel: step.buttonLabel,
+    maxEvents: MAX_MANUAL_EVENTS_PER_STEP
   });
 }
 
 async function waitForManualFinish(page, shouldCancel) {
   const deadline = Date.now() + MANUAL_SAFETY_TIMEOUT_MS;
-
   while (Date.now() < deadline) {
     if (shouldCancel?.()) throw new Error('Archive cancelled.');
     if (page.isClosed()) throw new Error('The ChatGPT browser was closed during manual inspection.');
@@ -402,7 +421,6 @@ async function waitForManualFinish(page, shouldCancel) {
     if (finishRequested) return;
     await page.waitForTimeout(MANUAL_POLL_INTERVAL_MS);
   }
-
   throw new Error('Manual inspection exceeded the 2-hour diagnostic safety limit.');
 }
 
@@ -412,7 +430,7 @@ async function stopManualInspectionUi(page) {
     if (!state) return { events: [], interactionCount: 0 };
 
     state.active = false;
-    state.phase = 'manual-inspection-complete';
+    state.phase = 'manual-step-complete';
     state.finishedAt = new Date().toISOString();
     state.observer?.disconnect?.();
     if (state.clickListener) document.removeEventListener('click', state.clickListener, true);
@@ -426,6 +444,9 @@ async function stopManualInspectionUi(page) {
     return {
       startedAt: state.startedAt,
       finishedAt: state.finishedAt,
+      stepIndex: state.stepIndex,
+      stepCount: state.stepCount,
+      stepLabel: state.stepLabel,
       targetTurnId: state.targetTurnId,
       targetReason: state.targetReason,
       interactionCount: state.interactionCount,
@@ -465,8 +486,8 @@ async function assembleDiagnosticSnapshot(page, sourceUrl) {
   return finalizeConversationFidelity(snapshot);
 }
 
-async function createDiagnosticDirectory(targetTurnId) {
-  const directoryName = `${timestampForFilename()}-${safeDirectoryPart(targetTurnId)}`;
+async function createDiagnosticDirectory() {
+  const directoryName = `${timestampForFilename()}-two-step-manual-inspection`;
   const directory = path.join(MANUAL_DIAGNOSTIC_ROOT, directoryName);
   await fs.mkdir(directory, { recursive: true });
   return directory;
@@ -480,19 +501,91 @@ async function writeSummary(directory, summary) {
   await fs.writeFile(path.join(directory, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
 }
 
+function summarizeTarget(target) {
+  if (!target) return null;
+  return {
+    id: target.id,
+    reason: target.reason,
+    role: target.role,
+    recognizedCollapsed: target.recognizedCollapsed,
+    allCollapsedControlsInRetainedHtml: target.allCollapsedControls,
+    closedDetailsInRetainedHtml: target.closedDetails,
+    preBlocks: target.preBlocks,
+    codeBlocks: target.codeBlocks,
+    textLength: target.textLength
+  };
+}
+
+async function captureManualStep({
+  page,
+  target,
+  step,
+  retainedTurnIds,
+  diagnosticDirectory,
+  shouldCancel,
+  onProgress,
+  convergeMounted,
+  snapshotFilename
+}) {
+  const targetFound = await scrollToRetainedTurn(page, target.id, retainedTurnIds, shouldCancel);
+  if (!targetFound) {
+    throw new Error(`Could not remount ${target.id} for manual inspection.`);
+  }
+
+  const beforeMetrics = await getManualPageMetrics(page, target.id);
+  await installManualInspectionUi(page, target, step);
+
+  await onProgress?.({
+    phase: `Manual inspection step ${step.index}/${step.count}`,
+    detail: `Chromium is paused on ${target.id}. Fully expand the highlighted turn through every nested layer, wait for leaf content to load, then use the button in the ChatGPT overlay.`,
+    scanningStatus: `${step.label} · ${target.id} · ${target.reason}`,
+    scanComplete: true
+  });
+
+  await waitForManualFinish(page, shouldCancel);
+  const manualResult = await stopManualInspectionUi(page);
+
+  // Capture the human-revealed state before beta7 gets another chance to act.
+  await page.evaluate(() => window.__archiveCrawler.capture());
+  const afterManualBeforeConvergence = await getManualPageMetrics(page, target.id);
+  const humanSnapshot = await assembleDiagnosticSnapshot(page, page.url());
+  await writeSnapshot(diagnosticDirectory, snapshotFilename, humanSnapshot);
+
+  await onProgress?.({
+    phase: `Reconciling manual step ${step.index}/${step.count}`,
+    detail: `Manual work on ${target.id} is captured. Running beta7 fixed-point convergence on the mounted range before moving on.`,
+    scanningStatus: `${step.label} · ${manualResult.interactionCount} manual interaction(s) · reconverging`,
+    scanComplete: true
+  });
+
+  await convergeMounted?.();
+  await page.evaluate(() => window.__archiveCrawler.capture());
+  const afterConvergenceMetrics = await getManualPageMetrics(page, target.id);
+
+  return {
+    target: summarizeTarget(target),
+    beforeMetrics,
+    manual: {
+      ...manualResult,
+      targetMetricsBeforeFinalConvergence: afterManualBeforeConvergence
+    },
+    afterConvergenceMetrics,
+    humanSnapshotStats: humanSnapshot.stats
+  };
+}
+
 export async function runManualInspection(page, { onProgress, shouldCancel, convergeMounted } = {}) {
   const sessionMode = await getSessionMode(page);
   if (sessionMode !== 'authenticated') {
     await onProgress?.({
       phase: 'Manual inspection skipped',
-      detail: 'The development manual-inspection pass is only enabled for the headed authenticated browser; anonymous crawling remains headless for public-view fidelity.'
+      detail: 'The two-step manual pass is only enabled for the headed authenticated browser; anonymous crawling remains headless for public-view fidelity.'
     });
     return;
   }
 
-  const retainedTurns = await getRetainedTurns(page);
-  const target = selectTargetFromTurns(retainedTurns);
-  if (!target) {
+  let retainedTurns = await getRetainedTurns(page);
+  if (!retainedTurns.length) {
     await onProgress?.({
       phase: 'Manual inspection skipped',
       detail: 'No retained conversation turn was available to inspect manually.'
@@ -500,104 +593,116 @@ export async function runManualInspection(page, { onProgress, shouldCancel, conv
     return;
   }
 
-  const retainedTurnIds = retainedTurns.map(turn => turn.id).sort((left, right) => {
-    const number = id => Number(/conversation-turn-(\d+)/.exec(id || '')?.[1] ?? Number.MAX_SAFE_INTEGER);
-    return number(left) - number(right) || left.localeCompare(right);
-  });
-
-  await onProgress?.({
-    phase: 'Saving automatic baseline',
-    detail: `Automatic beta7 capture is complete. Saving an independent baseline before manual inspection of ${target.id}.`,
-    scanningStatus: `Automatic fixed point complete · preparing manual target ${target.id}`,
-    scanComplete: true
-  });
-
-  const diagnosticDirectory = await createDiagnosticDirectory(target.id);
+  const diagnosticDirectory = await createDiagnosticDirectory();
   const automaticStats = await getCrawlerStats(page);
   const automaticSnapshot = await assembleDiagnosticSnapshot(page, page.url());
   await writeSnapshot(diagnosticDirectory, 'automatic-before-manual.html', automaticSnapshot);
 
-  const targetFound = await scrollToRetainedTurn(page, target.id, retainedTurnIds, shouldCancel);
-  if (!targetFound) {
-    await writeSummary(diagnosticDirectory, {
-      sourceUrl: page.url(),
-      target,
-      automaticStats,
-      automaticSnapshotStats: automaticSnapshot.stats,
-      targetFound: false,
-      error: 'The retained target turn could not be remounted for manual inspection.'
+  const summary = {
+    sourceUrl: page.url(),
+    sessionMode,
+    diagnosticDirectory,
+    knownProblemTurnId: KNOWN_PROBLEM_TURN_ID,
+    automatic: {
+      crawlerStats: automaticStats,
+      snapshotStats: automaticSnapshot.stats
+    },
+    steps: []
+  };
+
+  await onProgress?.({
+    phase: 'Saving automatic baseline',
+    detail: `Automatic beta7 capture is complete. Saved the baseline; preparing known problem turn ${KNOWN_PROBLEM_TURN_ID}.`,
+    scanningStatus: `Automatic fixed point complete · preparing ${KNOWN_PROBLEM_TURN_ID}`,
+    scanComplete: true
+  });
+
+  const retainedTurnIds = sortTurnIds(retainedTurns.map(turn => turn.id));
+  const knownProblemTarget = selectKnownProblemTarget(retainedTurns);
+
+  if (knownProblemTarget) {
+    const knownStepResult = await captureManualStep({
+      page,
+      target: knownProblemTarget,
+      step: {
+        index: 1,
+        count: 2,
+        label: 'Known problem turn',
+        buttonLabel: 'Turn 54 is fully expanded — continue to step 2'
+      },
+      retainedTurnIds,
+      diagnosticDirectory,
+      shouldCancel,
+      onProgress,
+      convergeMounted,
+      snapshotFilename: 'after-turn-54-manual-before-reconvergence.html'
     });
-    throw new Error(`Could not remount ${target.id} for manual inspection.`);
+    summary.steps.push(knownStepResult);
+  } else {
+    summary.steps.push({
+      target: { id: KNOWN_PROBLEM_TURN_ID, reason: 'known problematic turn from prior MHTML comparison' },
+      skipped: true,
+      error: `${KNOWN_PROBLEM_TURN_ID} was not present in the retained automatic crawl.`
+    });
+    await onProgress?.({
+      phase: 'Known problem turn unavailable',
+      detail: `${KNOWN_PROBLEM_TURN_ID} was not retained by the automatic crawl. Recording that failure and continuing to the crawler-selected diagnostic target.`,
+      scanComplete: true
+    });
   }
 
-  const baselineTargetMetrics = await getManualPageMetrics(page, target.id);
-  await installManualInspectionUi(page, target);
-
-  await onProgress?.({
-    phase: 'Manual inspection required',
-    detail: `Chromium is paused on ${target.id}. Fully expand the highlighted turn through every nested layer, wait for leaf content to load, then click “Finish manual inspection” in the ChatGPT window.`,
-    scanningStatus: `Manual target ${target.id} · ${target.reason}`,
-    scanComplete: true
+  // Re-read retained turns after the first manual step because the user's
+  // expansion may have made turn 54 richer and may also have changed which
+  // other turn is the best independent diagnostic target.
+  retainedTurns = await getRetainedTurns(page);
+  const preferredTarget = selectTargetFromTurns(retainedTurns, {
+    excludeIds: knownProblemTarget ? [KNOWN_PROBLEM_TURN_ID] : []
   });
 
-  await waitForManualFinish(page, shouldCancel);
-  const manualResult = await stopManualInspectionUi(page);
+  if (!preferredTarget) {
+    summary.preferredTargetSkipped = true;
+    summary.preferredTargetSkipReason = 'No second retained target remained after excluding turn 54.';
+  } else {
+    const updatedRetainedTurnIds = sortTurnIds(retainedTurns.map(turn => turn.id));
+    const preferredStepResult = await captureManualStep({
+      page,
+      target: preferredTarget,
+      step: {
+        index: knownProblemTarget ? 2 : 1,
+        count: knownProblemTarget ? 2 : 1,
+        label: 'Crawler-selected diagnostic turn',
+        buttonLabel: 'Finish manual inspection'
+      },
+      retainedTurnIds: updatedRetainedTurnIds,
+      diagnosticDirectory,
+      shouldCancel,
+      onProgress,
+      convergeMounted,
+      snapshotFilename: 'after-preferred-turn-manual-before-reconvergence.html'
+    });
+    summary.steps.push(preferredStepResult);
+  }
 
-  // Retain what the user revealed before the automatic algorithm gets another
-  // chance to act. This makes the manual delta visible in diagnostics.
   await page.evaluate(() => window.__archiveCrawler.capture());
-  const afterManualBeforeConvergence = await getManualPageMetrics(page, target.id);
-
-  await onProgress?.({
-    phase: 'Reconciling manual expansion',
-    detail: 'Manual inspection finished. Running beta7 fixed-point expansion once more on the mounted range before saving the post-manual result.',
-    scanningStatus: `Manual interactions ${manualResult.interactionCount} · reconverging ${target.id}`,
-    scanComplete: true
-  });
-
-  await convergeMounted?.();
-  await page.evaluate(() => window.__archiveCrawler.capture());
-
-  const finalTargetMetrics = await getManualPageMetrics(page, target.id);
   const finalStats = await getCrawlerStats(page);
   const postManualSnapshot = await assembleDiagnosticSnapshot(page, page.url());
   await writeSnapshot(diagnosticDirectory, 'post-manual.html', postManualSnapshot);
 
-  await writeSummary(diagnosticDirectory, {
-    sourceUrl: page.url(),
-    sessionMode,
-    diagnosticDirectory,
-    target: {
-      id: target.id,
-      reason: target.reason,
-      role: target.role,
-      recognizedCollapsed: target.recognizedCollapsed,
-      allCollapsedControlsInRetainedHtml: target.allCollapsedControls,
-      closedDetailsInRetainedHtml: target.closedDetails,
-      preBlocks: target.preBlocks,
-      codeBlocks: target.codeBlocks,
-      textLength: target.textLength
-    },
-    automatic: {
-      crawlerStats: automaticStats,
-      snapshotStats: automaticSnapshot.stats,
-      targetMetrics: baselineTargetMetrics
-    },
-    manual: {
-      ...manualResult,
-      targetMetricsBeforeFinalConvergence: afterManualBeforeConvergence
-    },
-    postManual: {
-      crawlerStats: finalStats,
-      snapshotStats: postManualSnapshot.stats,
-      targetMetrics: finalTargetMetrics
-    }
-  });
+  summary.postManual = {
+    crawlerStats: finalStats,
+    snapshotStats: postManualSnapshot.stats
+  };
+  await writeSummary(diagnosticDirectory, summary);
+
+  const totalInteractions = summary.steps.reduce(
+    (total, stepResult) => total + Number(stepResult?.manual?.interactionCount || 0),
+    0
+  );
 
   await onProgress?.({
     phase: 'Manual inspection complete',
-    detail: `Saved automatic-before-manual.html, post-manual.html, and summary.json under ${path.relative(PROJECT_ROOT, diagnosticDirectory)}. Building the normal final archive next.`,
-    scanningStatus: `Manual inspection complete · ${manualResult.interactionCount} interaction(s) recorded`,
+    detail: `Saved the automatic baseline, both manual-step snapshots, post-manual.html, and summary.json under ${path.relative(PROJECT_ROOT, diagnosticDirectory)}. Building the normal final archive next.`,
+    scanningStatus: `Two-step manual inspection complete · ${totalInteractions} interaction(s) recorded`,
     scanComplete: true
   });
 }
