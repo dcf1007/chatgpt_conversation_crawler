@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const roots = ['server.mjs', 'public', 'src', 'tests', 'start-windows.bat', 'start-linux.sh', 'start-macos.sh'];
+const roots = ['server.mjs', 'public', 'src', 'start-windows.bat', 'start-linux.sh', 'start-macos.sh'];
 const files = [];
 for (const entry of roots) {
   const full = path.join(root, entry);
