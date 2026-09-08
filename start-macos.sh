@@ -6,7 +6,7 @@ cd "$SCRIPT_DIR"
 
 URL="http://localhost:${PORT:-3000}"
 
-echo "Starting ChatGPT Conversation Crawler - beta6-dev MHTML diagnostics..."
+echo "Starting ChatGPT Conversation Crawler..."
 
 if ! command -v node >/dev/null 2>&1; then
   echo
@@ -29,12 +29,18 @@ if [[ ! -f "$SCRIPT_DIR/node_modules/playwright/package.json" || ! -f "$SCRIPT_D
   exit 1
 fi
 
+if [[ ! -f "$SCRIPT_DIR/server.mjs" ]]; then
+  echo
+  echo "server.mjs is missing from this folder."
+  echo "Re-extract the complete release archive before starting the crawler."
+  exit 1
+fi
+
 (
   sleep 1.5
   open "$URL" >/dev/null 2>&1 || true
 ) &
 
 echo "Local UI: $URL"
-echo "MHTML diagnostics: $SCRIPT_DIR/mhtml-diagnostics/"
 echo "Press Ctrl+C to stop the server."
-exec node "$SCRIPT_DIR/server-dev.mjs"
+exec node "$SCRIPT_DIR/server.mjs"
