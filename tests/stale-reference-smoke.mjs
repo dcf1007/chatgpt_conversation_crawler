@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const roots = ['server.mjs', 'public', 'src', 'start-windows.bat', 'start-linux.sh', 'start-macos.sh'];
+const roots = ['server.mjs', 'server-dev.mjs', 'public', 'src', 'start-windows.bat', 'start-linux.sh', 'start-macos.sh'];
 const files = [];
 for (const entry of roots) {
   const full = path.join(root, entry);
@@ -18,10 +18,11 @@ for (const entry of roots) {
 }
 const text = files.map(file => `${path.relative(root, file)}\n${fs.readFileSync(file, 'utf8')}`).join('\n');
 
-for (const stale of ['server-dev.mjs', 'installBeta8Diagnostics', 'crawler-page-diagnostics.mjs']) {
-  assert.ok(!text.includes(stale), `stale clean-runtime reference remains: ${stale}`);
+for (const stale of ['installBeta8Diagnostics', 'crawler-page-diagnostics.mjs']) {
+  assert.ok(!text.includes(stale), `stale beta11-dev reference remains: ${stale}`);
 }
 assert.ok(!/params\.get\(['"]job['"]\)/.test(text), 'legacy preview query parameter remains');
-assert.ok(!/\bjobId\b/.test(text), 'legacy archive identifier jobId remains');
+assert.ok(!/\bjobId\b/.test(text), 'legacy archive identifier jobId remains, including diagnostic manifests');
+assert.match(text, /diagnosticId/, 'diagnostic manifest should use diagnosticId rather than archive job naming');
 
-console.log('beta11 stale-reference smoke test passed');
+console.log('beta11-dev stale-reference smoke test passed');
