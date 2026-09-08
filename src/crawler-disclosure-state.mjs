@@ -1,11 +1,11 @@
 export const TURN_QUIESCENT_REQUIRED_ROUNDS = 3;
 export const MAX_UNRECOGNIZED_LABELS = 12;
 
-/** Add beta8 disclosure diagnostics to the already-installed page crawler. */
-export async function installBeta8Diagnostics(page) {
+/** Install disclosure/quiescence state required by the automatic crawler. */
+export async function installDisclosureState(page) {
   await page.evaluate(({ requiredRounds, maxLabels }) => {
     const crawler = window.__archiveCrawler;
-    if (!crawler || crawler.__beta8DiagnosticsInstalled) return;
+    if (!crawler || crawler.__disclosureStateInstalled) return;
 
     const turnSelector = 'section[data-testid^="conversation-turn-"]';
     const turns = () => [...document.querySelectorAll(turnSelector)];
@@ -33,7 +33,7 @@ export async function installBeta8Diagnostics(page) {
       } : { textLength: 0, htmlLength: 0, preCount: 0, codeCount: 0, mediaCount: 0, childCount: 0 };
     }
 
-    function sectionDiagnostics(section) {
+    function sectionState(section) {
       const collapsed = [...section.querySelectorAll('[aria-expanded="false"]')];
       const recognizedKeys = [];
       const actionableKeys = [];
@@ -55,20 +55,18 @@ export async function installBeta8Diagnostics(page) {
       };
     }
 
-    function collapsedDiagnostics() {
+    function mountedDisclosureState() {
       let allCollapsedControls = 0;
       let recognizedCollapsed = 0;
       let actionableCollapsed = 0;
       let closedDetails = 0;
       const unrecognizedCollapsedLabels = [];
-
       for (const section of turns()) {
-        const diagnostics = sectionDiagnostics(section);
-        allCollapsedControls += diagnostics.allCollapsedControls;
-        recognizedCollapsed += diagnostics.recognizedCollapsed;
-        actionableCollapsed += diagnostics.actionableCollapsed + diagnostics.closedDetails;
-        closedDetails += diagnostics.closedDetails;
-
+        const current = sectionState(section);
+        allCollapsedControls += current.allCollapsedControls;
+        recognizedCollapsed += current.recognizedCollapsed;
+        actionableCollapsed += current.actionableCollapsed + current.closedDetails;
+        closedDetails += current.closedDetails;
         if (unrecognizedCollapsedLabels.length >= maxLabels) continue;
         for (const element of section.querySelectorAll('[aria-expanded="false"]')) {
           if (isRecognizedDisclosure(element)) continue;
@@ -80,31 +78,27 @@ export async function installBeta8Diagnostics(page) {
       return { allCollapsedControls, recognizedCollapsed, actionableCollapsed, closedDetails, unrecognizedCollapsedLabels };
     }
 
-    // Only this turn participates in disclosure quiescence. Unrelated mounted
-    // turns are intentionally excluded so virtualizer boundary churn is noise.
     function turnDisclosureSample(targetTurnId) {
       const section = turns().find(turn => turn.getAttribute('data-testid') === targetTurnId);
       if (!section) {
         return { mounted: false, turnId: targetTurnId, actionableCollapsed: 0, recognizedCollapsed: 0, closedDetails: 0, signature: `missing:${targetTurnId}` };
       }
       const metrics = sampleNode(section);
-      const diagnostics = sectionDiagnostics(section);
+      const disclosure = sectionState(section);
       return {
         mounted: true,
         turnId: targetTurnId,
         ...metrics,
-        ...diagnostics,
+        ...disclosure,
         signature: [
           targetTurnId,
           metrics.textLength, metrics.htmlLength, metrics.preCount, metrics.codeCount, metrics.mediaCount, metrics.childCount,
-          diagnostics.recognizedCollapsed, diagnostics.actionableCollapsed, diagnostics.closedDetails,
-          diagnostics.recognizedKeys.join('~'), diagnostics.actionableKeys.join('~')
+          disclosure.recognizedCollapsed, disclosure.actionableCollapsed, disclosure.closedDetails,
+          disclosure.recognizedKeys.join('~'), disclosure.actionableKeys.join('~')
         ].join('|')
       };
     }
 
-    // Before a turn becomes active, sample disclosure identities only. Plain
-    // messages mounting/unmounting do not alter this signature.
     function mountedDisclosureSample() {
       const parts = [];
       let recognizedCollapsed = 0;
@@ -112,12 +106,12 @@ export async function installBeta8Diagnostics(page) {
       let closedDetails = 0;
       for (const section of turns()) {
         const id = section.getAttribute('data-testid') || '';
-        const diagnostics = sectionDiagnostics(section);
-        recognizedCollapsed += diagnostics.recognizedCollapsed;
-        actionableCollapsed += diagnostics.actionableCollapsed + diagnostics.closedDetails;
-        closedDetails += diagnostics.closedDetails;
-        if (diagnostics.recognizedCollapsed || diagnostics.closedDetails) {
-          parts.push([id, diagnostics.recognizedKeys.join('~'), diagnostics.actionableKeys.join('~'), diagnostics.closedDetails].join(':'));
+        const disclosure = sectionState(section);
+        recognizedCollapsed += disclosure.recognizedCollapsed;
+        actionableCollapsed += disclosure.actionableCollapsed + disclosure.closedDetails;
+        closedDetails += disclosure.closedDetails;
+        if (disclosure.recognizedCollapsed || disclosure.closedDetails) {
+          parts.push([id, disclosure.recognizedKeys.join('~'), disclosure.actionableKeys.join('~'), disclosure.closedDetails].join(':'));
         }
       }
       parts.sort();
@@ -134,7 +128,7 @@ export async function installBeta8Diagnostics(page) {
         retainedUnresolvedTurnIds: unresolved.slice(0, maxLabels).map(turn => turn.id),
         fingerprint: unresolved.map(turn => [
           turn.id, Number(turn.remaining || 0), Number(turn.preCount || 0), Number(turn.codeCount || 0),
-          Number(turn.textLength || 0), Number(turn.htmlLength || turn.html?.length || 0)
+          Number(turn.mediaCount || 0), Number(turn.textLength || 0), Number(turn.htmlLength || turn.html?.length || 0)
         ].join(':')).join('|')
       };
     }
@@ -155,7 +149,7 @@ export async function installBeta8Diagnostics(page) {
 
     const baseStats = crawler.stats.bind(crawler);
     crawler.stats = () => {
-      const collapsed = collapsedDiagnostics();
+      const collapsed = mountedDisclosureState();
       const retained = retainedDisclosureSummary();
       return {
         ...baseStats(), ...collapsed,
@@ -173,6 +167,6 @@ export async function installBeta8Diagnostics(page) {
         reconciliationStablePasses: crawler.state.reconciliation.stablePasses
       };
     };
-    crawler.__beta8DiagnosticsInstalled = true;
+    crawler.__disclosureStateInstalled = true;
   }, { requiredRounds: TURN_QUIESCENT_REQUIRED_ROUNDS, maxLabels: MAX_UNRECOGNIZED_LABELS });
 }
