@@ -5,17 +5,18 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>ChatGPT Conversation Crawler</title>
   <style>
-    :root{color-scheme:light dark}*{box-sizing:border-box}body{margin:0;min-height:100vh;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:Canvas;color:CanvasText}main{width:min(1020px,calc(100% - 32px));margin:0 auto;padding:30px 0 50px}.card{border:1px solid color-mix(in srgb,CanvasText 18%,transparent);border-radius:16px;padding:24px;box-shadow:0 10px 32px color-mix(in srgb,CanvasText 7%,transparent)}h1{margin:0 0 8px;font-size:clamp(24px,5vw,34px)}p{line-height:1.5}.url-label{display:block;font-weight:650;margin:22px 0 8px}.url-input{width:100%;padding:12px 13px;border:1px solid color-mix(in srgb,CanvasText 24%,transparent);border-radius:10px;font:inherit;background:Canvas;color:CanvasText}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}button,.button-link{padding:11px 15px;border:0;border-radius:10px;font:inherit;font-weight:650;cursor:pointer;background:CanvasText;color:Canvas;text-decoration:none}button.secondary,.button-link.secondary{background:color-mix(in srgb,CanvasText 10%,Canvas);color:CanvasText;border:1px solid color-mix(in srgb,CanvasText 20%,transparent)}button.danger{background:#a22;color:white}button:disabled{opacity:.5;cursor:not-allowed}.note{margin-top:18px;font-size:14px;color:color-mix(in srgb,CanvasText 72%,transparent)}.session-panel{margin:22px 0;padding:16px;border:1px solid color-mix(in srgb,CanvasText 16%,transparent);border-radius:12px;background:color-mix(in srgb,CanvasText 3%,Canvas)}.session-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.session-title{font-weight:760}.session-detail{margin-top:4px;font-size:13px;line-height:1.45;color:color-mix(in srgb,CanvasText 72%,transparent);overflow-wrap:anywhere}.session-pill{padding:5px 9px;border-radius:999px;font-size:12px;font-weight:750;background:color-mix(in srgb,CanvasText 9%,Canvas);white-space:nowrap}.session-error{display:none;margin-top:10px;color:#c33;font-size:13px}.mode-box{margin-top:16px;padding-top:14px;border-top:1px solid color-mix(in srgb,CanvasText 12%,transparent)}.mode-label{font-weight:700;margin-bottom:7px}.mode-option{display:flex;align-items:flex-start;gap:9px;margin:7px 0;cursor:pointer}.mode-option input{width:auto;margin-top:.27em}.mode-option span{line-height:1.4}.mode-option small{display:block;opacity:.68;margin-top:2px}.profile-note{font-size:12px;opacity:.68;margin-top:10px}.profile-path{font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}#jobPanel{display:none;margin-top:22px;border-top:1px solid color-mix(in srgb,CanvasText 14%,transparent);padding-top:22px}.phase-row{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.phase{font-size:20px;font-weight:750}.status-pill{padding:5px 9px;border-radius:999px;font-size:12px;font-weight:700;background:color-mix(in srgb,CanvasText 9%,Canvas);white-space:nowrap}.activity{display:grid;gap:7px;margin-top:12px;padding:12px 14px;border-radius:11px;background:color-mix(in srgb,CanvasText 5%,Canvas);border:1px solid color-mix(in srgb,CanvasText 11%,transparent)}.activity-row{display:grid;grid-template-columns:132px minmax(0,1fr);gap:10px;line-height:1.4}.activity-label{font-size:12px;font-weight:750;text-transform:uppercase;letter-spacing:.035em;opacity:.58;padding-top:2px}.activity-value{overflow-wrap:anywhere}#detail{color:color-mix(in srgb,CanvasText 78%,transparent)}#scanningStatus,#oldestRetained,#mountedFirst,#expandingStatus{font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;font-size:13px}.progress{height:9px;margin:16px 0 5px;border-radius:999px;overflow:hidden;background:color-mix(in srgb,CanvasText 10%,Canvas)}.bar{height:100%;width:0;background:CanvasText;transition:width .25s ease}.bar.indeterminate{width:35%;animation:indeterminate 1.4s ease-in-out infinite}@keyframes indeterminate{0%{transform:translateX(-110%)}100%{transform:translateX(320%)}}.progress-caption{display:flex;justify-content:space-between;gap:12px;font-size:12px;color:color-mix(in srgb,CanvasText 62%,transparent)}.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:18px}.stat{border:1px solid color-mix(in srgb,CanvasText 14%,transparent);border-radius:10px;padding:12px;min-width:0}.stat .value{font-size:21px;font-weight:760;overflow-wrap:anywhere}.stat .label{font-size:12px;opacity:.64;margin-top:2px}.health{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.health>div{padding:10px 12px;border-radius:10px;background:color-mix(in srgb,CanvasText 6%,Canvas);font-size:13px}.warning{margin-top:12px;padding:11px 13px;border-radius:10px;border:1px solid #b77;background:color-mix(in srgb,#b77 12%,Canvas);display:none}.error{color:#c33}.done{margin-top:14px;padding:12px 14px;border-radius:10px;border:1px solid color-mix(in srgb,CanvasText 18%,transparent);display:none}@media(max-width:720px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.health{grid-template-columns:1fr}.phase-row,.session-head{display:block}.status-pill,.session-pill{display:inline-block;margin-top:8px}.activity-row{grid-template-columns:1fr;gap:2px}}
+    :root{color-scheme:light dark}*{box-sizing:border-box}body{margin:0;min-height:100vh;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:Canvas;color:CanvasText}main{width:min(980px,calc(100% - 32px));margin:auto;padding:30px 0 52px}.card{border:1px solid color-mix(in srgb,CanvasText 18%,transparent);border-radius:16px;padding:24px;box-shadow:0 10px 32px color-mix(in srgb,CanvasText 7%,transparent)}h1{margin:0 0 8px;font-size:clamp(24px,5vw,34px)}p{line-height:1.5}.muted{color:color-mix(in srgb,CanvasText 68%,transparent)}.session-panel{margin:22px 0;padding:16px;border:1px solid color-mix(in srgb,CanvasText 16%,transparent);border-radius:12px;background:color-mix(in srgb,CanvasText 3%,Canvas)}.head-row{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.title{font-weight:760}.small{font-size:13px;line-height:1.45}.pill{padding:5px 9px;border-radius:999px;font-size:12px;font-weight:750;background:color-mix(in srgb,CanvasText 9%,Canvas);white-space:nowrap}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}button,.button-link{padding:11px 15px;border:0;border-radius:10px;font:inherit;font-weight:650;cursor:pointer;background:CanvasText;color:Canvas;text-decoration:none}button.secondary,.button-link.secondary{background:color-mix(in srgb,CanvasText 10%,Canvas);color:CanvasText;border:1px solid color-mix(in srgb,CanvasText 20%,transparent)}button.danger{background:#a22;color:#fff}button:disabled{opacity:.5;cursor:not-allowed}.error{color:#c33}.session-error{display:none;margin-top:10px;font-size:13px}.mode-box{margin-top:16px;padding-top:14px;border-top:1px solid color-mix(in srgb,CanvasText 12%,transparent)}.mode-option{display:flex;align-items:flex-start;gap:9px;margin:8px 0;cursor:pointer}.mode-option input{margin-top:.28em}.mode-option small{display:block;opacity:.68;margin-top:2px}.profile-note{font-size:12px;opacity:.68;margin-top:10px}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}.url-label{display:block;font-weight:650;margin:22px 0 8px}.url-input{width:100%;padding:12px 13px;border:1px solid color-mix(in srgb,CanvasText 24%,transparent);border-radius:10px;font:inherit;background:Canvas;color:CanvasText}#jobPanel{display:none;margin-top:22px;border-top:1px solid color-mix(in srgb,CanvasText 14%,transparent);padding-top:22px}.stage-name{font-size:21px;font-weight:760}.identity{margin-top:4px;font-size:13px}.activity{display:grid;gap:8px;margin-top:14px;padding:13px 14px;border-radius:11px;background:color-mix(in srgb,CanvasText 5%,Canvas);border:1px solid color-mix(in srgb,CanvasText 11%,transparent)}.activity-row{display:grid;grid-template-columns:190px minmax(0,1fr);gap:10px;line-height:1.4}.activity-label{font-size:12px;font-weight:750;text-transform:uppercase;letter-spacing:.035em;opacity:.58;padding-top:2px}.activity-value{overflow-wrap:anywhere}.progress-wrap{margin-top:16px}.progress{height:9px;border-radius:999px;overflow:hidden;background:color-mix(in srgb,CanvasText 10%,Canvas)}.bar{height:100%;width:0;background:CanvasText;transition:width .25s ease}.bar.indeterminate{width:35%;animation:indeterminate 1.4s ease-in-out infinite}@keyframes indeterminate{0%{transform:translateX(-110%)}100%{transform:translateX(320%)}}.progress-caption{display:flex;justify-content:space-between;gap:12px;margin-top:5px;font-size:12px;color:color-mix(in srgb,CanvasText 62%,transparent)}.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:18px}.stat{border:1px solid color-mix(in srgb,CanvasText 14%,transparent);border-radius:10px;padding:12px;min-width:0}.stat .value{font-size:19px;font-weight:760;overflow-wrap:anywhere}.stat .label{font-size:12px;opacity:.64;margin-top:2px}.health{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.health>div{padding:10px 12px;border-radius:10px;background:color-mix(in srgb,CanvasText 6%,Canvas);font-size:13px}.warning{display:none;margin-top:12px;padding:11px 13px;border-radius:10px;border:1px solid #b77;background:color-mix(in srgb,#b77 12%,Canvas)}.done{display:none;margin-top:14px;padding:12px 14px;border-radius:10px;border:1px solid color-mix(in srgb,CanvasText 18%,transparent)}.note{margin-top:18px;font-size:13px;color:color-mix(in srgb,CanvasText 72%,transparent)}@media(max-width:760px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.health{grid-template-columns:1fr}.head-row{display:block}.pill{display:inline-block;margin-top:8px}.activity-row{grid-template-columns:1fr;gap:2px}}
   </style>
 </head>
-<body><main><div class="card">
+<body>
+<main><div class="card">
   <h1>ChatGPT Conversation Crawler</h1>
-  <p>Captures a shared ChatGPT conversation while progressively lazy-loading turns, expanding user-visible disclosure trees, and retaining richer versions of virtualized content.</p>
+  <p class="muted">Builds a script-free static archive from a ChatGPT share while progressively retaining virtualized turns and expanding user-visible reasoning/tool disclosures.</p>
 
   <section class="session-panel" aria-live="polite">
-    <div class="session-head">
-      <div><div class="session-title">ChatGPT browser session</div><div id="sessionDetail" class="session-detail">Checking saved browser profile…</div></div>
-      <div id="sessionPill" class="session-pill">checking</div>
+    <div class="head-row">
+      <div><div class="title">ChatGPT browser session</div><div id="sessionDetail" class="small muted">Checking saved browser profile…</div></div>
+      <div id="sessionPill" class="pill">checking</div>
     </div>
     <div class="actions">
       <button id="loginBtn" type="button">Open ChatGPT login</button>
@@ -23,130 +24,363 @@
       <button id="closeLoginBtn" type="button" class="secondary" disabled>Close login window</button>
       <button id="forgetSessionBtn" type="button" class="danger">Forget saved session</button>
     </div>
-    <div id="sessionError" class="session-error"></div>
-    <div class="profile-note">The persistent Chromium profile is stored beside the setup/start scripts at <span class="profile-path">./browser-profile</span>. It can contain authenticated ChatGPT cookies and browser storage; keep that folder private.</div>
+    <div id="sessionError" class="session-error error"></div>
+    <div class="profile-note">Persistent authenticated browser state is stored locally at <span class="mono">./browser-profile</span>. Treat that directory as credential-equivalent data.</div>
     <div class="mode-box">
-      <div class="mode-label">Archive browser mode</div>
-      <label class="mode-option"><input type="radio" name="sessionMode" value="authenticated" checked><span><strong>Authenticated</strong><small>Reuse the saved browser profile. Authenticated jobs share one profile and queue if it is already in use.</small></span></label>
-      <label class="mode-option"><input type="radio" name="sessionMode" value="anonymous"><span><strong>Anonymous</strong><small>Use a clean disposable browser, matching what a public recipient can see without your ChatGPT session.</small></span></label>
+      <div class="title small">Archive browser mode</div>
+      <label class="mode-option"><input type="radio" name="sessionMode" value="authenticated" checked><span><strong>Authenticated</strong><small>Reuse the saved browser profile. Authenticated jobs serialize access to that profile.</small></span></label>
+      <label class="mode-option"><input type="radio" name="sessionMode" value="anonymous"><span><strong>Anonymous</strong><small>Use a clean disposable browser representing what a public recipient can see without your saved ChatGPT session.</small></span></label>
     </div>
   </section>
 
   <form id="form">
     <label class="url-label" for="url">Share URL</label>
     <input class="url-input" id="url" name="url" type="url" required autocomplete="off" placeholder="https://chatgpt.com/share/...">
-    <div class="actions"><button id="submit" type="submit">Start archive</button><button id="previewBtn" type="button" class="secondary" disabled>Open live preview</button><button id="cancelBtn" type="button" class="danger" disabled>Cancel</button></div>
+    <div class="actions">
+      <button id="submit" type="submit">Start archive</button>
+      <button id="previewBtn" type="button" class="secondary" disabled>Open live preview</button>
+      <button id="cancelBtn" type="button" class="danger" disabled>Cancel</button>
+    </div>
   </form>
 
   <section id="jobPanel" aria-live="polite">
-    <div class="phase-row"><div class="phase" id="phase">Starting…</div><div id="statusPill" class="status-pill">starting</div></div>
-    <div class="activity">
-      <div class="activity-row"><div class="activity-label">Browser mode</div><div class="activity-value" id="browserMode">—</div></div>
-      <div class="activity-row"><div class="activity-label">Chat name</div><div class="activity-value" id="chatName">Detecting from shared page…</div></div>
-      <div class="activity-row"><div class="activity-label">Detail</div><div class="activity-value" id="detail">Creating a tracked job.</div></div>
-      <div class="activity-row"><div class="activity-label">Scanning</div><div class="activity-value" id="scanningStatus">Not started</div></div>
-      <div class="activity-row"><div class="activity-label">Oldest retained</div><div class="activity-value" id="oldestRetained">none</div></div>
-      <div class="activity-row"><div class="activity-label">Mounted first</div><div class="activity-value" id="mountedFirst">none</div></div>
-      <div class="activity-row"><div class="activity-label">Expanding</div><div class="activity-value" id="expandingStatus">No disclosure expansion yet</div></div>
+    <div class="head-row">
+      <div>
+        <div id="stageName" class="stage-name">Starting…</div>
+        <div id="jobIdentity" class="identity muted">—</div>
+      </div>
+      <div id="statusPill" class="pill">Starting</div>
     </div>
-    <div class="progress"><div id="bar" class="bar indeterminate"></div></div><div class="progress-caption"><span id="passText">Preparing</span><span id="scrollText">Working…</span></div>
-    <div class="stats"><div class="stat"><div class="value" id="turns">0</div><div class="label">turns captured</div></div><div class="stat"><div class="value" id="timelineMarkers">0</div><div class="label">timeline markers</div></div><div class="stat"><div class="value" id="expansions">0</div><div class="label">disclosures expanded</div></div><div class="stat"><div class="value" id="clicks">0</div><div class="label">expansion clicks</div></div><div class="stat"><div class="value" id="preBlocks">0</div><div class="label">&lt;pre&gt; blocks captured</div></div><div class="stat"><div class="value" id="codeBlocks">0</div><div class="label">&lt;code&gt; elements captured</div></div><div class="stat"><div class="value" id="failures">0</div><div class="label">unconfirmed expansions</div></div></div>
-    <div class="health"><div><strong>Worker heartbeat:</strong> <span id="heartbeat">—</span></div><div><strong>Last substantive progress:</strong> <span id="lastProgress">—</span></div></div><div id="warning" class="warning"></div><div id="doneBox" class="done"></div>
+
+    <div class="activity">
+      <div class="activity-row"><div class="activity-label">Current action</div><div id="currentAction" class="activity-value">Creating a tracked job.</div></div>
+      <div class="activity-row"><div class="activity-label">Coverage</div><div id="coverage" class="activity-value mono">0 retained / 0 observed · 0 missing</div></div>
+      <div class="activity-row"><div class="activity-label">Oldest retained</div><div id="oldestRetained" class="activity-value mono">none</div></div>
+      <div class="activity-row"><div class="activity-label">Position in loaded content</div><div id="loadedPosition" class="activity-value mono">—</div></div>
+      <div id="disclosureRow" class="activity-row" style="display:none"><div class="activity-label">Disclosure activity</div><div id="disclosureActivity" class="activity-value mono"></div></div>
+    </div>
+
+    <div id="progressWrap" class="progress-wrap">
+      <div class="progress"><div id="bar" class="bar indeterminate"></div></div>
+      <div class="progress-caption"><span id="stageProgressText">Preparing</span><span id="stageStepText">Working…</span></div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div id="disclosureStat" class="value">0 confirmed</div><div class="label">disclosures</div></div>
+      <div class="stat"><div id="richStat" class="value">0 pre · 0 code</div><div class="label">rich content</div></div>
+      <div class="stat"><div id="structureStat" class="value">0 markers · 0 apps</div><div class="label">captured structure</div></div>
+      <div class="stat"><div id="imageStat" class="value">0 / 0</div><div class="label">images embedded / found</div></div>
+    </div>
+
+    <div class="health">
+      <div><strong>Worker heartbeat:</strong> <span id="heartbeat">—</span></div>
+      <div><strong>Last substantive progress:</strong> <span id="lastProgress">—</span></div>
+    </div>
+    <div id="warning" class="warning"></div>
+    <div id="doneBox" class="done"></div>
   </section>
 
-  <p class="note"><strong>Authenticated mode</strong> reuses the local <span class="profile-path">browser-profile</span> directory and verifies the ChatGPT session before crawling. If ChatGPT expires the session, open the login window again. <strong>Chat name</strong> is detected from the shared page title and is used for the downloaded HTML filename when available. <strong>Timeline markers</strong> count visible ChatGPT date/time separators and <strong>Branched from</strong> notices retained between turns. <strong>Scanning</strong> always shows traversal step/status, but ordinary step movement does not count as substantive progress. <strong>Oldest retained</strong> is the cumulative earliest turn already stored. <strong>Mounted first</strong> is the live virtualizer frontier. <strong>Expanding</strong> clears when its turn is virtualized away. Live-preview snapshots are generated only while a preview window is open; the final archive embeds retrievable images.</p>
+  <p class="note">The percentage under <strong>Position in loaded content</strong> is the current scroll position inside whatever content ChatGPT has loaded at that moment; it is not a percentage of the final conversation. Progress bars are local to the current stage. Live preview is generated only after you explicitly open it.</p>
 </div></main>
 <script>
-const $=s=>document.querySelector(s);
-const form=$('#form'),input=$('#url'),submit=$('#submit'),previewBtn=$('#previewBtn'),cancelBtn=$('#cancelBtn'),jobPanel=$('#jobPanel'),phase=$('#phase'),browserMode=$('#browserMode'),chatName=$('#chatName'),detail=$('#detail'),scanningStatus=$('#scanningStatus'),oldestRetained=$('#oldestRetained'),mountedFirst=$('#mountedFirst'),expandingStatus=$('#expandingStatus'),statusPill=$('#statusPill'),bar=$('#bar'),passText=$('#passText'),scrollText=$('#scrollText'),warning=$('#warning'),doneBox=$('#doneBox'),heartbeat=$('#heartbeat'),lastProgress=$('#lastProgress');
-const sessionDetail=$('#sessionDetail'),sessionPill=$('#sessionPill'),sessionError=$('#sessionError'),loginBtn=$('#loginBtn'),checkSessionBtn=$('#checkSessionBtn'),closeLoginBtn=$('#closeLoginBtn'),forgetSessionBtn=$('#forgetSessionBtn');
-const fields=Object.fromEntries(['turns','timelineMarkers','expansions','clicks','preBlocks','codeBlocks','failures'].map(id=>[id,$('#'+id)]));
-let currentJobId=null,pollTimer=null,previewWindow=null,lastStatus=null,lastSession=null,sessionPollTimer=null;
+const $ = selector => document.querySelector(selector);
+const form = $('#form');
+const input = $('#url');
+const submit = $('#submit');
+const previewBtn = $('#previewBtn');
+const cancelBtn = $('#cancelBtn');
+const jobPanel = $('#jobPanel');
+const stageName = $('#stageName');
+const jobIdentity = $('#jobIdentity');
+const statusPill = $('#statusPill');
+const currentAction = $('#currentAction');
+const coverage = $('#coverage');
+const oldestRetained = $('#oldestRetained');
+const loadedPosition = $('#loadedPosition');
+const disclosureRow = $('#disclosureRow');
+const disclosureActivity = $('#disclosureActivity');
+const progressWrap = $('#progressWrap');
+const bar = $('#bar');
+const stageProgressText = $('#stageProgressText');
+const stageStepText = $('#stageStepText');
+const disclosureStat = $('#disclosureStat');
+const richStat = $('#richStat');
+const structureStat = $('#structureStat');
+const imageStat = $('#imageStat');
+const heartbeat = $('#heartbeat');
+const lastProgress = $('#lastProgress');
+const warning = $('#warning');
+const doneBox = $('#doneBox');
+const sessionDetail = $('#sessionDetail');
+const sessionPill = $('#sessionPill');
+const sessionError = $('#sessionError');
+const loginBtn = $('#loginBtn');
+const checkSessionBtn = $('#checkSessionBtn');
+const closeLoginBtn = $('#closeLoginBtn');
+const forgetSessionBtn = $('#forgetSessionBtn');
 
-function age(ms){if(!ms)return'—';const s=Math.max(0,Math.floor((Date.now()-ms)/1000));if(s<2)return'just now';if(s<60)return`${s}s ago`;const m=Math.floor(s/60),r=s%60;return`${m}m ${r}s ago`}
-function selectedSessionMode(){return document.querySelector('input[name="sessionMode"]:checked')?.value||'authenticated'}
-function setSessionError(message=''){sessionError.textContent=message;sessionError.style.display=message?'block':'none'}
+let currentJobId = null;
+let pollTimer = null;
+let previewWindow = null;
 
-function renderSession(s){
-  lastSession=s;
-  let label='Saved profile';
-  if(s.loginWindowOpen)label=s.authenticated===true?'Signed in · login open':'Login window open';
-  else if(!s.profileExists)label='No profile';
-  else if(s.authenticated===true)label='Authenticated';
-  else if(s.authenticated===false)label='Not authenticated';
-  else label='Saved · unchecked';
-  sessionPill.textContent=label;
-  const busy=s.busy?` Profile in use by ${s.owner}.`:'';
-  const checked=s.lastCheckedAt?` Last checked ${age(s.lastCheckedAt)}.`:'';
-  sessionDetail.textContent=`${s.detail||'—'}${checked}${busy}`;
-  loginBtn.disabled=s.busy;
-  checkSessionBtn.disabled=s.busy;
-  closeLoginBtn.disabled=!s.loginWindowOpen;
-  forgetSessionBtn.disabled=s.busy;
+function age(timestamp) {
+  if (!timestamp) return '—';
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 2) return 'just now';
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${seconds % 60}s ago`;
 }
 
-async function refreshSession(){
-  try{
-    const r=await fetch('/api/session/status',{cache:'no-store'});
-    const s=await r.json().catch(()=>({}));
-    if(!r.ok)throw new Error(s.error||`Session status failed (${r.status}).`);
-    renderSession(s);setSessionError('');
-  }catch(e){setSessionError(e.message)}
+function selectedSessionMode() {
+  return document.querySelector('input[name="sessionMode"]:checked')?.value || 'authenticated';
 }
 
-async function sessionAction(url,{confirmText}={}){
-  if(confirmText&&!confirm(confirmText))return;
-  setSessionError('');
-  try{
-    const r=await fetch(url,{method:'POST'});
-    const s=await r.json().catch(()=>({}));
-    if(!r.ok)throw new Error(s.error||`Session action failed (${r.status}).`);
-    renderSession(s);
-  }catch(e){setSessionError(e.message)}
+function setSessionError(message = '') {
+  sessionError.textContent = message;
+  sessionError.style.display = message ? 'block' : 'none';
 }
 
-loginBtn.addEventListener('click',()=>sessionAction('/api/session/login'));
-checkSessionBtn.addEventListener('click',()=>sessionAction('/api/session/check'));
-closeLoginBtn.addEventListener('click',()=>sessionAction('/api/session/close-login'));
-forgetSessionBtn.addEventListener('click',()=>sessionAction('/api/session/forget',{confirmText:'Delete ./browser-profile and forget the saved ChatGPT session? You will need to log in again.'}));
-
-function render(s){
-  lastStatus=s;
-  phase.textContent=s.phase||s.status;
-  browserMode.textContent=s.sessionMode==='authenticated'?'Authenticated · saved browser-profile':'Anonymous · clean browser';
-  chatName.textContent=s.chatName||'Not detected — generic filename fallback';
-  detail.textContent=s.detail||'—';scanningStatus.textContent=s.scanningStatus||'Not started';oldestRetained.textContent=s.oldestRetained||'none';mountedFirst.textContent=s.mountedFirst||'none';expandingStatus.textContent=s.expandingStatus||'No disclosure expansion yet';statusPill.textContent=s.status;
-  for(const id of Object.keys(fields))fields[id].textContent=s[id]??0;
-  heartbeat.textContent=age(s.heartbeatAt);lastProgress.textContent=age(s.lastProgressAt);previewBtn.disabled=!currentJobId;cancelBtn.disabled=['done','error','cancelled'].includes(s.status);
-  if(s.status==='done'){passText.textContent='Capture complete';scrollText.textContent='Complete';bar.classList.remove('indeterminate');bar.style.width='100%';bar.style.transform='none'}
-  else if(s.scanComplete){passText.textContent='Traversal complete';scrollText.textContent='Finalizing archive';bar.classList.remove('indeterminate');bar.style.width='96%';bar.style.transform='none'}
-  else if(s.scanPass){const d=s.direction?` · ${s.direction}`:'';passText.textContent=`Pass ${s.scanPass}/${s.scanPasses}${d} · step ${s.step}`;scrollText.textContent=`${Number(s.scrollPercent||0).toFixed(1)}% of current mounted range`;bar.classList.remove('indeterminate');const base=((s.scanPass-1)/s.scanPasses)*100,within=Number(s.scrollPercent||0)/s.scanPasses,visual=s.direction==='up'?base+((100-Number(s.scrollPercent||0))/s.scanPasses):base+within;bar.style.width=`${Math.max(1,Math.min(95,visual))}%`;bar.style.transform='none'}
-  else{passText.textContent=s.phase||'Preparing';scrollText.textContent='Working…';bar.classList.add('indeterminate');bar.style.width='35%'}
-  const ha=Date.now()-Number(s.heartbeatAt||0),pa=Date.now()-Number(s.lastProgressAt||0);
-  if((s.scanComplete||s.status==='done')&&s.oldestConverged===false){warning.style.display='block';warning.textContent=`Oldest-message verification reached its safety limit at ${s.oldestQuietChecks||0}/12 stable top checks after ${s.oldestChecks||0} checks. The crawler continued and the final archive records this warning.`}
-  else if(!['done','error','cancelled'].includes(s.status)&&ha>12000){warning.style.display='block';warning.textContent=`The worker heartbeat has not updated for ${Math.floor(ha/1000)} seconds. The Node process or browser may be stalled.`}
-  else if(!['done','error','cancelled'].includes(s.status)&&pa>30000){warning.style.display='block';warning.textContent=`The worker is alive, but no substantive capture state changed for ${Math.floor(pa/1000)} seconds. Scanning still shows the current traversal step.`}
-  else{warning.style.display='none';warning.textContent=''}
-  if(s.status==='done'){
-    doneBox.style.display='block';doneBox.className='done';const imageText=s.imagesTotal?` ${s.imagesEmbedded}/${s.imagesTotal} images embedded.`:'';const convergenceText=s.oldestConverged===false?` <strong>Warning:</strong> oldest-edge verification stopped at ${s.oldestQuietChecks||0}/12 stable checks after ${s.oldestChecks||0} checks.`:'';
-    doneBox.innerHTML=`<strong>Finished.</strong> ${s.turns} turns captured, ${s.timelineMarkers||0} timeline markers retained, ${s.expansions} disclosures expanded, ${s.preBlocks} &lt;pre&gt; blocks retained.${imageText}${convergenceText}<div class="actions"><a class="button-link" href="/api/archive/download/${encodeURIComponent(s.id)}">Download static HTML</a><a class="button-link secondary" target="_blank" href="/preview.html?job=${encodeURIComponent(s.id)}">Open final preview</a></div>`;submit.disabled=false
-  }else if(s.status==='error'){doneBox.style.display='block';doneBox.className='done error';doneBox.textContent=s.error||'Archive failed.';submit.disabled=false}
-  else if(s.status==='cancelled'){doneBox.style.display='block';doneBox.className='done';doneBox.textContent='Archive cancelled.';submit.disabled=false}
-  else{doneBox.style.display='none';doneBox.className='done'}
+function renderSession(session) {
+  let label = 'Saved profile';
+  if (session.loginWindowOpen) label = 'Login window open';
+  else if (!session.profileExists) label = 'No profile';
+  else if (session.authenticated === true) label = 'Authenticated';
+  else if (session.authenticated === false) label = 'Not authenticated';
+  else label = 'Saved · unchecked';
+  sessionPill.textContent = label;
+  const busy = session.busy ? ` Profile in use by ${session.owner || 'another operation'}.` : '';
+  sessionDetail.textContent = `${session.detail || '—'}${busy}`;
+  loginBtn.disabled = Boolean(session.busy);
+  checkSessionBtn.disabled = Boolean(session.busy);
+  closeLoginBtn.disabled = !session.loginWindowOpen;
+  forgetSessionBtn.disabled = Boolean(session.busy);
 }
 
-async function poll(){if(!currentJobId)return;try{const r=await fetch(`/api/archive/status/${encodeURIComponent(currentJobId)}`,{cache:'no-store'});if(!r.ok)throw new Error(`Status request failed (${r.status}).`);const s=await r.json();render(s);if(!['done','error','cancelled'].includes(s.status))pollTimer=setTimeout(poll,1000);else refreshSession()}catch(e){warning.style.display='block';warning.textContent=e.message;pollTimer=setTimeout(poll,2500)}}
+async function refreshSession() {
+  try {
+    const response = await fetch('/api/session/status', { cache: 'no-store' });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Session status failed (${response.status}).`);
+    renderSession(data);
+    setSessionError('');
+  } catch (error) {
+    setSessionError(error.message);
+  }
+}
 
-form.addEventListener('submit',async e=>{
-  e.preventDefault();clearTimeout(pollTimer);currentJobId=null;lastStatus=null;doneBox.style.display='none';warning.style.display='none';jobPanel.style.display='block';submit.disabled=true;previewBtn.disabled=true;cancelBtn.disabled=true;phase.textContent='Starting archive…';browserMode.textContent=selectedSessionMode()==='authenticated'?'Authenticated · saved browser-profile':'Anonymous · clean browser';chatName.textContent='Detecting from shared page…';detail.textContent='Creating a tracked job.';scanningStatus.textContent='Not started';oldestRetained.textContent='none';mountedFirst.textContent='none';expandingStatus.textContent='No disclosure expansion yet';bar.classList.add('indeterminate');
-  try{
-    const r=await fetch('/api/archive/start',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:input.value.trim(),sessionMode:selectedSessionMode()})});
-    const data=await r.json().catch(()=>({}));if(!r.ok)throw new Error(data.error||`Could not start archive (${r.status}).`);currentJobId=data.jobId;previewBtn.disabled=false;cancelBtn.disabled=false;poll();refreshSession()
-  }catch(e){phase.textContent='Could not start';detail.textContent=e.message;submit.disabled=false;refreshSession()}
+async function sessionAction(url, confirmText = '') {
+  if (confirmText && !confirm(confirmText)) return;
+  try {
+    const response = await fetch(url, { method: 'POST' });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Session action failed (${response.status}).`);
+    renderSession(data);
+    setSessionError('');
+  } catch (error) {
+    setSessionError(error.message);
+  }
+}
+
+loginBtn.addEventListener('click', () => sessionAction('/api/session/login'));
+checkSessionBtn.addEventListener('click', () => sessionAction('/api/session/check'));
+closeLoginBtn.addEventListener('click', () => sessionAction('/api/session/close-login'));
+forgetSessionBtn.addEventListener('click', () => sessionAction('/api/session/forget', 'Delete the saved ChatGPT browser profile?'));
+
+function stageFor(job) {
+  const phase = String(job.phase || '');
+  if (job.status === 'done') return { id: 'complete', label: 'Complete', pill: 'Complete' };
+  if (job.status === 'error') return { id: 'error', label: 'Archive failed', pill: 'Error' };
+  if (job.status === 'cancelled') return { id: 'cancelled', label: 'Cancelled', pill: 'Cancelled' };
+  if (job.waitingForUser || /manual inspection step|diagnostic validation/i.test(phase)) {
+    return { id: 'diagnostic-wait', label: 'Diagnostic validation', pill: 'Waiting for you' };
+  }
+  if (/saving automatic baseline|remounting manual inspection target|remounting diagnostic target|reconciling manual step|manual inspection complete/i.test(phase)) {
+    return { id: 'diagnostic', label: 'Diagnostic validation', pill: 'Diagnostic' };
+  }
+  if (/verifying oldest/i.test(phase)) return { id: 'oldest', label: 'Verifying oldest messages', pill: 'Verifying' };
+  if (/reconciling retained/i.test(phase)) return { id: 'reconciliation', label: 'Reconciling retained disclosures', pill: 'Verifying' };
+  if (/scanning conversation|preparing crawler|final expansion sweep/i.test(phase)) return { id: 'traversal', label: 'Traversing conversation', pill: 'Crawling' };
+  if (/building final/i.test(phase)) return { id: 'finalizing', label: 'Building static archive', pill: 'Finalizing' };
+  if (/opening saved|waiting for saved|launching chromium|loading share|queued/i.test(phase)) return { id: 'loading', label: phase || 'Starting archive', pill: 'Starting' };
+  return { id: 'working', label: phase || 'Working', pill: 'Working' };
+}
+
+function setProgress(percent, indeterminate = false) {
+  bar.classList.toggle('indeterminate', indeterminate);
+  if (!indeterminate) {
+    bar.style.transform = '';
+    bar.style.width = `${Math.max(0, Math.min(100, percent || 0))}%`;
+  } else {
+    bar.style.width = '35%';
+  }
+}
+
+function renderStageProgress(job, stage) {
+  progressWrap.style.display = stage.id === 'diagnostic-wait' ? 'none' : 'block';
+  const position = Number(job.positionInLoadedContent || 0);
+  if (stage.id === 'traversal' && job.scanPass) {
+    const passPercent = job.direction === 'up' ? 100 - position : position;
+    setProgress(passPercent, false);
+    stageProgressText.textContent = `Pass ${job.scanPass} of ${job.scanPasses || 3} · ${job.direction === 'up' ? 'upward' : 'downward'}`;
+    stageStepText.textContent = job.step ? `step ${job.step}` : 'working';
+    return;
+  }
+  if (stage.id === 'oldest') {
+    const required = 12;
+    setProgress((Number(job.oldestQuietChecks || 0) / required) * 100, false);
+    stageProgressText.textContent = `Stable top checks ${job.oldestQuietChecks || 0} / ${required}`;
+    stageStepText.textContent = job.oldestChecks ? `check ${job.oldestChecks}` : 'probing top edge';
+    return;
+  }
+  if (stage.id === 'reconciliation') {
+    const passPercent = job.direction === 'up' ? 100 - position : position;
+    setProgress(passPercent, false);
+    stageProgressText.textContent = `Reconciliation pass ${job.reconciliationRounds || 1} of at most 2`;
+    stageStepText.textContent = job.step ? `step ${job.step}` : 'working';
+    return;
+  }
+  if (stage.id === 'complete') {
+    setProgress(100, false);
+    stageProgressText.textContent = 'Archive complete';
+    stageStepText.textContent = '';
+    return;
+  }
+  if (stage.id === 'error' || stage.id === 'cancelled') {
+    setProgress(0, false);
+    stageProgressText.textContent = stage.label;
+    stageStepText.textContent = '';
+    return;
+  }
+  setProgress(0, true);
+  stageProgressText.textContent = stage.id === 'diagnostic' ? 'Diagnostic processing' : stage.label;
+  stageStepText.textContent = '';
+}
+
+function renderJob(job) {
+  jobPanel.style.display = 'block';
+  const stage = stageFor(job);
+  stageName.textContent = stage.label;
+  statusPill.textContent = stage.pill;
+  const mode = job.sessionMode === 'authenticated' ? 'Authenticated' : 'Anonymous';
+  jobIdentity.textContent = `${job.chatName || 'Chat name not detected yet'} · ${mode}`;
+  currentAction.textContent = job.detail || job.scanningStatus || 'Working…';
+
+  const observed = Number(job.seenMountedTurns || job.turns || 0);
+  const missing = Number(job.seenMountedUnretainedTurns || 0);
+  coverage.textContent = `${job.turns || 0} retained / ${observed} observed · ${missing} missing`;
+  oldestRetained.textContent = job.oldestRetained || 'none';
+  loadedPosition.textContent = job.scrollHeight > job.scrollClient
+    ? `${Number(job.positionInLoadedContent || 0).toFixed(1)}% of currently loaded scroll range`
+    : (job.scrollHeight ? 'All currently loaded content fits in the viewport' : '—');
+
+  const disclosureText = String(job.expandingStatus || '');
+  const disclosureActive = disclosureText && !/no disclosure expansion/i.test(disclosureText);
+  disclosureRow.style.display = disclosureActive ? 'grid' : 'none';
+  disclosureActivity.textContent = disclosureActive ? disclosureText : '';
+
+  disclosureStat.textContent = `${job.expansions || 0} confirmed${job.failures ? ` · ${job.failures} failed` : ''}`;
+  richStat.textContent = `${job.preBlocks || 0} pre · ${job.codeBlocks || 0} code`;
+  structureStat.textContent = `${job.timelineMarkers || 0} markers · ${job.appBlocks || 0} apps`;
+  imageStat.textContent = `${job.imagesEmbedded || 0} / ${job.imagesTotal || 0}`;
+  heartbeat.textContent = age(job.heartbeatAt);
+  lastProgress.textContent = age(job.lastProgressAt);
+  renderStageProgress(job, stage);
+
+  const heartbeatAge = job.heartbeatAt ? Date.now() - job.heartbeatAt : 0;
+  const progressAge = job.lastProgressAt ? Date.now() - job.lastProgressAt : 0;
+  let warningText = '';
+  if (missing > 0) {
+    const ids = Array.isArray(job.seenMountedUnretainedTurnIds) ? job.seenMountedUnretainedTurnIds.join(', ') : '';
+    warningText = `Integrity warning: ${missing} turn(s) were observed mounted but are not retained${ids ? ` (${ids})` : ''}.`;
+  } else if (heartbeatAge > 15_000 && !['done','error','cancelled'].includes(job.status)) {
+    warningText = 'The worker heartbeat has not updated recently. Chromium or the Node worker may be stalled.';
+  } else if (progressAge > 30_000 && !job.waitingForUser && !['done','error','cancelled'].includes(job.status)) {
+    warningText = 'No substantive archive progress has been recorded for more than 30 seconds. The crawler may still be verifying a stable boundary.';
+  }
+  warning.textContent = warningText;
+  warning.style.display = warningText ? 'block' : 'none';
+
+  previewBtn.disabled = !currentJobId;
+  cancelBtn.disabled = ['done','error','cancelled'].includes(job.status);
+  submit.disabled = !['done','error','cancelled'].includes(job.status) && currentJobId !== null;
+
+  doneBox.style.display = ['done','error','cancelled'].includes(job.status) ? 'block' : 'none';
+  if (job.status === 'done') {
+    doneBox.innerHTML = `<strong>Archive ready.</strong><div class="actions"><a class="button-link" href="/api/archive/download/${encodeURIComponent(currentJobId)}">Download ${escapeHtml(job.downloadFilename || 'HTML archive')}</a></div>`;
+  } else if (job.status === 'error') {
+    doneBox.innerHTML = `<strong class="error">Archive failed.</strong><div class="small">${escapeHtml(job.error || job.detail || 'Unknown error.')}</div>`;
+  } else if (job.status === 'cancelled') {
+    doneBox.textContent = 'Archive cancelled.';
+  }
+}
+
+function escapeHtml(value) {
+  return String(value || '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
+}
+
+async function pollJob() {
+  if (!currentJobId) return;
+  try {
+    const previewActive = previewWindow && !previewWindow.closed;
+    const response = await fetch(`/api/archive/status/${encodeURIComponent(currentJobId)}${previewActive ? '?preview=1' : ''}`, { cache: 'no-store' });
+    const job = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(job.error || `Status failed (${response.status}).`);
+    renderJob(job);
+    if (!['done','error','cancelled'].includes(job.status)) pollTimer = setTimeout(pollJob, 1000);
+  } catch (error) {
+    warning.textContent = error.message;
+    warning.style.display = 'block';
+    pollTimer = setTimeout(pollJob, 2000);
+  }
+}
+
+form.addEventListener('submit', async event => {
+  event.preventDefault();
+  clearTimeout(pollTimer);
+  doneBox.style.display = 'none';
+  warning.style.display = 'none';
+  submit.disabled = true;
+  try {
+    const response = await fetch('/api/archive/start', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ url: input.value, sessionMode: selectedSessionMode() })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Could not start archive (${response.status}).`);
+    currentJobId = data.jobId;
+    cancelBtn.disabled = false;
+    previewBtn.disabled = false;
+    jobPanel.style.display = 'block';
+    pollJob();
+  } catch (error) {
+    submit.disabled = false;
+    jobPanel.style.display = 'block';
+    stageName.textContent = 'Could not start archive';
+    currentAction.textContent = error.message;
+    statusPill.textContent = 'Error';
+  }
 });
 
-previewBtn.addEventListener('click',()=>{if(!currentJobId)return;previewWindow=window.open(`/preview.html?job=${encodeURIComponent(currentJobId)}`,'chatgptArchivePreview')});
-cancelBtn.addEventListener('click',async()=>{if(!currentJobId)return;cancelBtn.disabled=true;await fetch(`/api/archive/cancel/${encodeURIComponent(currentJobId)}`,{method:'POST'}).catch(()=>{})});
-setInterval(()=>{if(lastStatus)render(lastStatus)},1000);
-sessionPollTimer=setInterval(refreshSession,2000);sessionPollTimer.unref?.();refreshSession();
-</script></body></html>
+cancelBtn.addEventListener('click', async () => {
+  if (!currentJobId) return;
+  cancelBtn.disabled = true;
+  await fetch(`/api/archive/cancel/${encodeURIComponent(currentJobId)}`, { method: 'POST' }).catch(() => {});
+  pollJob();
+});
+
+previewBtn.addEventListener('click', () => {
+  if (!currentJobId) return;
+  previewWindow = window.open(`/preview.html?id=${encodeURIComponent(currentJobId)}`, '_blank', 'noopener');
+});
+
+refreshSession();
+setInterval(refreshSession, 5000);
+setInterval(() => {
+  if (!currentJobId) return;
+  heartbeat.textContent = heartbeat.textContent === '—' ? '—' : heartbeat.textContent;
+}, 1000);
+</script>
+</body>
+</html>

@@ -6,7 +6,7 @@ cd "$SCRIPT_DIR"
 
 URL="http://localhost:${PORT:-3000}"
 
-echo "Starting ChatGPT Conversation Crawler..."
+echo "Starting ChatGPT Conversation Crawler - beta6-dev MHTML diagnostics..."
 
 if ! command -v node >/dev/null 2>&1; then
   echo
@@ -29,8 +29,6 @@ if [[ ! -f "$SCRIPT_DIR/node_modules/playwright/package.json" || ! -f "$SCRIPT_D
   exit 1
 fi
 
-# Open the UI after the server has had a moment to bind its port. Failure to
-# open a graphical browser is non-fatal (for example on a headless Linux host).
 (
   sleep 1.5
   if command -v xdg-open >/dev/null 2>&1; then
@@ -41,5 +39,6 @@ fi
 ) &
 
 echo "Local UI: $URL"
+echo "MHTML diagnostics: $SCRIPT_DIR/mhtml-diagnostics/"
 echo "Press Ctrl+C to stop the server."
-exec node "$SCRIPT_DIR/server.mjs"
+exec node "$SCRIPT_DIR/server-dev.mjs"

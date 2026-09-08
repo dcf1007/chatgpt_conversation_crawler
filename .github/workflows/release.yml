@@ -26,10 +26,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node --check server.mjs
-          for file in src/*.mjs; do
+          for file in server*.mjs src/*.mjs tests/*.mjs; do
             node --check "$file"
           done
+
           rm -f /tmp/crawler-inline-*.js
           node - <<'NODE'
           const fs = require('fs');
@@ -46,8 +46,18 @@ jobs:
           }
           if (!written) throw new Error('No inline public scripts found to syntax-check.');
           NODE
+
           for file in /tmp/crawler-inline-*.js; do
             node --check "$file"
+          done
+
+      - name: Run runtime smoke tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for test_file in tests/*.mjs; do
+            echo "Running $test_file"
+            node "$test_file"
           done
 
       - name: Read package version

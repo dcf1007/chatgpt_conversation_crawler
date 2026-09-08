@@ -5,8 +5,6 @@ import { chromium } from 'playwright';
 
 const LOGIN_URL = 'https://chatgpt.com/';
 const PROFILE_NAME = 'browser-profile';
-const HOME_SCREENSHOT_NAME = 'session-home-diagnostic.png';
-const SHARE_SCREENSHOT_NAME = 'session-share-diagnostic.png';
 const AUTH_COOKIE_RE = /^(?:(?:__Secure|__Host)-)?(?:next-auth|authjs)\.session-token(?:\.\d+)?$/i;
 const HUMAN_VERIFY_RE = /verify you are human|checking your browser|performing security verification|security verification/i;
 const INTERACTIVE_VERIFY_TIMEOUT_MS = 10 * 60 * 1000;
@@ -20,9 +18,6 @@ function codedError(message, code) {
 
 export function createChatGptSessionManager(projectRoot) {
   const profileDir = path.join(projectRoot, PROFILE_NAME);
-  const publicDir = path.join(projectRoot, 'public');
-  const homeScreenshotPath = path.join(publicDir, HOME_SCREENSHOT_NAME);
-  const shareScreenshotPath = path.join(publicDir, SHARE_SCREENSHOT_NAME);
   let profileOwner = '';
   let loginProcess = null;
   let loginFinalizePromise = null;
@@ -31,11 +26,6 @@ export function createChatGptSessionManager(projectRoot) {
   let lastAuthenticated = null;
   let lastCheckedAt = 0;
   let lastCheckDetail = 'Session has not been checked yet.';
-
-  void Promise.all([
-    fs.rm(homeScreenshotPath, { force: true }),
-    fs.rm(shareScreenshotPath, { force: true })
-  ]).catch(() => {});
 
   async function profileExists() {
     try {
@@ -74,17 +64,6 @@ export function createChatGptSessionManager(projectRoot) {
     };
   }
 
-  async function captureDiagnosticScreenshot(page, outputPath, { settleMs = 1500 } = {}) {
-    await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
-    if (settleMs > 0) await delay(settleMs);
-    await page.screenshot({
-      path: outputPath,
-      type: 'png',
-      fullPage: false,
-      animations: 'disabled'
-    });
-  }
-
   async function challengeState(page) {
     if (!page || page.isClosed()) return { challenged: false, closed: true };
     const bodyText = await page.locator('body').innerText({ timeout: 1500 }).catch(() => '');
@@ -107,7 +86,6 @@ export function createChatGptSessionManager(projectRoot) {
 
   async function waitForHumanVerification(page, {
     timeoutMs = INTERACTIVE_VERIFY_TIMEOUT_MS,
-    screenshotPath,
     purpose = 'ChatGPT page'
   } = {}) {
     const deadline = Date.now() + timeoutMs;
@@ -121,29 +99,17 @@ export function createChatGptSessionManager(projectRoot) {
       }
 
       if (state.challenged) {
-        const firstChallenge = !challengeSeen;
         challengeSeen = true;
         clearChecks = 0;
         lastAuthenticated = null;
         lastCheckedAt = Date.now();
         lastCheckDetail = `Cloudflare human verification is visible in the ${purpose} browser. Complete it manually in that Chromium window; the crawler will continue automatically when the challenge clears.`;
-        if (firstChallenge && screenshotPath) {
-          await page.screenshot({
-            path: screenshotPath,
-            type: 'png',
-            fullPage: false,
-            animations: 'disabled'
-          }).catch(() => {});
-        }
         await delay(750);
         continue;
       }
 
       clearChecks += 1;
-      if (clearChecks >= 2) {
-        if (screenshotPath) await captureDiagnosticScreenshot(page, screenshotPath, { settleMs: challengeSeen ? 750 : 1200 }).catch(() => {});
-        return { challengeSeen };
-      }
+      if (clearChecks >= 2) return { challengeSeen };
       await delay(750);
     }
 
@@ -173,11 +139,7 @@ export function createChatGptSessionManager(projectRoot) {
   }
 
   async function probePage(page) {
-    await captureDiagnosticScreenshot(page, shareScreenshotPath, { settleMs: 300 }).catch(() => {});
-    await waitForHumanVerification(page, {
-      screenshotPath: shareScreenshotPath,
-      purpose: 'authenticated share-page'
-    });
+    await waitForHumanVerification(page, { purpose: 'authenticated share-page' });
     return probeContext(page.context());
   }
 
@@ -214,15 +176,10 @@ export function createChatGptSessionManager(projectRoot) {
     throw lastError;
   }
 
-  async function verifyOwnedProfile({ captureHome = false } = {}) {
+  async function verifyOwnedProfile() {
     let context;
     try {
       context = await launchPersistentProfile({ headless: true, viewport: { width: 1440, height: 1000 } });
-      if (captureHome) {
-        const page = context.pages()[0] || await context.newPage();
-        await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {});
-        await captureDiagnosticScreenshot(page, homeScreenshotPath).catch(() => {});
-      }
       return await probeContext(context);
     } finally {
       await context?.close().catch(() => {});
@@ -237,7 +194,7 @@ export function createChatGptSessionManager(projectRoot) {
     lastCheckDetail = 'Login browser closed; checking the saved ChatGPT authentication state.';
     try {
       await delay(750);
-      await verifyOwnedProfile({ captureHome: true });
+      await verifyOwnedProfile();
     } catch (error) {
       lastAuthenticated = null;
       lastCheckedAt = Date.now();
@@ -321,10 +278,7 @@ export function createChatGptSessionManager(projectRoot) {
       lastCheckedAt = Date.now();
       lastCheckDetail = 'Interactive Playwright session check is open. If ChatGPT shows Cloudflare verification, complete it manually in that Chromium window; it will close automatically after the challenge clears.';
       await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {});
-      await waitForHumanVerification(page, {
-        screenshotPath: homeScreenshotPath,
-        purpose: 'interactive session-check'
-      });
+      await waitForHumanVerification(page, { purpose: 'interactive session-check' });
       await probeContext(context);
     } catch (error) {
       lastAuthenticated = null;
@@ -378,10 +332,6 @@ export function createChatGptSessionManager(projectRoot) {
     const release = await acquire('profile deletion');
     try {
       await fs.rm(profileDir, { recursive: true, force: true });
-      await Promise.all([
-        fs.rm(homeScreenshotPath, { force: true }),
-        fs.rm(shareScreenshotPath, { force: true })
-      ]).catch(() => {});
       lastAuthenticated = false;
       lastCheckedAt = Date.now();
       lastCheckDetail = 'Saved ChatGPT browser profile was deleted.';

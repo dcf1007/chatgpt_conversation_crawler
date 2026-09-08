@@ -6,7 +6,7 @@ cd "$SCRIPT_DIR"
 
 URL="http://localhost:${PORT:-3000}"
 
-echo "Starting ChatGPT Conversation Crawler..."
+echo "Starting ChatGPT Conversation Crawler - beta6-dev MHTML diagnostics..."
 
 if ! command -v node >/dev/null 2>&1; then
   echo
@@ -35,5 +35,6 @@ fi
 ) &
 
 echo "Local UI: $URL"
+echo "MHTML diagnostics: $SCRIPT_DIR/mhtml-diagnostics/"
 echo "Press Ctrl+C to stop the server."
-exec node "$SCRIPT_DIR/server.mjs"
+exec node "$SCRIPT_DIR/server-dev.mjs"
