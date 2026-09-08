@@ -33,10 +33,10 @@ async function retainPartialManualState(page) {
 }
 
 /**
- * Run the automatic beta8 crawler first. Development builds then run the
- * independent two-step human comparison in the same authenticated Chromium
- * session. The manual pass remains outside the automatic core on purpose: it is
- * a benchmark for the automatic result, not part of capture authority.
+ * Run the automatic crawler first. Development builds then run the independent
+ * two-step human comparison in the same authenticated Chromium session. The
+ * manual pass remains outside automatic capture authority: it validates the
+ * automatic result rather than contributing required content to it.
  */
 export async function crawlConversation(page, options = {}) {
   await crawlAutomaticConversation(page, options);
@@ -49,8 +49,8 @@ export async function crawlConversation(page, options = {}) {
       onProgress: options.onProgress,
       shouldCancel: options.shouldCancel,
       convergeMounted: async () => {
-        // Human interaction can mount a fresh nested generation. Reuse beta8's
-        // turn-scoped convergence, then retain the resulting live DOM.
+        // Human interaction can mount a fresh nested generation. Reuse the
+        // turn-scoped fixed point, then retain the resulting live DOM.
         await crawlerTesting.expandMounted(page, 500, options.onProgress, options.shouldCancel);
         await page.evaluate(() => window.__archiveCrawler.capture());
       }
