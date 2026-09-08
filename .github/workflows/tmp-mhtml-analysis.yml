@@ -2,6 +2,8 @@ name: Temporary beta11 MHTML analysis
 on:
   push:
     branches: [tmp-mhtml-analysis]
+  pull_request:
+    branches: [main]
 permissions:
   contents: read
 jobs:
@@ -88,7 +90,6 @@ jobs:
                       ia=interesting_attrs(t)
                       if ia:
                           r['interesting'].append({'tag':tagname,'attrs':ia,'text':' '.join(t.stripped_strings)[:500]})
-              # include any element carrying attachment/image/file hints
               for t in node.find_all(True):
                   ia=interesting_attrs(t)
                   if ia and t.name not in ['img','button','canvas','svg','video','a','input']:
@@ -109,12 +110,10 @@ jobs:
                   item={'file':os.path.relpath(path,root),'html_len':len(html),'targets':{}}
                   for tid in TARGETS:
                       nodes=[]
-                      # exact/common live ChatGPT forms
                       for n in soup.find_all(attrs={'data-testid':tid}): nodes.append(n)
                       for n in soup.find_all(attrs={'data-turn':tid}):
                           if n not in nodes: nodes.append(n)
                       if not nodes:
-                          # fallback: any attr value exactly containing id
                           for n in soup.find_all(True):
                               if any(tid in str(v) for v in n.attrs.values()):
                                   nodes.append(n); break
@@ -126,7 +125,6 @@ jobs:
                           if not getattr(p,'name',None): break
                           target['ancestors'].append({'depth':depth, **node_report(p)})
                           p=p.parent
-                      # nearest images outside turn but within ancestors
                       outside=[]
                       turn_img_ids={id(x) for x in n.find_all('img')}
                       p=n.parent
@@ -139,7 +137,6 @@ jobs:
                           if len(outside)>=30: break
                           p=p.parent
                       target['outside_imgs_nearby']=outside
-                      # clipped source for exact DOM inspection
                       target['outer_html']=str(n)[:80000]
                       item['targets'][tid]=target
                   if item['targets']:
@@ -147,7 +144,6 @@ jobs:
               out['runs'][mode]=records
               out['summary'][mode]={'mhtml_files':len(files),'snapshots_with_targets':len(records)}
 
-          # compact comparison summary: choose snapshots maximizing img/hints for each target
           comp={}
           for tid in TARGETS:
               comp[tid]={}
