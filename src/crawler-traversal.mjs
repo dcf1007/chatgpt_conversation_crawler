@@ -7,6 +7,15 @@ const OLDEST_MAX_CHECKS = 180;
 const RECONCILIATION_MAX_PASSES = 2;
 const RECONCILIATION_STABLE_PASSES = 1;
 
+export const CRAWLER_PROGRESS_LIMITS = Object.freeze({
+  scanPasses: 3,
+  scanMaxSteps: SCAN_MAX_STEPS,
+  scanEndpointStableChecks: SCAN_ENDPOINT_STABLE_CHECKS,
+  oldestRequiredQuietChecks: OLDEST_REQUIRED_QUIET_CHECKS,
+  oldestMaxChecks: OLDEST_MAX_CHECKS,
+  reconciliationMaxPasses: RECONCILIATION_MAX_PASSES
+});
+
 async function report(page, onProgress, extra = {}) {
   const stats = await page.evaluate(() => window.__archiveCrawler.stats());
   const metrics = await page.evaluate(() => window.__archiveCrawler.metrics());
@@ -20,12 +29,6 @@ async function report(page, onProgress, extra = {}) {
   return { stats, metrics };
 }
 
-/**
- * Endpoint stability intentionally excludes mountedFirst/mountedLast and the
- * raw mounted-control census. Those describe ChatGPT's transient virtualizer
- * window, not capture progress. Retained richness, traversal position, and
- * actual expansion counters are the durable signals that can justify moving on.
- */
 function traversalProgressSignature(metrics, stats, { normalizeTop = false } = {}) {
   return [
     normalizeTop ? 0 : Math.round(metrics.top),
@@ -58,15 +61,12 @@ export async function scan(page, direction, pass, onProgress, shouldCancel, maxS
 
   for (let step = 0; step < maxSteps; step++) {
     if (shouldCancel?.()) throw new Error('Archive cancelled.');
-
     await expandMounted(page, 180, onProgress, shouldCancel);
     await page.evaluate(() => window.__archiveCrawler.capture());
 
     const metrics = await page.evaluate(() => window.__archiveCrawler.metrics());
     const maximumTop = Math.max(0, metrics.height - metrics.client);
-    const atEnd = direction === 'down'
-      ? metrics.top >= maximumTop - 4
-      : metrics.top <= 4;
+    const atEnd = direction === 'down' ? metrics.top >= maximumTop - 4 : metrics.top <= 4;
     const stats = await page.evaluate(() => window.__archiveCrawler.stats());
     const signature = traversalProgressSignature(metrics, stats);
 
@@ -74,9 +74,7 @@ export async function scan(page, direction, pass, onProgress, shouldCancel, maxS
     else if (atEnd) stableChecks = 1;
     else stableChecks = 0;
 
-    const positionPercent = maximumTop <= 0
-      ? 100
-      : Math.max(0, Math.min(100, (metrics.top / maximumTop) * 100));
+    const positionPercent = maximumTop <= 0 ? 100 : Math.max(0, Math.min(100, (metrics.top / maximumTop) * 100));
     const arrow = direction === 'up' ? '↑' : '↓';
     const edgeStatus = atEnd
       ? ` · edge stable ${Math.min(stableChecks, SCAN_ENDPOINT_STABLE_CHECKS)}/${SCAN_ENDPOINT_STABLE_CHECKS}`
@@ -84,9 +82,10 @@ export async function scan(page, direction, pass, onProgress, shouldCancel, maxS
 
     await onProgress?.({
       ...stats,
+      stage: 'traversal',
       phase: 'Scanning conversation',
-      detail: 'Capturing mounted turns, timeline markers, disclosures, and asynchronously hydrated tool content as they appear.',
-      scanningStatus: `Pass ${pass}/3 ${arrow} · step ${step + 1}/${maxSteps} · ${positionPercent.toFixed(1)}% mounted range · mounted first ${stats.mountedFirst}${edgeStatus}`,
+      detail: 'Capturing mounted turns, timeline markers, disclosures, and asynchronously hydrated content as they appear.',
+      scanningStatus: `Pass ${pass}/3 ${arrow} · step ${step + 1}/${maxSteps} · ${positionPercent.toFixed(1)}% loaded range · mounted first ${stats.mountedFirst}${edgeStatus}`,
       scanComplete: false,
       pass,
       direction,
@@ -116,6 +115,7 @@ export async function verifyOldestMessages(page, onProgress, shouldCancel) {
   let checks = 0;
 
   await onProgress?.({
+    stage: 'oldest_verification',
     phase: 'Verifying oldest messages',
     detail: 'Live-preview rebuilding is paused while the oldest edge is probed for asynchronously prepended turns.',
     scanningStatus: `Oldest-edge probe · check 0/${OLDEST_MAX_CHECKS} · stable 0/${OLDEST_REQUIRED_QUIET_CHECKS}`,
@@ -132,7 +132,6 @@ export async function verifyOldestMessages(page, onProgress, shouldCancel) {
   for (let check = 0; check < OLDEST_MAX_CHECKS; check++) {
     if (shouldCancel?.()) throw new Error('Archive cancelled.');
     checks = check + 1;
-
     await page.evaluate(() => window.__archiveCrawler.setTop(0));
     await page.waitForTimeout(700);
     await expandMounted(page, 220, onProgress, shouldCancel);
@@ -142,13 +141,13 @@ export async function verifyOldestMessages(page, onProgress, shouldCancel) {
     const metrics = await page.evaluate(() => window.__archiveCrawler.metrics());
     const atTop = metrics.top <= 4;
     const signature = traversalProgressSignature(metrics, stats, { normalizeTop: atTop });
-
     if (atTop && signature === previousSignature) quietChecks++;
     else quietChecks = 0;
     previousSignature = signature;
 
     await onProgress?.({
       ...stats,
+      stage: 'oldest_verification',
       phase: 'Verifying oldest messages',
       scanningStatus: `Oldest-edge probe · check ${checks}/${OLDEST_MAX_CHECKS} · stable ${quietChecks}/${OLDEST_REQUIRED_QUIET_CHECKS} · ${atTop ? 'at top' : `offset ${Math.round(metrics.top)}px`} · mounted first ${stats.mountedFirst}`,
       oldestRetained: stats.oldestRetained,
@@ -166,13 +165,10 @@ export async function verifyOldestMessages(page, onProgress, shouldCancel) {
     });
 
     if (quietChecks >= OLDEST_REQUIRED_QUIET_CHECKS) break;
-
     if (!atTop) {
       await page.waitForTimeout(260);
       await page.evaluate(() => window.__archiveCrawler.setTop(0));
     } else if (quietChecks >= 2) {
-      // A short excursion forces ChatGPT to expose any lazily prepended edge
-      // generation without making virtualizer membership part of convergence.
       const maximumTop = Math.max(0, metrics.height - metrics.client);
       const nudge = Math.min(maximumTop, Math.max(220, Math.floor(metrics.client * 0.38)));
       if (nudge > 0) {
@@ -185,19 +181,12 @@ export async function verifyOldestMessages(page, onProgress, shouldCancel) {
   }
 
   const converged = quietChecks >= OLDEST_REQUIRED_QUIET_CHECKS;
-  const result = {
-    converged,
-    quietChecks,
-    checks,
-    requiredQuietChecks: OLDEST_REQUIRED_QUIET_CHECKS,
-    maxChecks: OLDEST_MAX_CHECKS
-  };
+  const result = { converged, quietChecks, checks, requiredQuietChecks: OLDEST_REQUIRED_QUIET_CHECKS, maxChecks: OLDEST_MAX_CHECKS };
   await page.evaluate(value => window.__archiveCrawler.markOldestVerification(value), result);
 
   await report(page, onProgress, {
-    phase: converged
-      ? 'Oldest-message verification complete'
-      : 'Oldest-message verification safety limit reached',
+    stage: 'oldest_verification',
+    phase: converged ? 'Oldest-message verification complete' : 'Oldest-message verification safety limit reached',
     detail: converged
       ? 'The oldest edge converged; preparing the final downward traversal.'
       : `The oldest edge did not reach ${OLDEST_REQUIRED_QUIET_CHECKS}/${OLDEST_REQUIRED_QUIET_CHECKS} quiet checks before the ${OLDEST_MAX_CHECKS}-check safety limit; continuing with the final downward traversal and recording a warning in the archive.`,
@@ -221,16 +210,14 @@ async function retainedDisclosureSummary(page) {
 function rewriteReconciliationProgress(onProgress, round, direction) {
   if (!onProgress) return undefined;
   const arrow = direction === 'up' ? '↑' : '↓';
-
   return progress => {
     const rawStatus = String(progress?.scanningStatus || '');
-    const scanStatus = rawStatus
-      .replace(/^Pass 3\/3\s*[↑↓]\s*·\s*/, '')
-      .replace(/^Pass 3\/3\s*/, '');
+    const scanStatus = rawStatus.replace(/^Pass 3\/3\s*[↑↓]\s*·\s*/, '').replace(/^Pass 3\/3\s*/, '');
     return onProgress({
       ...progress,
+      stage: 'reconciliation',
       phase: 'Reconciling retained disclosures',
-      detail: 'Rich retained turns still contain recognized collapsed disclosures. Revisiting the conversation with turn-scoped convergence so remounted roots can expose descendants without waiting on unrelated virtualizer churn.',
+      detail: 'Rich retained turns still contain recognized collapsed disclosures. Revisiting them with turn-scoped convergence.',
       scanningStatus: `Reconciliation ${round}/${RECONCILIATION_MAX_PASSES} ${arrow} · ${scanStatus || 'expanding mounted disclosures'}`,
       scanComplete: false,
       pass: 0
@@ -238,14 +225,6 @@ function rewriteReconciliationProgress(onProgress, round, direction) {
   };
 }
 
-/**
- * Reconciliation remains a corpus-level safety net because a rich turn may
- * remount collapsed after an earlier successful activation. beta8 does not,
- * however, demand two identical full traversals to prove that historical
- * retained flags are inert. One complete pass with no retained-fingerprint
- * improvement is sufficient to stop; a second pass is run only when the first
- * pass actually changed the unresolved retained corpus.
- */
 export async function reconcileRetainedDisclosures(page, onProgress, shouldCancel) {
   let summary = await retainedDisclosureSummary(page);
   let previousFingerprint = summary.fingerprint;
@@ -253,13 +232,7 @@ export async function reconcileRetainedDisclosures(page, onProgress, shouldCance
   let rounds = 0;
 
   if (summary.retainedUnresolvedDisclosures === 0) {
-    const result = {
-      converged: true,
-      rounds: 0,
-      stablePasses: 0,
-      unresolvedTurns: 0,
-      unresolvedDisclosures: 0
-    };
+    const result = { converged: true, rounds: 0, stablePasses: 0, unresolvedTurns: 0, unresolvedDisclosures: 0 };
     await page.evaluate(value => window.__archiveCrawler.markReconciliation(value), result);
     return result;
   }
@@ -269,17 +242,13 @@ export async function reconcileRetainedDisclosures(page, onProgress, shouldCance
     rounds = round;
     const direction = round % 2 === 1 ? 'down' : 'up';
     const progress = rewriteReconciliationProgress(onProgress, round, direction);
-
-    await page.evaluate(value => window.__archiveCrawler.markReconciliation(value), {
-      converged: false,
-      rounds: round,
-      stablePasses
-    });
+    await page.evaluate(value => window.__archiveCrawler.markReconciliation(value), { converged: false, rounds: round, stablePasses });
     const stats = await page.evaluate(() => window.__archiveCrawler.stats());
     await onProgress?.({
       ...stats,
+      stage: 'reconciliation',
       phase: 'Reconciling retained disclosures',
-      detail: 'The retained corpus still contains disclosures captured collapsed. A turn-scoped reconciliation traversal will revisit them; an unchanged retained fingerprint now stops immediately.',
+      detail: 'The retained corpus still contains disclosures captured collapsed. A turn-scoped reconciliation traversal will revisit them; an unchanged retained fingerprint stops the safety pass.',
       scanningStatus: `Reconciliation ${round}/${RECONCILIATION_MAX_PASSES} · ${summary.retainedUnresolvedTurns} unresolved turn(s), ${summary.retainedUnresolvedDisclosures} disclosure(s)`,
       scanComplete: false,
       pass: 0,
@@ -287,16 +256,11 @@ export async function reconcileRetainedDisclosures(page, onProgress, shouldCance
       step: 0
     });
 
-    // scan() already exhausts mounted disclosures at every scroll position and
-    // performs a full retained capture. beta7's additional post-scan
-    // expand/stabilize sequence duplicated that work and is intentionally gone.
     await scan(page, direction, 3, progress, shouldCancel);
     summary = await retainedDisclosureSummary(page);
-
     if (summary.fingerprint === previousFingerprint) stablePasses++;
     else stablePasses = 0;
     previousFingerprint = summary.fingerprint;
-
     if (summary.retainedUnresolvedDisclosures === 0 || stablePasses >= RECONCILIATION_STABLE_PASSES) break;
   }
 
@@ -308,14 +272,12 @@ export async function reconcileRetainedDisclosures(page, onProgress, shouldCance
     unresolvedDisclosures: summary.retainedUnresolvedDisclosures
   };
   await page.evaluate(value => window.__archiveCrawler.markReconciliation(value), result);
-
   await report(page, onProgress, {
-    phase: result.converged
-      ? 'Retained-disclosure reconciliation complete'
-      : 'Retained-disclosure reconciliation stopped',
+    stage: 'reconciliation',
+    phase: result.converged ? 'Retained-disclosure reconciliation complete' : 'Retained-disclosure reconciliation stopped',
     detail: result.converged
       ? `All retained recognized disclosures converged after ${rounds} reconciliation pass(es).`
-      : `Reconciliation stopped after ${rounds} pass(es) with ${result.unresolvedTurns} retained turn(s) and ${result.unresolvedDisclosures} disclosure(s) still flagged. Their richest captured versions are preserved; the development manual comparison remains available for verification.`,
+      : `Reconciliation stopped after ${rounds} pass(es) with ${result.unresolvedTurns} retained turn(s) and ${result.unresolvedDisclosures} disclosure(s) still flagged. Their richest captured versions are preserved and the limitation is reported.`,
     scanningStatus: result.converged
       ? `Retained disclosure corpus converged · ${rounds} pass(es)`
       : `Retained reconciliation stopped · ${result.unresolvedTurns} turn(s) / ${result.unresolvedDisclosures} disclosure(s) remain`,
@@ -329,6 +291,7 @@ export async function reconcileRetainedDisclosures(page, onProgress, shouldCance
 
 export async function crawlAutomaticConversation(page, { onProgress, shouldCancel } = {}) {
   await report(page, onProgress, {
+    stage: 'preparing',
     phase: 'Preparing crawler',
     detail: 'Installed page-side capture helpers; preparing the first traversal.',
     scanningStatus: 'Not started',
@@ -353,10 +316,11 @@ export async function crawlAutomaticConversation(page, { onProgress, shouldCance
     : traversalBase;
 
   await onProgress?.({
+    stage: 'finalization',
     phase: 'Final expansion sweep',
     detail: oldest.converged
       ? 'Traversal and retained-corpus reconciliation are complete; opening any disclosures still mounted before the final snapshot.'
-      : 'Traversal reached the oldest-edge safety limit; retained-corpus reconciliation is complete and remaining mounted disclosures are being checked before the final snapshot.',
+      : 'Traversal reached the oldest-edge safety limit; remaining mounted disclosures are being checked before the final snapshot.',
     scanningStatus: traversalSummary,
     scanComplete: true,
     pass: 0,
@@ -371,6 +335,7 @@ export async function crawlAutomaticConversation(page, { onProgress, shouldCance
   await expandMounted(page, 500, onProgress, shouldCancel);
   await page.evaluate(() => window.__archiveCrawler.capture());
   await report(page, onProgress, {
+    stage: 'finalization',
     phase: 'Final expansion sweep',
     detail: 'Expansion, hydration, and retained-disclosure reconciliation are complete; preparing the final static page.',
     scanningStatus: traversalSummary,
