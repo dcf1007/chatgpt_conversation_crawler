@@ -1,2 +1,2 @@
 v1.6.7-beta11-dev
-Development diagnostic-only wrapper. Do not merge into clean main or publish as a clean release.
+Development diagnostic-only wrapper. Must not be merged into clean main or published as a clean release.
