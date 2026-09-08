@@ -1,0 +1,184 @@
+name: Temporary beta11 MHTML analysis
+on:
+  push:
+    branches: [tmp-mhtml-analysis]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download diagnostic archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/mhtml/auth /tmp/mhtml/anon /tmp/mhtml/out
+          curl -L --fail --retry 4 --retry-delay 3 'https://drive.usercontent.google.com/download?id=1GS2Xkkyr9QTp03rMc9OdOwZGHv9YTZgq&export=download&confirm=t' -o /tmp/mhtml/auth/run.z01
+          curl -L --fail --retry 4 --retry-delay 3 'https://drive.usercontent.google.com/download?id=1WXTERUHFpk5sA1VwT_Si2UnsYEISzpRW&export=download&confirm=t' -o /tmp/mhtml/auth/run.z02
+          curl -L --fail --retry 4 --retry-delay 3 'https://drive.usercontent.google.com/download?id=1H0U4o6J3HEN6LPIBFWRSotxkmH2gjC_m&export=download&confirm=t' -o /tmp/mhtml/auth/run.zip
+          curl -L --fail --retry 4 --retry-delay 3 'https://drive.usercontent.google.com/download?id=113QYENWI1EH3ggYLaJ-z5smFPuCUf2CE&export=download&confirm=t' -o /tmp/mhtml/anon/run.zip
+          ls -lh /tmp/mhtml/auth /tmp/mhtml/anon
+      - name: Reconstruct and extract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/mhtml/auth
+          zip -s 0 run.zip --out combined.zip
+          mkdir extracted
+          unzip -q combined.zip -d extracted
+          cd /tmp/mhtml/anon
+          mkdir extracted
+          unzip -q run.zip -d extracted
+          echo "AUTH MHTML count: $(find /tmp/mhtml/auth/extracted -type f -iname '*.mhtml' | wc -l)"
+          echo "ANON MHTML count: $(find /tmp/mhtml/anon/extracted -type f -iname '*.mhtml' | wc -l)"
+      - name: Inspect turns 27 and 37
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet beautifulsoup4
+          cat > /tmp/mhtml/analyze.py <<'PY'
+          import os, re, json, glob
+          from email import policy
+          from email.parser import BytesParser
+          from bs4 import BeautifulSoup
+
+          TARGETS = ['conversation-turn-27','conversation-turn-37']
+          roots = {'authenticated':'/tmp/mhtml/auth/extracted','anonymous':'/tmp/mhtml/anon/extracted'}
+          out = {'runs':{}, 'summary':{}}
+
+          def html_from_mhtml(path):
+              try:
+                  with open(path,'rb') as f:
+                      msg = BytesParser(policy=policy.default).parse(f)
+                  for part in msg.walk():
+                      if part.get_content_type() == 'text/html':
+                          b = part.get_payload(decode=True)
+                          if b:
+                              return b.decode(part.get_content_charset() or 'utf-8','replace')
+              except Exception:
+                  pass
+              try:
+                  raw=open(path,'rb').read()
+                  return raw.decode('utf-8','replace')
+              except Exception:
+                  return ''
+
+          def interesting_attrs(tag):
+              d={}
+              for k,v in tag.attrs.items():
+                  s=' '.join(v) if isinstance(v,list) else str(v)
+                  if any(x in k.lower() for x in ['src','href','alt','aria','testid','upload','file','image','blob']) or any(x in s.lower() for x in ['upload','file','image','blob','asset','attachment']):
+                      d[k]=s[:1000]
+              return d
+
+          def node_report(node):
+              r={
+                  'tag': node.name,
+                  'attrs': {k: (' '.join(v) if isinstance(v,list) else str(v))[:1500] for k,v in node.attrs.items()},
+                  'text': ' '.join(node.stripped_strings)[:4000],
+                  'descendants': {},
+                  'interesting': []
+              }
+              for tagname in ['img','button','canvas','svg','video','a','input']:
+                  arr=node.find_all(tagname)
+                  r['descendants'][tagname]=len(arr)
+                  for t in arr[:20]:
+                      ia=interesting_attrs(t)
+                      if ia:
+                          r['interesting'].append({'tag':tagname,'attrs':ia,'text':' '.join(t.stripped_strings)[:500]})
+              # include any element carrying attachment/image/file hints
+              for t in node.find_all(True):
+                  ia=interesting_attrs(t)
+                  if ia and t.name not in ['img','button','canvas','svg','video','a','input']:
+                      rec={'tag':t.name,'attrs':ia,'text':' '.join(t.stripped_strings)[:500]}
+                      if rec not in r['interesting']:
+                          r['interesting'].append(rec)
+                      if len(r['interesting'])>=80: break
+              return r
+
+          for mode,root in roots.items():
+              records=[]
+              files=sorted(glob.glob(root+'/**/*.mhtml',recursive=True))
+              for path in files:
+                  html=html_from_mhtml(path)
+                  if not any(t in html for t in TARGETS):
+                      continue
+                  soup=BeautifulSoup(html,'html.parser')
+                  item={'file':os.path.relpath(path,root),'html_len':len(html),'targets':{}}
+                  for tid in TARGETS:
+                      nodes=[]
+                      # exact/common live ChatGPT forms
+                      for n in soup.find_all(attrs={'data-testid':tid}): nodes.append(n)
+                      for n in soup.find_all(attrs={'data-turn':tid}):
+                          if n not in nodes: nodes.append(n)
+                      if not nodes:
+                          # fallback: any attr value exactly containing id
+                          for n in soup.find_all(True):
+                              if any(tid in str(v) for v in n.attrs.values()):
+                                  nodes.append(n); break
+                      if not nodes: continue
+                      n=nodes[0]
+                      target={'turn':node_report(n),'ancestors':[],'document_img_count':len(soup.find_all('img'))}
+                      p=n.parent
+                      for depth in range(1,6):
+                          if not getattr(p,'name',None): break
+                          target['ancestors'].append({'depth':depth, **node_report(p)})
+                          p=p.parent
+                      # nearest images outside turn but within ancestors
+                      outside=[]
+                      turn_img_ids={id(x) for x in n.find_all('img')}
+                      p=n.parent
+                      for depth in range(1,6):
+                          if not getattr(p,'find_all',None): break
+                          for im in p.find_all('img'):
+                              if id(im) not in turn_img_ids:
+                                  outside.append({'depth':depth,'attrs':interesting_attrs(im)})
+                                  if len(outside)>=30: break
+                          if len(outside)>=30: break
+                          p=p.parent
+                      target['outside_imgs_nearby']=outside
+                      # clipped source for exact DOM inspection
+                      target['outer_html']=str(n)[:80000]
+                      item['targets'][tid]=target
+                  if item['targets']:
+                      records.append(item)
+              out['runs'][mode]=records
+              out['summary'][mode]={'mhtml_files':len(files),'snapshots_with_targets':len(records)}
+
+          # compact comparison summary: choose snapshots maximizing img/hints for each target
+          comp={}
+          for tid in TARGETS:
+              comp[tid]={}
+              for mode in roots:
+                  candidates=[]
+                  for rec in out['runs'][mode]:
+                      if tid not in rec['targets']: continue
+                      t=rec['targets'][tid]
+                      score=(t['turn']['descendants']['img']*100 + len(t['turn']['interesting']) + len(t['outside_imgs_nearby']))
+                      candidates.append((score,rec['file'],t))
+                  if candidates:
+                      candidates.sort(key=lambda x:x[0],reverse=True)
+                      score,file,t=candidates[0]
+                      comp[tid][mode]={
+                          'file':file,'score':score,
+                          'turn_descendants':t['turn']['descendants'],
+                          'turn_attrs':t['turn']['attrs'],
+                          'turn_text':t['turn']['text'],
+                          'interesting':t['turn']['interesting'][:30],
+                          'outside_imgs_nearby':t['outside_imgs_nearby'][:20],
+                          'ancestor_summaries':[{'depth':a['depth'],'tag':a['tag'],'attrs':a['attrs'],'descendants':a['descendants'],'interesting':a['interesting'][:15]} for a in t['ancestors']]
+                      }
+          out['comparison']=comp
+          os.makedirs('/tmp/mhtml/out',exist_ok=True)
+          with open('/tmp/mhtml/out/report.json','w',encoding='utf-8') as f: json.dump(out,f,indent=2,ensure_ascii=False)
+          with open('/tmp/mhtml/out/summary.json','w',encoding='utf-8') as f: json.dump({'summary':out['summary'],'comparison':comp},f,indent=2,ensure_ascii=False)
+          print(json.dumps({'summary':out['summary'],'comparison':comp},indent=2,ensure_ascii=False)[:60000])
+          PY
+          python /tmp/mhtml/analyze.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beta11-mhtml-analysis
+          path: /tmp/mhtml/out/
+          retention-days: 1
