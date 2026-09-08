@@ -114,7 +114,7 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
         capturedAt: new Date().toISOString(),
         reason,
         sessionMode: diagnosticState.sessionMode,
-        jobId: diagnosticState.id,
+        diagnosticId: diagnosticState.id,
         sourceUrl: diagnosticState.url,
         phase: diagnosticState.phase || '',
         pass: diagnosticState.pass || 0,
