@@ -1,50 +1,105 @@
-# v1.6.7-beta11-dev — diagnostic wrapper
+# v1.6.7-beta11-dev — diagnostic wrapper for beta11
 
-This build exists only to validate beta11 against a real ChatGPT share with the same high-density evidence used during the beta10-dev investigation. It is based on the exact beta11 automatic crawler and archive builder. The diagnostic layer is added around that crawler; it does not replace the beta11 traversal, retention, disclosure, transient-context, image, app-block, formula, SVG, or finalization logic.
+This branch/package is a **development-only diagnostic wrapper** around the exact beta11 automatic crawler. It is intentionally kept separate from clean `main` and must not be merged into the clean release branch.
 
-## What is added
+## Purpose
 
-- `server-dev.mjs` starts the normal beta11 server after preloading the MHTML instrumentation.
-- Chromium share pages are recorded under `mhtml-diagnostics/` using event-driven snapshots plus a 10-second idle safety snapshot.
-- The authenticated run performs the same two-step manual comparison used by beta10-dev after the untouched automatic crawl has completed.
-- Anonymous mode records the automatic crawl and MHTML evidence but skips the human comparison.
-- The clean `server.mjs` remains present and unchanged so the diagnostic wrapper can be compared directly with beta11.
+Use this build only when a matched anonymous/authenticated diagnostic run is needed. It restores the proven beta10-dev diagnostic instrumentation around beta11 so the automatic crawler can be checked empirically without changing beta11's crawl, retention, image/app, formula, traversal, or archive-building algorithms.
 
-## How to run the matched test
+## What is unchanged from clean beta11
 
-Use the same share URL for both runs.
+The following production files and automatic behavior are inherited directly from clean beta11:
 
-1. Extract this package into its own folder.
-2. Run the normal setup script once for your platform.
-3. Start the crawler with the platform start script. In this dev package those launchers intentionally invoke `server-dev.mjs`.
-4. Run **Anonymous** first and download the completed static HTML.
-5. Run **Authenticated** with the saved ChatGPT profile and download the completed static HTML.
-6. During the authenticated run, after automatic capture finishes, the headed ChatGPT window will highlight two crawler-selected rich turns one at a time. Fully expand every nested reasoning/tool layer in the highlighted turn, wait for leaf content to finish loading, then click **This turn is fully expanded** in the overlay.
-7. Do not copy or zip the diagnostic directories until the archive reports completion; the final context-closing MHTML record is written when the browser context is closed.
+- `server.mjs` archive/API implementation;
+- `src/crawler-core.mjs` automatic crawler;
+- beta11 remount and descendant-hydration retention;
+- beta11 media/app-aware retained-turn richness;
+- transient timeline/app/image retention;
+- explicit `stage` and backend-owned progress limits;
+- canonical archive identifier `id`;
+- image/app/formula/fidelity finalization;
+- authenticated and anonymous modes using the same automatic crawler.
 
-## Files to send back
+The development facade runs the automatic crawler first. Manual work is observational and happens only afterward.
 
-Please provide all of the following from the same beta11-dev package and the same share URL:
+## Development-only additions
 
-- the Anonymous static HTML;
-- the Authenticated static HTML;
-- the complete Anonymous folder under `mhtml-diagnostics/`;
-- the complete Authenticated folder under `mhtml-diagnostics/`;
-- the Authenticated `manual-inspection-diagnostics/` folder, including `automatic-before-manual.html`, the two per-target snapshots, `post-manual.html`, and `summary.json`.
+- `server-dev.mjs` loads common Chromium runtime behavior, enables manual inspection, installs the MHTML hook, then imports the normal beta11 `server.mjs`.
+- `src/mhtml-dev-hook.mjs` records event-driven and idle-safety MHTML snapshots for the selected share page.
+- `src/mhtml-recorder.mjs` serializes Chromium `Page.captureSnapshot` calls into `mhtml-diagnostics/`.
+- `src/manual-inspection.mjs` performs the two-target authenticated human comparison after automatic capture completes.
+- `src/crawler.mjs` is only a facade: it delegates automatic crawling to `crawler-core.mjs`, then conditionally runs manual diagnostics.
 
-Zip each diagnostic directory before uploading it. Do **not** include `browser-profile/`; it is credential-equivalent local state and is not needed for analysis.
+Anonymous mode receives automatic beta11 crawling plus MHTML diagnostics and skips the human comparison. Authenticated mode receives the same automatic beta11 crawl plus MHTML diagnostics, then the two manual targets.
 
-## What this run is intended to establish
+## MHTML policy
 
-The matched evidence should answer, with beta11 rather than beta10:
+The MHTML recorder keeps the beta10-dev evidence policy:
 
-- whether all 60 conversation turns and timeline/branch markers are retained;
-- whether the four authenticated uploaded-image elements remain represented inside their final user turns rather than only in the image cache;
-- whether the authenticated app block is retained and flattened while the anonymous view still receives only the source resources ChatGPT exposes publicly;
-- whether resource exposure differences for uploaded images, files, app sandboxes, tool payloads, signed URLs, blob URLs, SVG, and formulas remain the same;
-- whether beta11's synchronous remount/hydration retention and media-aware richness ordering prevent later rich generations from being displaced by poorer retained copies;
-- whether the automatic beta11 result already equals or exceeds the two human-expanded diagnostic targets.
+- initial loaded snapshot;
+- material DOM-change captures, rate limited;
+- lazy image/fetch/XHR resource captures, rate limited;
+- manual-inspection state changes;
+- 10-second periodic capture only when no event-driven capture has occurred for a full interval;
+- final context-closing capture.
 
-## Isolation boundary
+Manifest records use `diagnosticId`, not the archive API's retired `jobId` alias.
 
-`v1.6.7-beta11-dev` is diagnostic-only. It must not replace `v1.6.7-beta11` as the clean release. The dev branch intentionally contains MHTML/manual-inspection code and dev launchers; `main` remains the clean beta11 source.
+## Manual validation
+
+In the authenticated run, after automatic capture has completed, the development facade ranks the untouched automatic corpus and selects two independent rich assistant turns. For each highlighted target:
+
+1. fully expand every nested reasoning/tool disclosure;
+2. wait for leaf content to load;
+3. click **This turn is fully expanded** in the overlay;
+4. allow the automatic turn-scoped convergence to run again.
+
+Outputs are stored under `manual-inspection-diagnostics/` and include the untouched automatic baseline, per-target post-human snapshots, the final post-manual snapshot, and `summary.json`.
+
+## Session-check UI lifecycle fix
+
+The beta11-dev local UI polls fresh `/api/session/status` state while a login window, interactive session-check window, or profile owner is active. This prevents the controls from remaining disabled after a manually closed **Check session** Chromium window. The refresh is guarded so overlapping one-second status requests cannot accumulate. This is a branch-only diagnostic-package fix; no clean beta11 release is created or modified.
+
+## Recommended matched run
+
+Run the same share URL twice:
+
+### 1. Anonymous
+
+- select **Anonymous**;
+- run to completion;
+- save the static HTML;
+- preserve the corresponding `mhtml-diagnostics/<run>/` directory.
+
+### 2. Authenticated
+
+- verify the saved ChatGPT session;
+- select **Authenticated**;
+- run to completion;
+- complete both highlighted manual-validation steps when prompted;
+- save the final static HTML;
+- preserve the corresponding `mhtml-diagnostics/<run>/` directory;
+- preserve the matching `manual-inspection-diagnostics/` directory.
+
+Do not include `browser-profile/` when sharing diagnostics.
+
+## Evidence to compare
+
+The main beta11 validation target is the previous authenticated uploaded-image gap: the beta10 MHTML proved four upload-image elements and their bytes were browser-visible while the final retained user-turn HTML lost those elements. A beta11-dev matched run should check whether those image elements are now retained in their actual user turns.
+
+The same evidence should also be checked for:
+
+- all observed/retained turns and timeline markers;
+- disclosures and rich pre/code payloads;
+- app-preview frames/resources and static app blocks;
+- uploaded/generated image DOM and retrievable bytes;
+- signed/blob URLs;
+- filenames/labels actually exposed by ChatGPT;
+- formulas, SVGs and embedded resources;
+- manual-before/after differences for the two selected rich turns.
+
+## Start commands
+
+The platform launchers intentionally start `server-dev.mjs` in this development package. `npm start` also points to `server-dev.mjs`.
+
+The clean beta11 release remains on `main` and continues to start `server.mjs` directly.
