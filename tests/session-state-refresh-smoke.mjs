@@ -18,4 +18,4 @@ assert.doesNotMatch(
 );
 assert.match(html, /if\(s\.verificationWindowOpen\)label='Checking session'/, 'interactive check should be visible in the session pill');
 
-console.log('beta11-dev session state refresh smoke test passed');
+console.log('session state refresh smoke test passed');
