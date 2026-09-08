@@ -20,6 +20,42 @@ Anonymous disposable browser ──────┐
 Authenticated persistent profile ──┘
 ```
 
+## Matched anonymous/authenticated evidence
+
+A matched `v1.6.7-beta10-dev` diagnostic run captured the same 60-turn share once anonymously and once with the saved authenticated ChatGPT profile. Both modes used the same automatic crawler code, so the comparison is evidence about what the share page exposed to each browser rather than evidence of different crawler algorithms.
+
+The broad conversation structure matched: both archives retained **60 turns**, **3 timeline markers**, and **180/181 formulas rendered as MathML**. The meaningful differences were resources and tool/app content exposed only to the authenticated browser.
+
+| Content | Authenticated share | Anonymous share |
+| --- | --- | --- |
+| Conversation turns | 60 | 60 |
+| Timeline markers | 3 | 3 |
+| Formula rendering | 180/181 | 180/181 |
+| App blocks | 1 captured, 2 flattened frames, 2 SVGs | no usable app block; placeholder only |
+| Main image sources reported by crawler | 8/8 embedded | 4/4 embedded |
+| User-upload image DOM | actual `<img>` elements with signed `oaiusercontent.com` URLs and dimensions | generic `Uploaded an image` placeholders, no image URL/bytes |
+| Original uploaded-image filename | not exposed; generic `Uploaded image` label only | not exposed |
+| User-uploaded non-image filename | generic `Uploaded a file`; original name not exposed | generic `Uploaded a file`; original name not exposed |
+| Rich tool/execution transcript | some authenticated-only tool payloads exposed | corresponding payload can be omitted |
+
+### Uploaded images and files
+
+The authenticated MHTML contained four directly retrievable user-uploaded images from signed `oaiusercontent.com` URLs. The exposed dimensions were one image in turn 27 at `850 × 129`, and three images in turn 37 at `360 × 500`, `2048 × 1636`, and `1286 × 700`. The anonymous view exposed textual placeholders instead of those image resources.
+
+Neither mode recovered original upload filenames. The authenticated DOM still used generic labels such as `Uploaded image`; the two uploaded non-image files in turn 37 were exposed only as `Uploaded a file`. Filenames appearing elsewhere because the user typed them or a tool printed a local path are conversation text, not recovered attachment metadata.
+
+### App and tool content
+
+The authenticated page exposed an app-preview iframe plus sandbox document/CSS resources. The crawler flattened that into one static app block containing two frame levels and two SVGs. The anonymous page did not expose the corresponding sandbox resources and produced an app-preview placeholder instead.
+
+Authentication also exposed materially richer tool/execution content in at least one assistant turn. In turn 18 the authenticated static archive retained roughly 41.8k characters, including a large visible `Analysis errored` Python/tool payload, while the anonymous archive retained roughly 3.4k characters and omitted that payload. This is user-visible share content exposed differently by ChatGPT, not private model-internal chain-of-thought recovery.
+
+### Uploaded-image retention finding
+
+The beta10 matched run exposed a real crawler-side gap: authenticated MHTML proved that four upload-image elements and their bytes were available to the browser, while the final static archive did not visibly retain those upload-image elements inside their user messages. The image cache could therefore report retrievable embedded sources even when the retained turn generation no longer represented them.
+
+Beta11 directly hardens the mechanisms implicated by that finding: remounts and descendant hydration are synchronously offered to retention, media/app structure participates in retained-turn richness, and transient image DOM triggers the existing image-capture path. These changes close the identified structural loss paths, but a fresh matched live ChatGPT run is still the correct validation for the specific uploaded-image case. Beta11 does not claim to synthesize resources that ChatGPT never exposes.
+
 ### Automatic capture pipeline
 
 ```text
@@ -167,7 +203,7 @@ cancelled
 
 Human-readable `phase` and `detail` strings are presentation text only. The frontend does not parse them to infer state.
 
-Status also includes `progressLimits`, sourced from crawler constants, so stage progress does not duplicate limits in frontend code.
+Status also includes `progressLimits`, sourced from crawler constants, so stage progress does not duplicate limits in frontend code. If those limits are unavailable, the UI falls back to an indeterminate stage display instead of silently inventing crawler constants.
 
 ## Live preview
 
@@ -196,12 +232,11 @@ The crawler does **not**:
 - infer timestamps ChatGPT does not display;
 - recover original uploaded image/file names when the share page supplies only generic upload labels;
 - make anonymously unavailable uploaded-image bytes or app-sandbox resources appear through crawler logic;
+- claim the beta10 uploaded-image representation case is live-validated under beta11 until a fresh matched run confirms it;
 - preserve app blocks as interactive applications—the archive is static;
 - guarantee recovery after every image retention/fetch path and original URL have all failed;
 - guarantee that external identity providers accept Playwright Chromium under every SSO policy;
 - guarantee compatibility with future ChatGPT DOM, virtualization, auth or share-page changes without maintenance.
-
-The matched beta10 diagnostic run demonstrated that authentication can expose substantially richer upload/app/tool resources than an anonymous view of the same share. beta11 fixes the retention mechanisms that could discard a later media/app-rich turn generation; it does not claim to synthesize resources ChatGPT never exposed.
 
 ## Security model
 
