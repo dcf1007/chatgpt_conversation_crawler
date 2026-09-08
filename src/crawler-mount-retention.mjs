@@ -2,20 +2,13 @@ const DEFAULT_SETTLE_MS = 120;
 const MAX_REPORTED_MISSING_TURNS = 20;
 
 /**
- * Install a lightweight page-side retention observer for ChatGPT's virtualized
- * conversation turns.
+ * Retain every observed virtualized turn generation at the turn boundary.
  *
- * beta8 intentionally stopped waiting for the whole mounted viewport to become
- * stable. That removed the pathological virtualizer/quiescence stalls, but the
- * faster traversal exposed a different race: a short turn can mount between two
- * formal scroll checkpoints and disappear again before crawler.capture() runs.
- *
- * This observer closes that race at its real authority boundary. When ChatGPT
- * mounts a conversation-turn section, the turn is recorded as seen and, if it
- * has never been retained, captured immediately. A short deferred capture then
- * gives newly inserted content one small settling window; richness-aware
- * captureTurn() makes repeated/remounted observations safe because only richer
- * retained candidates replace the previous copy.
+ * A turn can mount, remount richer, or hydrate descendants entirely between
+ * traversal checkpoints. Every mutation batch therefore synchronously captures
+ * each affected turn once, followed by one short debounced settle capture.
+ * captureTurn() remains richness-aware, so redundant observations are cheap in
+ * retained-state terms and inferior generations never replace better copies.
  */
 export async function installMountRetention(page, { settleMs = DEFAULT_SETTLE_MS } = {}) {
   await page.evaluate(({ settleMs, maxReportedMissingTurns }) => {
@@ -29,6 +22,7 @@ export async function installMountRetention(page, { settleMs = DEFAULT_SETTLE_MS
       immediateCaptures: 0,
       settledCaptures: 0,
       observedMountEvents: 0,
+      observedHydrationEvents: 0,
       flushCaptures: 0
     };
 
@@ -53,7 +47,6 @@ export async function installMountRetention(page, { settleMs = DEFAULT_SETTLE_MS
     function scheduleSettledCapture(turnId) {
       const previousTimer = pending.get(turnId);
       if (previousTimer) clearTimeout(previousTimer);
-
       const timer = setTimeout(() => {
         pending.delete(turnId);
         if (!currentSection(turnId)) return;
@@ -63,42 +56,43 @@ export async function installMountRetention(page, { settleMs = DEFAULT_SETTLE_MS
       pending.set(turnId, timer);
     }
 
-    function observeSection(section) {
+    function captureObservedTurn(section, kind) {
       const id = sectionId(section);
       if (!id) return;
-
       state.seenTurnIds[id] = true;
-      state.observedMountEvents++;
-
-      // The completeness bug in beta8 was specifically a never-retained short
-      // turn. Capture that first observation synchronously so even a very brief
-      // mount cannot slip entirely between traversal checkpoints.
-      if (!crawler.state.turns[id]) {
-        crawler.captureTurn(id);
-        state.immediateCaptures++;
-      }
-
-      // Assistant/tool turns can continue hydrating immediately after their
-      // section is inserted. One deferred richness-aware retry catches that
-      // normal construction phase without reinstating viewport-wide waiting.
+      if (kind === 'mount') state.observedMountEvents++;
+      else state.observedHydrationEvents++;
+      crawler.captureTurn(id);
+      state.immediateCaptures++;
       scheduleSettledCapture(id);
     }
 
-    function observeAddedNode(node) {
+    function collectTurnSections(node, output) {
       if (!isElementLike(node)) return;
-      if (node.matches?.(turnSelector)) observeSection(node);
-      for (const section of node.querySelectorAll?.(turnSelector) || []) observeSection(section);
+      if (node.matches?.(turnSelector)) output.add(node);
+      for (const section of node.querySelectorAll?.(turnSelector) || []) output.add(section);
     }
 
     const observer = typeof MutationObserver === 'function'
       ? new MutationObserver(records => {
+          const mounted = new Set();
+          const hydrated = new Set();
           for (const record of records) {
             if (record.type === 'attributes') {
-              if (record.target?.matches?.(turnSelector)) observeSection(record.target);
+              if (record.target?.matches?.(turnSelector)) mounted.add(record.target);
               continue;
             }
-            for (const node of record.addedNodes || []) observeAddedNode(node);
+
+            const owner = record.target?.closest?.(turnSelector);
+            if (owner) hydrated.add(owner);
+            for (const node of record.addedNodes || []) collectTurnSections(node, mounted);
           }
+
+          for (const section of mounted) {
+            hydrated.delete(section);
+            captureObservedTurn(section, 'mount');
+          }
+          for (const section of hydrated) captureObservedTurn(section, 'hydrate');
         })
       : null;
 
@@ -109,8 +103,6 @@ export async function installMountRetention(page, { settleMs = DEFAULT_SETTLE_MS
       attributeFilter: ['data-testid']
     });
 
-    // Seed the seen set after crawler-base's initial capture. These sections
-    // predate the observer and therefore will not produce insertion records.
     for (const section of document.querySelectorAll(turnSelector)) {
       const id = sectionId(section);
       if (id) state.seenTurnIds[id] = true;
@@ -126,16 +118,13 @@ export async function installMountRetention(page, { settleMs = DEFAULT_SETTLE_MS
         mountObserverImmediateCaptures: state.immediateCaptures,
         mountObserverSettledCaptures: state.settledCaptures,
         mountObserverEvents: state.observedMountEvents,
+        mountObserverHydrationEvents: state.observedHydrationEvents,
         mountObserverFlushCaptures: state.flushCaptures
       };
     }
 
     crawler.mountRetentionSummary = summary;
     crawler.flushMountRetention = async () => {
-      // Give already-scheduled settled captures their tiny construction window,
-      // then explicitly retain everything still mounted before finalization.
-      // Do not route this final sweep through observeSection(), because doing so
-      // would create a fresh set of deferred timers after the flush had returned.
       await new Promise(resolve => setTimeout(resolve, Math.max(0, Number(settleMs) || 0) + 20));
       for (const section of document.querySelectorAll(turnSelector)) {
         const id = sectionId(section);
