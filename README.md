@@ -16,7 +16,58 @@ Anonymous disposable browser ──────┐
 Authenticated persistent profile ──┘
 ```
 
-A later v1.7 documentation update is planned after matching anonymous/authenticated diagnostic captures are compared. Until that comparison is performed, this README does not claim that specific upload names, image names, app blocks, or other resources are always available in one mode and unavailable in the other.
+The beta10-dev comparison below uses the same shared conversation in both modes and therefore provides direct evidence about what the page exposed to each browser rather than assuming that authentication only changes login state.
+
+## Anonymous vs authenticated share evidence
+
+A matched `v1.6.7-beta10-dev` run on the same 60-turn share was captured once anonymously and once with the saved authenticated ChatGPT profile. Both modes used the same automatic crawler code.
+
+The broad conversation structure matched: both archives retained **60 turns**, **3 timeline markers**, and the same **180/181 formulas rendered as MathML**. The meaningful differences came from resources and tool/app content that ChatGPT exposed only to the authenticated browser.
+
+| Content | Authenticated share | Anonymous share |
+| --- | --- | --- |
+| Conversation turns | 60 | 60 |
+| Timeline markers | 3 | 3 |
+| Formula rendering | 180/181 | 180/181 |
+| App blocks | 1 captured, 2 flattened frames, 2 SVGs | no usable app block; placeholder only |
+| Main image sources reported by crawler | 8/8 embedded | 4/4 embedded |
+| User-upload image DOM | actual `<img>` elements with signed `oaiusercontent.com` URLs and dimensions | generic `Uploaded an image` placeholders, no image URL/bytes |
+| Original uploaded-image filename | not exposed; generic `Uploaded image` label only | not exposed |
+| User-uploaded non-image filename | generic `Uploaded a file`; original name not exposed | generic `Uploaded a file`; original name not exposed |
+| Rich tool/execution transcript | some authenticated-only tool payloads are exposed | corresponding payload can be omitted |
+
+### User-uploaded images
+
+In the authenticated MHTML, four user-uploaded images were directly retrievable from signed `oaiusercontent.com` URLs. The share DOM exposed image dimensions as well:
+
+- one image in turn 27: `850 × 129`;
+- three images in turn 37: `360 × 500`, `2048 × 1636`, and `1286 × 700`.
+
+The anonymous view exposed no corresponding image resources. It showed textual placeholders such as `Uploaded an image` instead.
+
+Authentication therefore changes whether the **image bytes and dimensions** are retrievable from this share. It did **not** recover the original image filenames: even the authenticated DOM used only generic labels such as `Uploaded image` and `Open image 1 of 3: Uploaded image`.
+
+### User-uploaded files
+
+For the two uploaded non-image files in turn 37, both modes exposed only `Uploaded a file`. No original attachment filename was present in the matched DOM snapshots. Filenames that appear elsewhere in the conversation because the user typed them or because a tool printed a local path are conversation text, not recovered attachment metadata.
+
+### App blocks
+
+The authenticated page exposed an app-preview iframe plus its sandbox document/CSS. The crawler flattened that into one static app block containing two frame levels and two SVGs.
+
+The anonymous page did not expose the sandbox app resources. The resulting static archive therefore contained `App block preview could not be captured` instead of the rendered visualization. This is a source-availability difference, not a separate anonymous crawler algorithm.
+
+### Tool/execution content
+
+Authentication also exposed materially richer tool content in at least one assistant turn. In turn 18, the authenticated static archive retained roughly 41.8k characters and included a large visible `Analysis errored` Python/tool payload, while the anonymous archive retained roughly 3.4k characters and omitted that payload. Smaller authenticated-only `Run` labels also appeared in several tool-heavy turns.
+
+This should be treated as **user-visible share content exposed differently by ChatGPT**, not as private model-internal chain-of-thought recovery.
+
+### Known beta10 archive gap discovered by this comparison
+
+The authenticated MHTML proves that the four user-uploaded image bytes were available to the browser, but the beta10 static archive does not render those uploaded-image elements back inside the corresponding user messages. The image cache/statistics can therefore report retrievable embedded sources even though the final retained turn HTML does not visibly contain those attachments.
+
+That is a real archival-fidelity issue to address in v1.7. It is separate from the anonymous limitation: anonymous mode never received those image bytes in the first place.
 
 ## Main features
 
@@ -180,15 +231,17 @@ The crawler preserves authoritative TeX exposed by ChatGPT, tokenizes it before 
 
 `v1.6.7-beta10-dev` is intentionally diagnostic. It keeps the high-density Chromium MHTML recorder and, after an authenticated automatic crawl, runs two manual validation turns selected dynamically from the untouched automatic retained corpus.
 
-The target selector ignores generic collapsed controls such as image viewers. It prioritizes recognized reasoning/tool disclosures, then assistant reasoning/tool turns, then rich assistant tool/code turns. No conversation-turn ID is hard-coded.
+The selector fix is validated by the matched run: it chose turns 44 and 38, both rich reasoning/tool turns, instead of the generic image-control turn that had incorrectly won under the old selector.
+
+The untouched automatic baseline already retained turn 44 at 87 `<pre>` / 82 `<code>` and turn 38 at 61 `<pre>` / 52 `<code>`. The retained HTML for both selected turns was byte-identical in the automatic baseline, after each manual step, and in the final post-manual snapshot. Human expansion changed the currently mounted virtualizer state but did not improve those retained turn copies. This supports the current richest-turn retention and turn-scoped convergence behavior.
 
 Anonymous automatic crawling uses the same crawler routines but skips the human validation phase.
 
-The immediately following `v1.6.7-beta10` release removes the MHTML recorder and manual-validation runtime while retaining the same automatic crawler and interface.
+The clean `v1.6.7-beta10.1` release removes the MHTML recorder and manual-validation runtime while retaining the same automatic crawler and interface. `beta10.1` also fixes the clean platform launchers so Windows, Linux and macOS start `server.mjs` rather than the removed development launcher.
 
 ## Static output and archive metadata
 
-The final archive contains no scripts. It preserves retained semantic turn content, code, links, tables, blockquotes, MathML formulas, timeline/branch markers, embedded images, flattened app-block content, and static SVG.
+The final archive contains no scripts. It preserves retained semantic turn content, code, links, tables, blockquotes, MathML formulas, timeline/branch markers, embedded images that remain represented in retained output, flattened app-block content, and static SVG.
 
 The archive header reports one **Disclosures expanded** field. When click attempts equal confirmations, only the confirmed count is shown. When they differ, both are reported in that one field so retries remain visible.
 
@@ -203,13 +256,13 @@ The crawler does **not**:
 - recover content the selected anonymous/authenticated share browser never exposes;
 - recover private model-internal chain-of-thought;
 - infer timestamps that ChatGPT does not display;
-- reliably reconstruct original user-uploaded filenames when the shared page omits them;
+- recover original user-uploaded image/file names when the share page supplies only generic upload labels;
+- make anonymously unavailable uploaded-image bytes or app-sandbox resources appear by using the authenticated capture paths;
+- currently guarantee that every authenticated uploaded-image source retained in the image cache is represented again inside the final static turn HTML; this is a known beta10 fidelity gap planned for v1.7;
 - preserve app blocks as interactive applications—the archive is static;
 - guarantee image recovery after every early/fallback embedding path and the original remote URL have failed;
 - guarantee that Google/other identity providers accept Playwright's bundled Chromium for every SSO policy;
 - guarantee compatibility with future ChatGPT DOM, virtualization, auth or share-page changes without maintenance.
-
-The exact differences between what anonymous and authenticated share views expose—especially upload/image names and app-block resources—are deliberately **not generalized yet**. They will be documented from matched diagnostic evidence before v1.7.
 
 ## Security model
 
@@ -239,7 +292,8 @@ Important regressions include:
 - blob/signed/MIME-mislabeled image embedding;
 - formulas and non-formula SVG;
 - session/profile locking and background rendering;
-- dynamic development diagnostic target selection that ignores generic image controls.
+- dynamic development diagnostic target selection that ignores generic image controls;
+- clean platform launchers that never depend on removed development-only startup files.
 
 ## Recent version history
 
@@ -247,7 +301,8 @@ Important regressions include:
 - `v1.6.7-beta8-dev` — turn-scoped disclosure convergence and major traversal performance recovery.
 - `v1.6.7-beta9` — mount-triggered turn retention, restoring complete short-turn coverage without reintroducing viewport-wide stabilization.
 - `v1.6.7-beta10-dev` — dynamic diagnostic target selection, stage-local status UI, corrected substantive-progress semantics, common Chromium background bootstrap; full MHTML/manual diagnostics retained.
-- `v1.6.7-beta10` — same automatic crawler/UI with MHTML and manual validation removed.
+- `v1.6.7-beta10` — clean diagnostic-removal build; initial release had stale platform launchers.
+- `v1.6.7-beta10.1` — corrected clean launchers; same automatic crawler as beta10-dev without MHTML/manual capture.
 
 ## Maintenance note
 
