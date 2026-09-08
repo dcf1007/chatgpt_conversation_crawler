@@ -9,8 +9,8 @@ for (const stage of ['queued','loading','preparing','traversal','oldest_verifica
   assert.ok(server.includes(stage) || traversal.includes(stage), `stage contract missing ${stage}`);
 }
 assert.match(server, /progressLimits/);
-assert.match(index, /s\.stage/);
+assert.match(index, /job\.stage/, 'UI must consume explicit machine-readable stage state');
 assert.doesNotMatch(index, /\/verifying oldest\/|\/reconcil/i, 'UI must not infer machine stage from phase wording');
-assert.doesNotMatch(index, /oldestQuietChecks\s*\/\s*12|reconciliationRounds\s*\/\s*2/, 'UI must use backend progress limits');
+assert.doesNotMatch(index, /scanPasses\s*\|\|\s*3|oldestRequiredQuietChecks\s*\|\|\s*12|reconciliationMaxPasses\s*\|\|\s*2/, 'UI must not duplicate crawler-owned progress limits');
 
 console.log('beta11 explicit progress-stage smoke test passed');
