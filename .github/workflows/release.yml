@@ -63,6 +63,40 @@ jobs:
             node "$test_file"
           done
 
+  diagnostic_artifact:
+    if: github.event_name == 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out validated PR tree
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build diagnostic ZIP
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          if [[ "$VERSION" != *-dev ]]; then
+            echo "Refusing to build PR diagnostic artifact for non-dev version: $VERSION" >&2
+            exit 1
+          fi
+          ARCHIVE="chatgpt-conversation-crawler-v${VERSION}.zip"
+          PREFIX="chatgpt-conversation-crawler-v${VERSION}/"
+          git archive --format=zip --prefix="$PREFIX" --output="$ARCHIVE" "$GITHUB_SHA"
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          sha256sum "$ARCHIVE"
+
+      - name: Upload validated diagnostic ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta11-dev-diagnostic-package
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     if: github.event_name != 'pull_request'
     needs: validate
