@@ -5,10 +5,14 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-assert.equal(packageJson.version, '1.6.7-beta11');
+assert.equal(packageJson.version, '1.6.7-beta11-dev');
+assert.equal(packageJson.scripts?.start, 'node server-dev.mjs');
 
 for (const required of [
   'server.mjs',
+  'server-dev.mjs',
+  'BETA11.md',
+  'BETA11_DEV.md',
   'public/index.html',
   'public/preview.html',
   'src/crawler.mjs',
@@ -17,20 +21,17 @@ for (const required of [
   'src/crawler-disclosure-state.mjs',
   'src/crawler-mount-retention.mjs',
   'src/transient-context-retention.mjs',
+  'src/mhtml-dev-hook.mjs',
+  'src/mhtml-recorder.mjs',
+  'src/mhtml-start-gate.mjs',
+  'src/manual-inspection.mjs',
   'start-windows.bat',
   'start-linux.sh',
   'start-macos.sh'
 ]) {
-  assert.ok(fs.existsSync(path.join(root, required)), `required packaged file missing: ${required}`);
+  assert.ok(fs.existsSync(path.join(root, required)), `required beta11-dev file missing: ${required}`);
 }
 
-for (const removed of [
-  'server-dev.mjs',
-  'src/crawler-page-diagnostics.mjs',
-  'src/mhtml-dev-hook.mjs',
-  'src/manual-inspection.mjs'
-]) {
-  assert.ok(!fs.existsSync(path.join(root, removed)), `clean beta11 must not contain development-only file: ${removed}`);
-}
+assert.ok(!fs.existsSync(path.join(root, 'src/crawler-page-diagnostics.mjs')), 'beta11-dev must not revive the old crawler-page-diagnostics implementation');
 
-console.log('beta11 package contract smoke test passed');
+console.log('beta11-dev package contract smoke test passed');
