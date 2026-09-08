@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-echo Starting ChatGPT Share Archiver - beta6-dev MHTML diagnostics...
+echo Starting ChatGPT Conversation Crawler...
 where node >nul 2>&1
 if errorlevel 1 (
   echo.
@@ -14,11 +14,10 @@ if errorlevel 1 (
 
 if not exist "node_modules\playwright\package.json" goto :needs_setup
 if not exist "node_modules\express\package.json" goto :needs_setup
+if not exist "%~dp0server.mjs" goto :missing_entrypoint
 
-rem beta6-dev starts through server-dev.mjs so Playwright share pages are
-rem recorded as temporary MHTML diagnostics under mhtml-diagnostics\.
 start "" /b cmd /c "ping 127.0.0.1 -n 3 >nul & start http://localhost:3000"
-node "%~dp0server-dev.mjs"
+node "%~dp0server.mjs"
 set "EXITCODE=%ERRORLEVEL%"
 
 if not "%EXITCODE%"=="0" (
@@ -28,6 +27,13 @@ if not "%EXITCODE%"=="0" (
   pause
 )
 exit /b %EXITCODE%
+
+:missing_entrypoint
+echo.
+echo server.mjs is missing from this folder.
+echo Re-extract the complete release archive before starting the crawler.
+pause
+exit /b 1
 
 :needs_setup
 echo.
