@@ -11,7 +11,7 @@ import {
 
 /**
  * Install page-side retention first, then mount-triggered completeness capture
- * and the turn-scoped disclosure diagnostics.
+ * and the turn-scoped disclosure diagnostics used by the automatic crawler.
  */
 export async function installCrawler(page) {
   await installPageCrawler(page);
@@ -19,13 +19,13 @@ export async function installCrawler(page) {
   await installBeta8Diagnostics(page);
 }
 
-/** Run the automatic beta9 capture pipeline. */
+/** Run the automatic capture pipeline. */
 export async function crawlConversation(page, options = {}) {
   await installCrawler(page);
   const result = await crawlAutomaticConversation(page, options);
 
   // Drain any tiny mount-settle timers and capture the currently mounted range
-  // once more before the automatic result is handed to manual diagnostics or
+  // once more before the automatic result is handed to optional diagnostics or
   // final archive assembly.
   await page.evaluate(() => window.__archiveCrawler.flushMountRetention?.());
   return result;

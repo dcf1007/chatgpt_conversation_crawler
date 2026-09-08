@@ -1,13 +1,9 @@
-import { chromium } from 'playwright';
-import { installChromiumBackgroundProtection } from './src/chromium-background-protection.mjs';
+// Install common Chromium runtime behavior before the diagnostic hook wraps
+// Playwright launch methods.
+await import('./src/runtime-browser.mjs');
 
-// Development-only diagnostics are deliberately enabled here instead of in
-// server.mjs so a later clean release can drop them without crawler surgery.
+// Development-only diagnostics. The clean beta10 release removes this launcher,
+// MHTML recording, and the manual validation phase entirely.
 process.env.CHATGPT_CRAWLER_MANUAL_INSPECTION ??= '1';
-
-// Keep headed authenticated Chromium active when the user minimizes or covers
-// its window. This is intentionally isolated to the development launcher.
-installChromiumBackgroundProtection(chromium);
-
 await import('./src/mhtml-dev-hook.mjs');
 await import('./server.mjs');

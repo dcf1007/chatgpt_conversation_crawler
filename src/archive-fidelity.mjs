@@ -23,9 +23,24 @@ function stripArchiveUiArtifacts(html) {
     .replace(/<span class="archive-inline-label">\s*Show (?:more|less)\s*<\/span>/gi, '');
 }
 
+function consolidateDisclosureMetadata(html) {
+  return String(html || '').replace(
+    /<div><strong>Expansion clicks<\/strong>(\d+)<\/div><div><strong>Confirmed expansions<\/strong>(\d+)<\/div>/i,
+    (match, clicksText, confirmedText) => {
+      const clicks = Number(clicksText);
+      const confirmed = Number(confirmedText);
+      if (!Number.isFinite(clicks) || !Number.isFinite(confirmed)) return match;
+      const detail = clicks === confirmed
+        ? `${confirmed}`
+        : `${confirmed} confirmed from ${clicks} click attempt${clicks === 1 ? '' : 's'}`;
+      return `<div><strong>Disclosures expanded</strong>${detail}</div>`;
+    }
+  );
+}
+
 export function finalizeConversationFidelity(snapshot) {
   if (!snapshot?.html) return snapshot;
-  let html = stripArchiveUiArtifacts(snapshot.html);
+  let html = consolidateDisclosureMetadata(stripArchiveUiArtifacts(snapshot.html));
   if (!html.includes('data-archive-fidelity="chatgpt-conversation"')) {
     html = html.replace('</head>', `${FIDELITY_STYLE}</head>`);
   }

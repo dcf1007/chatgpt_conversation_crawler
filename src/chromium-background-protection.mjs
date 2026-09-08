@@ -16,13 +16,10 @@ export function withChromiumBackgroundProtection(options = {}) {
 }
 
 /**
- * Development-only launch patch. The authenticated archive and interactive
- * session-check both use chromium.launchPersistentContext(). Keep the browser
- * headed, but prevent Chromium from slowing its renderer merely because the
- * window is minimized, occluded, or in the background.
- *
- * The standalone login browser is intentionally unaffected because it is
- * spawned as a plain OS process for Google/SSO compatibility.
+ * Patch headed persistent Chromium contexts so capture work does not slow down
+ * merely because the authenticated browser window is minimized, occluded, or
+ * in the background. Anonymous headless contexts and the unmanaged standalone
+ * login browser are intentionally unaffected.
  */
 export function installChromiumBackgroundProtection(chromiumBrowserType) {
   if (!chromiumBrowserType) throw new TypeError('Chromium BrowserType is required.');
