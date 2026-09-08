@@ -1,12 +1,13 @@
-const DISCLOSURE_STABLE_SAMPLES = 3;
-const DISCLOSURE_SAMPLE_INTERVAL_MS = 120;
-const DISCLOSURE_MAX_SETTLE_MS = 3600;
-const MOUNTED_STABLE_SAMPLES = 3;
-const MOUNTED_SAMPLE_INTERVAL_MS = 120;
-const MOUNTED_MAX_SETTLE_MS = 1200;
-
+/**
+ * Page-side crawler primitives shared by the automatic crawler and the manual
+ * diagnostic. This module deliberately contains only browser-page authority:
+ * retaining mounted turns, expanding one disclosure, sampling one disclosure,
+ * and scroll/diagnostic primitives. Traversal policy lives in crawler-core.mjs.
+ */
 export async function installCrawler(page) {
   await page.evaluate(() => {
+    if (window.__archiveCrawler) return;
+
     const state = {
       turns: Object.create(null),
       timelineMarkers: Object.create(null),
@@ -16,58 +17,75 @@ export async function installCrawler(page) {
       successfulExpansions: 0,
       lastExpansion: 'No disclosure expansion yet',
       lastExpansionTurn: '',
-      oldestVerification: { converged: null, quietChecks: 0, checks: 0, requiredQuietChecks: 12, maxChecks: 180 }
+      oldestVerification: {
+        converged: null,
+        quietChecks: 0,
+        checks: 0,
+        requiredQuietChecks: 12,
+        maxChecks: 180
+      }
     };
 
     const turnSelector = 'section[data-testid^="conversation-turn-"]';
     const turns = () => [...document.querySelectorAll(turnSelector)];
-    const turnId = el => el.closest(turnSelector)?.getAttribute('data-testid') || 'unknown-turn';
-    const label = el => [el.getAttribute('aria-label'), el.textContent, el.getAttribute('title')]
-      .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    const turnId = element => element.closest(turnSelector)?.getAttribute('data-testid') || 'unknown-turn';
+    const label = element => [
+      element.getAttribute('aria-label'),
+      element.textContent,
+      element.getAttribute('title')
+    ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
     const turnNumber = id => Number(/conversation-turn-(\d+)/.exec(id || '')?.[1] ?? Number.MAX_SAFE_INTEGER);
 
-    function isDisclosure(el) {
-      if (!(el instanceof HTMLElement) || el.getAttribute('aria-expanded') !== 'false') return false;
-      if (el.matches('[aria-haspopup],[role="menuitem"]')) return false;
-      if (el.getAttribute('aria-controls')) return true;
-      return /^(worked for|thought(?: for)?|thinking(?: for)?|reasoning(?: for)?)\b/i.test(label(el));
+    function isDisclosure(element) {
+      if (!(element instanceof HTMLElement) || element.getAttribute('aria-expanded') !== 'false') return false;
+      if (element.matches('[aria-haspopup],[role="menuitem"]')) return false;
+      if (element.getAttribute('aria-controls')) return true;
+      return /^(worked for|thought(?: for)?|thinking(?: for)?|reasoning(?: for)?)\b/i.test(label(element));
     }
 
-    const keyFor = el => [turnId(el), el.getAttribute('aria-controls') || '', label(el).slice(0, 240)].join('|');
+    const keyFor = element => [
+      turnId(element),
+      element.getAttribute('aria-controls') || '',
+      label(element).slice(0, 240)
+    ].join('|');
 
     function scrollRoot() {
-      let el = document.querySelector('#thread') || document.querySelector('main#main') || document.querySelector('main');
-      while (el && el !== document.documentElement) {
-        const style = getComputedStyle(el);
-        if (/(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 32) return el;
-        el = el.parentElement;
+      let element = document.querySelector('#thread') || document.querySelector('main#main') || document.querySelector('main');
+      while (element && element !== document.documentElement) {
+        const style = getComputedStyle(element);
+        if (/(auto|scroll)/.test(style.overflowY) && element.scrollHeight > element.clientHeight + 32) return element;
+        element = element.parentElement;
       }
       return document.scrollingElement || document.documentElement;
     }
 
     function metrics() {
       const root = scrollRoot();
-      const doc = root === document.scrollingElement || root === document.documentElement || root === document.body;
+      const documentScroll = root === document.scrollingElement || root === document.documentElement || root === document.body;
       return {
-        top: doc ? scrollY : root.scrollTop,
+        top: documentScroll ? scrollY : root.scrollTop,
         height: root.scrollHeight,
-        client: doc ? innerHeight : root.clientHeight
+        client: documentScroll ? innerHeight : root.clientHeight
       };
     }
 
     function setTop(top) {
       const root = scrollRoot();
-      const doc = root === document.scrollingElement || root === document.documentElement || root === document.body;
-      if (doc) scrollTo(0, top); else root.scrollTop = top;
+      const documentScroll = root === document.scrollingElement || root === document.documentElement || root === document.body;
+      if (documentScroll) scrollTo(0, top);
+      else root.scrollTop = top;
     }
 
     function retainedIds() {
-      return Object.keys(state.turns).sort((a, b) => turnNumber(a) - turnNumber(b) || a.localeCompare(b));
+      return Object.keys(state.turns)
+        .sort((left, right) => turnNumber(left) - turnNumber(right) || left.localeCompare(right));
     }
 
     function mountedIds() {
-      return turns().map(section => section.getAttribute('data-testid')).filter(Boolean)
-        .sort((a, b) => turnNumber(a) - turnNumber(b) || a.localeCompare(b));
+      return turns()
+        .map(section => section.getAttribute('data-testid'))
+        .filter(Boolean)
+        .sort((left, right) => turnNumber(left) - turnNumber(right) || left.localeCompare(right));
     }
 
     function coherentExpansionStatus(mounted) {
@@ -102,11 +120,14 @@ export async function installCrawler(page) {
         if (!paragraph || paragraph.closest(turnSelector)) continue;
         const text = (paragraph.textContent || '').replace(/\s+/g, ' ').trim();
         if (!/^Branched from\b/i.test(text)) continue;
+
         let href = '';
         if (anchor?.href) {
-          try { href = new URL(anchor.href, location.href).href; } catch { href = anchor.href; }
+          try { href = new URL(anchor.href, location.href).href; }
+          catch { href = anchor.href; }
         }
-        const title = (anchor?.textContent || text.replace(/^Branched from\s*/i, '')).replace(/\s+/g, ' ').trim();
+        const title = (anchor?.textContent || text.replace(/^Branched from\s*/i, ''))
+          .replace(/\s+/g, ' ').trim();
         candidates.push({
           element: paragraph,
           kind: 'branch',
@@ -117,9 +138,9 @@ export async function installCrawler(page) {
         });
       }
 
-      candidates.sort((a, b) => {
-        if (a.element === b.element) return 0;
-        return a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+      candidates.sort((left, right) => {
+        if (left.element === right.element) return 0;
+        return left.element.compareDocumentPosition(right.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
       });
 
       const orderByTurn = Object.create(null);
@@ -127,6 +148,7 @@ export async function installCrawler(page) {
         const nextTurn = nextTurnAfter(candidate.element, mountedTurns);
         const beforeTurn = nextTurn?.getAttribute('data-testid');
         if (!beforeTurn) continue;
+
         const order = orderByTurn[beforeTurn] || 0;
         orderByTurn[beforeTurn] = order + 1;
         const key = [beforeTurn, candidate.kind, candidate.text, candidate.href].join('|');
@@ -155,78 +177,101 @@ export async function installCrawler(page) {
 
     function isRicher(candidate, previous) {
       if (!previous) return true;
-      const a = richnessVector(candidate);
-      const b = richnessVector(previous);
-      for (let i = 0; i < a.length; i++) {
-        if (a[i] !== b[i]) return a[i] > b[i];
+      const candidateVector = richnessVector(candidate);
+      const previousVector = richnessVector(previous);
+      for (let index = 0; index < candidateVector.length; index++) {
+        if (candidateVector[index] !== previousVector[index]) {
+          return candidateVector[index] > previousVector[index];
+        }
       }
       return false;
     }
 
+    function captureSection(section) {
+      const id = section?.getAttribute?.('data-testid');
+      if (!id) return false;
+
+      // Native details are safe to open directly. Do so before cloning so a
+      // retained turn never loses content merely because <details> was closed.
+      for (const details of section.querySelectorAll('details')) details.open = true;
+      const clone = section.cloneNode(true);
+
+      const originalImages = [...section.querySelectorAll('img')];
+      [...clone.querySelectorAll('img')].forEach((image, index) => {
+        const original = originalImages[index];
+        const source = original?.currentSrc || original?.src || image.src;
+        if (source) {
+          try { image.src = new URL(source, location.href).href; }
+          catch {}
+        }
+        image.removeAttribute('srcset');
+        image.loading = 'eager';
+
+        if (!original) return;
+        const rect = original.getBoundingClientRect();
+        const naturalWidth = Number(original.naturalWidth || 0);
+        const naturalHeight = Number(original.naturalHeight || 0);
+        const displayWidth = Math.round(rect.width || 0) || Number(original.getAttribute('width') || 0) || naturalWidth;
+        const displayHeight = Math.round(rect.height || 0) || Number(original.getAttribute('height') || 0) || naturalHeight;
+        if (displayWidth > 0) image.setAttribute('width', String(displayWidth));
+        if (displayHeight > 0) image.setAttribute('height', String(displayHeight));
+        if (naturalWidth > 0) image.setAttribute('data-natural-width', String(naturalWidth));
+        if (naturalHeight > 0) image.setAttribute('data-natural-height', String(naturalHeight));
+      });
+
+      const originalLinks = [...section.querySelectorAll('a[href]')];
+      [...clone.querySelectorAll('a[href]')].forEach((anchor, index) => {
+        const href = originalLinks[index]?.href || anchor.href;
+        if (!href) return;
+        try { anchor.href = new URL(href, location.href).href; }
+        catch {}
+      });
+
+      const remaining = [...section.querySelectorAll('[aria-expanded="false"]')].filter(isDisclosure).length
+        + section.querySelectorAll('details:not([open])').length;
+      const preCount = section.querySelectorAll('pre').length;
+      const codeCount = section.querySelectorAll('code').length;
+      const textLength = (section.innerText || section.textContent || '').length;
+      const html = clone.outerHTML;
+      const candidate = {
+        remaining,
+        preCount,
+        codeCount,
+        textLength,
+        htmlLength: html.length,
+        html
+      };
+      const previous = state.turns[id];
+      if (!isRicher(candidate, previous)) return false;
+
+      const message = section.querySelector('[data-message-id]');
+      const timestamp = Object.values(state.timelineMarkers)
+        .filter(marker => marker.beforeTurn === id && marker.kind === 'timestamp')
+        .sort((left, right) => left.order - right.order)[0];
+      state.turns[id] = {
+        id,
+        messageId: message?.getAttribute('data-message-id') || previous?.messageId || '',
+        role: section.querySelector('[data-message-author-role]')?.getAttribute('data-message-author-role') || '',
+        timestampLabel: timestamp?.text || previous?.timestampLabel || '',
+        remaining,
+        preCount,
+        codeCount,
+        textLength,
+        htmlLength: html.length,
+        html
+      };
+      return true;
+    }
+
+    function captureTurn(targetTurnId) {
+      const section = turns().find(turn => turn.getAttribute('data-testid') === targetTurnId);
+      if (section) captureSection(section);
+      return activity();
+    }
+
     function capture() {
       captureTimelineMarkers();
-      for (const section of turns()) {
-        const id = section.getAttribute('data-testid');
-        if (!id) continue;
-
-        for (const d of section.querySelectorAll('details')) d.open = true;
-        const clone = section.cloneNode(true);
-
-        const originalImages = [...section.querySelectorAll('img')];
-        [...clone.querySelectorAll('img')].forEach((img, i) => {
-          const original = originalImages[i];
-          const src = original?.currentSrc || original?.src || img.src;
-          if (src) try { img.src = new URL(src, location.href).href; } catch {}
-          img.removeAttribute('srcset');
-          img.loading = 'eager';
-
-          if (original) {
-            const rect = original.getBoundingClientRect();
-            const naturalWidth = Number(original.naturalWidth || 0);
-            const naturalHeight = Number(original.naturalHeight || 0);
-            const displayWidth = Math.round(rect.width || 0) || Number(original.getAttribute('width') || 0) || naturalWidth;
-            const displayHeight = Math.round(rect.height || 0) || Number(original.getAttribute('height') || 0) || naturalHeight;
-            if (displayWidth > 0) img.setAttribute('width', String(displayWidth));
-            if (displayHeight > 0) img.setAttribute('height', String(displayHeight));
-            if (naturalWidth > 0) img.setAttribute('data-natural-width', String(naturalWidth));
-            if (naturalHeight > 0) img.setAttribute('data-natural-height', String(naturalHeight));
-          }
-        });
-
-        const originalLinks = [...section.querySelectorAll('a[href]')];
-        [...clone.querySelectorAll('a[href]')].forEach((a, i) => {
-          const href = originalLinks[i]?.href || a.href;
-          if (href) try { a.href = new URL(href, location.href).href; } catch {}
-        });
-
-        const remaining = [...section.querySelectorAll('[aria-expanded="false"]')].filter(isDisclosure).length
-          + section.querySelectorAll('details:not([open])').length;
-        const preCount = section.querySelectorAll('pre').length;
-        const codeCount = section.querySelectorAll('code').length;
-        const textLength = (section.innerText || section.textContent || '').length;
-        const html = clone.outerHTML;
-        const candidate = { remaining, preCount, codeCount, textLength, htmlLength: html.length, html };
-        const previous = state.turns[id];
-
-        if (isRicher(candidate, previous)) {
-          const message = section.querySelector('[data-message-id]');
-          const timestamp = Object.values(state.timelineMarkers)
-            .filter(marker => marker.beforeTurn === id && marker.kind === 'timestamp')
-            .sort((a, b) => a.order - b.order)[0];
-          state.turns[id] = {
-            id,
-            messageId: message?.getAttribute('data-message-id') || previous?.messageId || '',
-            role: section.querySelector('[data-message-author-role]')?.getAttribute('data-message-author-role') || '',
-            timestampLabel: timestamp?.text || previous?.timestampLabel || '',
-            remaining,
-            preCount,
-            codeCount,
-            textLength,
-            htmlLength: html.length,
-            html
-          };
-        }
-      }
+      for (const section of turns()) captureSection(section);
       return activity();
     }
 
@@ -246,37 +291,53 @@ export async function installCrawler(page) {
       };
     }
 
-    function expandOne() {
-      for (const section of turns()) {
+    function expandOne(targetTurnId = '') {
+      const candidateTurns = targetTurnId
+        ? turns().filter(section => section.getAttribute('data-testid') === targetTurnId)
+        : turns();
+
+      for (const section of candidateTurns) {
         const details = section.querySelector('details:not([open])');
-        if (details) {
-          details.open = true;
-          state.successfulExpansions++;
-          state.lastExpansionTurn = turnId(details);
-          state.lastExpansion = `${state.lastExpansionTurn} — opened native <details>`;
-          return { kind: 'details', description: state.lastExpansion, turnId: state.lastExpansionTurn };
-        }
+        if (!details) continue;
+        details.open = true;
+        state.successfulExpansions++;
+        state.lastExpansionTurn = turnId(details);
+        state.lastExpansion = `${state.lastExpansionTurn} — opened native <details>`;
+        return {
+          kind: 'details',
+          description: state.lastExpansion,
+          turnId: state.lastExpansionTurn
+        };
       }
 
-      for (const section of turns()) {
-        for (const el of section.querySelectorAll('[aria-expanded="false"]')) {
-          if (!isDisclosure(el)) continue;
-          const key = keyFor(el);
+      for (const section of candidateTurns) {
+        for (const element of section.querySelectorAll('[aria-expanded="false"]')) {
+          if (!isDisclosure(element)) continue;
+          const key = keyFor(element);
           const attempts = state.attempts[key] || 0;
           if (attempts >= 3) continue;
+
           state.attempts[key] = attempts + 1;
-          const shortLabel = label(el).slice(0, 180) || el.getAttribute('aria-controls') || 'unlabelled disclosure';
-          state.lastExpansionTurn = turnId(el);
+          const shortLabel = label(element).slice(0, 180)
+            || element.getAttribute('aria-controls')
+            || 'unlabelled disclosure';
+          state.lastExpansionTurn = turnId(element);
           state.lastExpansion = `${state.lastExpansionTurn} — ${shortLabel}`;
-          const controls = el.getAttribute('aria-controls') || '';
+          const controls = element.getAttribute('aria-controls') || '';
           try {
-            el.scrollIntoView({ block: 'center', inline: 'nearest' });
-            el.click();
+            element.scrollIntoView({ block: 'center', inline: 'nearest' });
+            element.click();
             state.clickCount++;
           } catch (error) {
             state.failures[key] = `${shortLabel}: ${error?.message || 'click failed'}`;
           }
-          return { kind: 'click', key, controls, turnId: state.lastExpansionTurn, description: state.lastExpansion };
+          return {
+            kind: 'click',
+            key,
+            controls,
+            turnId: state.lastExpansionTurn,
+            description: state.lastExpansion
+          };
         }
       }
       return null;
@@ -284,15 +345,24 @@ export async function installCrawler(page) {
 
     function findDisclosureByKey(key) {
       for (const section of turns()) {
-        for (const el of section.querySelectorAll('[aria-expanded]')) {
-          if (keyFor(el) === key) return el;
+        for (const element of section.querySelectorAll('[aria-expanded]')) {
+          if (keyFor(element) === key) return element;
         }
       }
       return null;
     }
 
     function sampleNode(node) {
-      if (!node) return { textLength: 0, htmlLength: 0, preCount: 0, codeCount: 0, mediaCount: 0, childCount: 0 };
+      if (!node) {
+        return {
+          textLength: 0,
+          htmlLength: 0,
+          preCount: 0,
+          codeCount: 0,
+          mediaCount: 0,
+          childCount: 0
+        };
+      }
       return {
         textLength: (node.innerText || node.textContent || '').length,
         htmlLength: (node.outerHTML || '').length,
@@ -304,48 +374,56 @@ export async function installCrawler(page) {
     }
 
     function disclosureSample(key) {
-      const el = findDisclosureByKey(key);
-      if (!el) return { present: false, expanded: false, targetExists: false, signature: 'missing' };
-      const controls = el.getAttribute('aria-controls') || '';
-      const turn = el.closest(turnSelector);
+      const element = findDisclosureByKey(key);
+      if (!element) {
+        return {
+          present: false,
+          expanded: false,
+          targetExists: false,
+          turnId: '',
+          signature: 'missing'
+        };
+      }
+
+      const controls = element.getAttribute('aria-controls') || '';
+      const turn = element.closest(turnSelector);
       const target = controls ? document.getElementById(controls) : turn;
       const targetMetrics = sampleNode(target || turn);
       const turnMetrics = sampleNode(turn);
       return {
         present: true,
-        expanded: el.getAttribute('aria-expanded') !== 'false',
+        expanded: element.getAttribute('aria-expanded') !== 'false',
         targetExists: !controls || Boolean(target),
         controls,
+        turnId: turn?.getAttribute('data-testid') || '',
         signature: [
-          targetMetrics.textLength, targetMetrics.htmlLength, targetMetrics.preCount, targetMetrics.codeCount, targetMetrics.mediaCount, targetMetrics.childCount,
-          turnMetrics.textLength, turnMetrics.htmlLength, turnMetrics.preCount, turnMetrics.codeCount, turnMetrics.mediaCount, turnMetrics.childCount
+          targetMetrics.textLength,
+          targetMetrics.htmlLength,
+          targetMetrics.preCount,
+          targetMetrics.codeCount,
+          targetMetrics.mediaCount,
+          targetMetrics.childCount,
+          turnMetrics.textLength,
+          turnMetrics.htmlLength,
+          turnMetrics.preCount,
+          turnMetrics.codeCount,
+          turnMetrics.mediaCount,
+          turnMetrics.childCount
         ].join('|')
       };
-    }
-
-    function mountedSample() {
-      const parts = [];
-      for (const section of turns()) {
-        const id = section.getAttribute('data-testid') || '';
-        const metrics = sampleNode(section);
-        const collapsed = [...section.querySelectorAll('[aria-expanded="false"]')].filter(isDisclosure).length
-          + section.querySelectorAll('details:not([open])').length;
-        parts.push([id, metrics.textLength, metrics.htmlLength, metrics.preCount, metrics.codeCount, metrics.mediaCount, metrics.childCount, collapsed].join(':'));
-      }
-      return parts.join('|');
     }
 
     function confirm(key) {
       if (!key) return;
       const collapsed = turns().some(section =>
         [...section.querySelectorAll('[aria-expanded="false"]')]
-          .some(el => isDisclosure(el) && keyFor(el) === key)
+          .some(element => isDisclosure(element) && keyFor(element) === key)
       );
+
       if (!collapsed) {
         state.successfulExpansions++;
-        // Attempts are a retry budget for one activation, not a lifetime cap
-        // for the same logical disclosure across virtualizer remounts. Once an
-        // activation succeeds, a later collapsed remount must be actionable.
+        // Retry state is scoped to one activation attempt. A disclosure that
+        // later remounts collapsed must be eligible again after a prior success.
         delete state.attempts[key];
         delete state.failures[key];
       } else if ((state.attempts[key] || 0) >= 3) {
@@ -362,8 +440,8 @@ export async function installCrawler(page) {
         expanded: state.successfulExpansions,
         clicks: state.clickCount,
         failures: Object.keys(state.failures).length,
-        preBlocks: values.reduce((n, turn) => n + (turn.preCount || 0), 0),
-        codeBlocks: values.reduce((n, turn) => n + (turn.codeCount || 0), 0),
+        preBlocks: values.reduce((total, turn) => total + (turn.preCount || 0), 0),
+        codeBlocks: values.reduce((total, turn) => total + (turn.codeCount || 0), 0),
         timelineMarkers: Object.keys(state.timelineMarkers).length,
         oldestRetained: retained[0] || 'none',
         newestRetained: retained[retained.length - 1] || 'none',
@@ -381,328 +459,18 @@ export async function installCrawler(page) {
     }
 
     window.__archiveCrawler = {
-      state, capture, activity, expandOne, confirm, disclosureSample, mountedSample,
-      metrics, setTop, stats, markOldestVerification
+      state,
+      capture,
+      captureTurn,
+      activity,
+      expandOne,
+      confirm,
+      disclosureSample,
+      metrics,
+      setTop,
+      stats,
+      markOldestVerification
     };
     capture();
-  });
-}
-
-async function report(page, onProgress, extra = {}) {
-  const stats = await page.evaluate(() => window.__archiveCrawler.stats());
-  const metrics = await page.evaluate(() => window.__archiveCrawler.metrics());
-  await onProgress?.({
-    ...stats,
-    scrollTop: metrics.top,
-    scrollHeight: metrics.height,
-    scrollClient: metrics.client,
-    ...extra
-  });
-  return { stats, metrics };
-}
-
-async function waitForDisclosureHydration(page, result, shouldCancel) {
-  if (!result?.key) return;
-  const deadline = Date.now() + DISCLOSURE_MAX_SETTLE_MS;
-  let previous = '';
-  let stable = 0;
-
-  while (Date.now() < deadline) {
-    if (shouldCancel?.()) throw new Error('Archive cancelled.');
-    const sample = await page.evaluate(key => window.__archiveCrawler.disclosureSample(key), result.key);
-    if (sample.expanded && sample.targetExists) {
-      stable = sample.signature === previous ? stable + 1 : 1;
-      previous = sample.signature;
-      if (stable >= DISCLOSURE_STABLE_SAMPLES) return;
-    } else {
-      stable = 0;
-      previous = '';
-    }
-    await page.waitForTimeout(DISCLOSURE_SAMPLE_INTERVAL_MS);
-  }
-}
-
-async function stabilizeMounted(page, shouldCancel, maxMs = MOUNTED_MAX_SETTLE_MS) {
-  const deadline = Date.now() + maxMs;
-  let previous = '';
-  let stable = 0;
-
-  while (Date.now() < deadline) {
-    if (shouldCancel?.()) throw new Error('Archive cancelled.');
-    const signature = await page.evaluate(() => window.__archiveCrawler.mountedSample());
-    stable = signature === previous ? stable + 1 : 1;
-    previous = signature;
-    if (stable >= MOUNTED_STABLE_SAMPLES) return;
-    await page.waitForTimeout(MOUNTED_SAMPLE_INTERVAL_MS);
-  }
-}
-
-async function expandMounted(page, max, onProgress, shouldCancel) {
-  let expandedSinceFullReport = 0;
-  for (let i = 0; i < max; i++) {
-    if (shouldCancel?.()) throw new Error('Archive cancelled.');
-    const result = await page.evaluate(() => window.__archiveCrawler.expandOne());
-    if (!result) break;
-
-    if (result.kind === 'details') {
-      await page.waitForTimeout(80);
-    } else {
-      await waitForDisclosureHydration(page, result, shouldCancel);
-      await page.evaluate(key => window.__archiveCrawler.confirm(key), result.key);
-    }
-
-    const activity = await page.evaluate(() => window.__archiveCrawler.capture());
-    expandedSinceFullReport++;
-
-    await onProgress?.({
-      ...activity,
-      expandingStatus: activity.expandingStatus || 'No disclosure expansion active in current mounted range'
-    });
-    if (expandedSinceFullReport >= 8) {
-      await report(page, onProgress);
-      expandedSinceFullReport = 0;
-    }
-  }
-
-  await stabilizeMounted(page, shouldCancel);
-  await page.evaluate(() => window.__archiveCrawler.capture());
-  if (expandedSinceFullReport) await report(page, onProgress);
-}
-
-async function scan(page, direction, pass, onProgress, shouldCancel, maxSteps = 2000) {
-  const requiredStableChecks = 6;
-  const first = await page.evaluate(() => window.__archiveCrawler.metrics());
-  await page.evaluate(
-    top => window.__archiveCrawler.setTop(top),
-    direction === 'down' ? 0 : Math.max(0, first.height - first.client)
-  );
-  await page.waitForTimeout(350);
-
-  let stable = 0;
-  let previous = '';
-
-  for (let step = 0; step < maxSteps; step++) {
-    if (shouldCancel?.()) throw new Error('Archive cancelled.');
-    await expandMounted(page, 180, onProgress, shouldCancel);
-    await page.evaluate(() => window.__archiveCrawler.capture());
-
-    const metrics = await page.evaluate(() => window.__archiveCrawler.metrics());
-    const maxTop = Math.max(0, metrics.height - metrics.client);
-    const atEnd = direction === 'down' ? metrics.top >= maxTop - 4 : metrics.top <= 4;
-    const stats = await page.evaluate(() => window.__archiveCrawler.stats());
-    const signature = [
-      Math.round(metrics.top),
-      Math.round(metrics.height),
-      stats.turns,
-      stats.oldestRetained,
-      stats.newestRetained,
-      stats.mountedFirst,
-      stats.mountedLast,
-      stats.clicks,
-      stats.expanded,
-      stats.failures,
-      stats.preBlocks,
-      stats.codeBlocks,
-      stats.timelineMarkers
-    ].join('|');
-
-    if (atEnd && signature === previous) stable++;
-    else if (atEnd) stable = 1;
-    else stable = 0;
-
-    const positionPercent = maxTop <= 0 ? 100 : Math.max(0, Math.min(100, (metrics.top / maxTop) * 100));
-    const arrow = direction === 'up' ? '↑' : '↓';
-    const edgeStatus = atEnd ? ` · edge stable ${Math.min(stable, requiredStableChecks)}/${requiredStableChecks}` : '';
-
-    await onProgress?.({
-      ...stats,
-      phase: 'Scanning conversation',
-      detail: 'Capturing mounted turns, timeline markers, disclosures, and asynchronously hydrated tool content as they appear.',
-      scanningStatus: `Pass ${pass}/3 ${arrow} · step ${step + 1}/${maxSteps} · ${positionPercent.toFixed(1)}% mounted range · mounted first ${stats.mountedFirst}${edgeStatus}`,
-      scanComplete: false,
-      pass,
-      direction,
-      step: step + 1,
-      scrollTop: metrics.top,
-      scrollHeight: metrics.height,
-      scrollClient: metrics.client
-    });
-
-    if (atEnd && stable >= requiredStableChecks) break;
-    previous = signature;
-
-    const fraction = direction === 'up' ? 0.42 : 0.62;
-    const minimumStep = direction === 'up' ? 280 : 320;
-    const stepSize = Math.max(minimumStep, Math.floor(metrics.client * fraction));
-    const next = direction === 'down'
-      ? Math.min(maxTop, metrics.top + stepSize)
-      : Math.max(0, metrics.top - stepSize);
-    await page.evaluate(top => window.__archiveCrawler.setTop(top), next);
-    await page.waitForTimeout(direction === 'up' ? 260 : 200);
-  }
-}
-
-async function verifyOldestMessages(page, onProgress, shouldCancel) {
-  const requiredQuietChecks = 12;
-  const maxChecks = 180;
-  let quietChecks = 0;
-  let previousSignature = '';
-  let checks = 0;
-
-  await onProgress?.({
-    phase: 'Verifying oldest messages',
-    detail: 'Live-preview rebuilding is paused while the oldest edge is probed for asynchronously prepended turns.',
-    scanningStatus: `Oldest-edge probe · check 0/${maxChecks} · stable 0/${requiredQuietChecks}`,
-    scanComplete: false,
-    pass: 2,
-    direction: 'up',
-    step: 0,
-    previewPaused: true,
-    oldestConverged: null,
-    oldestQuietChecks: 0,
-    oldestChecks: 0
-  });
-
-  for (let check = 0; check < maxChecks; check++) {
-    if (shouldCancel?.()) throw new Error('Archive cancelled.');
-    checks = check + 1;
-
-    await page.evaluate(() => window.__archiveCrawler.setTop(0));
-    await page.waitForTimeout(700);
-    await expandMounted(page, 220, onProgress, shouldCancel);
-    await page.evaluate(() => window.__archiveCrawler.capture());
-
-    const stats = await page.evaluate(() => window.__archiveCrawler.stats());
-    const metrics = await page.evaluate(() => window.__archiveCrawler.metrics());
-    const atTop = metrics.top <= 4;
-    const signature = [
-      atTop ? 0 : Math.round(metrics.top),
-      Math.round(metrics.height),
-      stats.turns,
-      stats.oldestRetained,
-      stats.newestRetained,
-      stats.mountedFirst,
-      stats.mountedLast,
-      stats.preBlocks,
-      stats.codeBlocks,
-      stats.clicks,
-      stats.expanded,
-      stats.failures,
-      stats.timelineMarkers
-    ].join('|');
-
-    if (atTop && signature === previousSignature) quietChecks++;
-    else quietChecks = 0;
-    previousSignature = signature;
-
-    await onProgress?.({
-      ...stats,
-      phase: 'Verifying oldest messages',
-      scanningStatus: `Oldest-edge probe · check ${checks}/${maxChecks} · stable ${quietChecks}/${requiredQuietChecks} · ${atTop ? 'at top' : `offset ${Math.round(metrics.top)}px`} · mounted first ${stats.mountedFirst}`,
-      oldestRetained: stats.oldestRetained,
-      scanComplete: false,
-      pass: 2,
-      direction: 'up',
-      step: checks,
-      scrollTop: metrics.top,
-      scrollHeight: metrics.height,
-      scrollClient: metrics.client,
-      previewPaused: true,
-      oldestConverged: false,
-      oldestQuietChecks: quietChecks,
-      oldestChecks: checks
-    });
-
-    if (quietChecks >= requiredQuietChecks) break;
-
-    if (!atTop) {
-      await page.waitForTimeout(260);
-      await page.evaluate(() => window.__archiveCrawler.setTop(0));
-    } else if (quietChecks >= 2) {
-      const maxTop = Math.max(0, metrics.height - metrics.client);
-      const nudge = Math.min(maxTop, Math.max(220, Math.floor(metrics.client * 0.38)));
-      if (nudge > 0) {
-        await page.evaluate(top => window.__archiveCrawler.setTop(top), nudge);
-        await page.waitForTimeout(260);
-        await page.evaluate(() => window.__archiveCrawler.setTop(0));
-      }
-    }
-    await page.waitForTimeout(420);
-  }
-
-  const converged = quietChecks >= requiredQuietChecks;
-  const result = { converged, quietChecks, checks, requiredQuietChecks, maxChecks };
-  await page.evaluate(value => window.__archiveCrawler.markOldestVerification(value), result);
-
-  await report(page, onProgress, {
-    phase: converged ? 'Oldest-message verification complete' : 'Oldest-message verification safety limit reached',
-    detail: converged
-      ? 'The oldest edge converged; preparing the final downward traversal.'
-      : `The oldest edge did not reach ${requiredQuietChecks}/${requiredQuietChecks} quiet checks before the ${maxChecks}-check safety limit; continuing with the final downward traversal and recording a warning in the archive.`,
-    scanningStatus: converged
-      ? `Oldest-edge probe complete · stable ${quietChecks}/${requiredQuietChecks} after ${checks} checks`
-      : `Oldest-edge probe safety limit · stable ${quietChecks}/${requiredQuietChecks} after ${checks}/${maxChecks} checks`,
-    pass: 2,
-    direction: 'up',
-    previewPaused: false,
-    oldestConverged: converged,
-    oldestQuietChecks: quietChecks,
-    oldestChecks: checks
-  });
-  return result;
-}
-
-export async function crawlConversation(page, { onProgress, shouldCancel } = {}) {
-  await installCrawler(page);
-  await report(page, onProgress, {
-    phase: 'Preparing crawler',
-    detail: 'Installed page-side capture helpers; preparing the first traversal.',
-    scanningStatus: 'Not started',
-    scanComplete: false,
-    pass: 0,
-    direction: '',
-    step: 0,
-    previewPaused: false
-  });
-
-  await scan(page, 'down', 1, onProgress, shouldCancel);
-  await scan(page, 'up', 2, onProgress, shouldCancel);
-  const oldest = await verifyOldestMessages(page, onProgress, shouldCancel);
-  await scan(page, 'down', 3, onProgress, shouldCancel);
-
-  const traversalSummary = oldest.converged
-    ? 'Complete — 3 passes + oldest-edge convergence'
-    : `Complete — 3 passes; oldest-edge safety limit (${oldest.quietChecks}/${oldest.requiredQuietChecks} stable)`;
-
-  await onProgress?.({
-    phase: 'Final expansion sweep',
-    detail: oldest.converged
-      ? 'Traversal is complete; opening and stabilizing any disclosures still mounted before the final snapshot.'
-      : 'Traversal is complete but the oldest edge hit its safety limit; opening and stabilizing remaining mounted disclosures before the final snapshot.',
-    scanningStatus: traversalSummary,
-    scanComplete: true,
-    pass: 0,
-    direction: '',
-    step: 0,
-    previewPaused: false,
-    oldestConverged: oldest.converged,
-    oldestQuietChecks: oldest.quietChecks,
-    oldestChecks: oldest.checks
-  });
-  await expandMounted(page, 500, onProgress, shouldCancel);
-  await stabilizeMounted(page, shouldCancel, 1800);
-  await page.evaluate(() => window.__archiveCrawler.capture());
-  await report(page, onProgress, {
-    phase: 'Final expansion sweep',
-    detail: 'Expansion and hydration sweep complete; preparing the final static page.',
-    scanningStatus: traversalSummary,
-    scanComplete: true,
-    pass: 0,
-    direction: '',
-    step: 0,
-    previewPaused: false,
-    oldestConverged: oldest.converged,
-    oldestQuietChecks: oldest.quietChecks,
-    oldestChecks: oldest.checks
   });
 }

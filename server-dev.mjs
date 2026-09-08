@@ -2,7 +2,7 @@ import { chromium } from 'playwright';
 import { installChromiumBackgroundProtection } from './src/chromium-background-protection.mjs';
 
 // Development-only diagnostics are deliberately enabled here instead of in
-// server.mjs so the clean beta7 server can later drop them without surgery.
+// server.mjs so a later clean release can drop them without crawler surgery.
 process.env.CHATGPT_CRAWLER_MANUAL_INSPECTION ??= '1';
 
 // Keep headed authenticated Chromium active when the user minimizes or covers

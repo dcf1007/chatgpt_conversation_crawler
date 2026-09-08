@@ -1,8 +1,8 @@
 import {
   installCrawler,
-  crawlConversation as crawlBeta7Conversation,
-  __testing as beta7Testing
-} from './crawler-beta7-core.mjs';
+  crawlConversation as crawlAutomaticConversation,
+  __testing as crawlerTesting
+} from './crawler-core.mjs';
 
 const MANUAL_INSPECTION_ENV = 'CHATGPT_CRAWLER_MANUAL_INSPECTION';
 
@@ -33,15 +33,13 @@ async function retainPartialManualState(page) {
 }
 
 /**
- * Run the beta7 fixed-point crawler first. In the development build, an
- * authenticated headed browser then pauses for a human inspection pass.
- *
- * Keeping manual inspection outside the beta7 core is deliberate: the core
- * remains the automatic algorithm we are evaluating, while the manual pass
- * gives us an independent before/after diagnostic.
+ * Run the automatic beta8 crawler first. Development builds then run the
+ * independent two-step human comparison in the same authenticated Chromium
+ * session. The manual pass remains outside the automatic core on purpose: it is
+ * a benchmark for the automatic result, not part of capture authority.
  */
 export async function crawlConversation(page, options = {}) {
-  await crawlBeta7Conversation(page, options);
+  await crawlAutomaticConversation(page, options);
 
   if (process.env[MANUAL_INSPECTION_ENV] !== '1') return;
 
@@ -51,21 +49,18 @@ export async function crawlConversation(page, options = {}) {
       onProgress: options.onProgress,
       shouldCancel: options.shouldCancel,
       convergeMounted: async () => {
-        // After the user finishes, let beta7 expand anything newly revealed by
-        // the manual clicks and require its normal fixed-point convergence.
-        await beta7Testing.expandMounted(page, 500, options.onProgress, options.shouldCancel);
-        await beta7Testing.stabilizeMounted(page, options.shouldCancel, 2400);
+        // Human interaction can mount a fresh nested generation. Reuse beta8's
+        // turn-scoped convergence, then retain the resulting live DOM.
+        await crawlerTesting.expandMounted(page, 500, options.onProgress, options.shouldCancel);
         await page.evaluate(() => window.__archiveCrawler.capture());
       }
     });
   } catch (error) {
     if (isCancellation(error, options.shouldCancel)) throw error;
 
-    // The automatic beta7 crawl already completed before manual inspection.
-    // A diagnostic-only failure must not discard that capture or any richer
-    // DOM the user already revealed. Freeze the retained state and let the
-    // normal server build a downloadable archive from everything captured up
-    // to the failure point.
+    // Manual diagnostics are observational. A diagnostic-only failure must not
+    // discard the completed automatic capture or richer content exposed before
+    // the failure.
     const message = String(error?.message || 'Manual inspection failed.');
     const stats = await retainPartialManualState(page);
     await options.onProgress?.({
@@ -81,7 +76,4 @@ export async function crawlConversation(page, options = {}) {
   }
 }
 
-// Preserve the existing beta7 test surface. Manual-inspection pure helpers are
-// tested separately so this module can still be imported without Playwright's
-// runtime dependencies being installed in the release syntax job.
-export const __testing = { ...beta7Testing };
+export const __testing = { ...crawlerTesting };
