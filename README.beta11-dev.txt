@@ -1,1 +1,1 @@
-Diagnostic build. Read BETA11_DEV.md before running. The clean release remains v1.6.7-beta11 on main.
+Development diagnostic package for v1.6.7-beta11. Not a clean release. See BETA11_DEV.md. Includes the session-state refresh fix for the Check session UI lifecycle.
