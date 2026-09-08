@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from './src/runtime-browser.mjs';
-import { crawlConversation } from './src/crawler.mjs';
+import { crawlConversation, CRAWLER_PROGRESS_LIMITS } from './src/crawler.mjs';
 import { buildSnapshot } from './src/snapshot.mjs';
 import {
   captureMountedAppBlocks,
@@ -18,6 +18,10 @@ import {
   restoreMainImages,
   finalizeMainImages
 } from './src/main-images.mjs';
+import {
+  installTransientContextRetention,
+  flushTransientContextRetention
+} from './src/transient-context-retention.mjs';
 import { createChatGptSessionManager } from './src/chatgpt-session.mjs';
 import { finalizeConversationFidelity } from './src/archive-fidelity.mjs';
 
@@ -95,15 +99,15 @@ function loadedContentPosition(job) {
 }
 
 function publicJob(job) {
-  const positionInLoadedContent = loadedContentPosition(job);
   return {
     id: job.id,
     sessionMode: job.sessionMode || 'anonymous',
     chatName: job.chatName || '',
     downloadFilename: job.downloadFilename || '',
     status: job.state === 'complete' ? 'done' : job.state,
-    phase: job.phase,
-    detail: job.detail,
+    stage: job.stage || 'queued',
+    phase: job.phase || '',
+    detail: job.detail || '',
     scanningStatus: job.scanningStatus || 'Not started',
     oldestRetained: job.oldestRetained || 'none',
     oldestConverged: job.oldestConverged ?? null,
@@ -113,9 +117,10 @@ function publicJob(job) {
     turns: job.turns || 0,
     seenMountedTurns: job.seenMountedTurns || 0,
     seenMountedUnretainedTurns: job.seenMountedUnretainedTurns || 0,
-    seenMountedUnretainedTurnIds: Array.isArray(job.seenMountedUnretainedTurnIds)
-      ? job.seenMountedUnretainedTurnIds
-      : [],
+    seenMountedUnretainedTurnIds: Array.isArray(job.seenMountedUnretainedTurnIds) ? job.seenMountedUnretainedTurnIds : [],
+    mountObserverImmediateCaptures: job.mountObserverImmediateCaptures || 0,
+    mountObserverSettledCaptures: job.mountObserverSettledCaptures || 0,
+    mountObserverHydrationEvents: job.mountObserverHydrationEvents || 0,
     retainedUnresolvedTurns: job.retainedUnresolvedTurns || 0,
     retainedUnresolvedDisclosures: job.retainedUnresolvedDisclosures || 0,
     timelineMarkers: job.timelineMarkers || 0,
@@ -126,25 +131,22 @@ function publicJob(job) {
     failures: job.failures || 0,
     preBlocks: job.preBlocks || 0,
     codeBlocks: job.codeBlocks || 0,
+    mediaElements: job.mediaElements || 0,
     imagesTotal: job.imagesTotal || 0,
     imagesEmbedded: job.imagesEmbedded || 0,
     imageEmbeddingFailures: job.imageEmbeddingFailures || 0,
     heartbeatAt: job.heartbeatAt,
     lastProgressAt: job.progressAt,
     scanPass: job.pass || 0,
-    scanPasses: 3,
     scanComplete: Boolean(job.scanComplete),
     direction: job.direction || '',
     step: job.step || 0,
     reconciliationRounds: job.reconciliationRounds || 0,
     reconciliationStablePasses: job.reconciliationStablePasses || 0,
-    diagnosticStep: job.diagnosticStep || 0,
-    diagnosticSteps: job.diagnosticSteps || 0,
-    waitingForUser: Boolean(job.waitingForUser),
-    positionInLoadedContent,
-    scrollPercent: positionInLoadedContent,
+    positionInLoadedContent: loadedContentPosition(job),
     scrollHeight: job.scrollHeight || 0,
     scrollClient: job.scrollClient || 0,
+    progressLimits: CRAWLER_PROGRESS_LIMITS,
     previewReady: Boolean(job.previewHtml),
     previewVersion: job.previewVersion || 0,
     previewActive: previewIsActive(job),
@@ -164,15 +166,9 @@ function assertNotCancelled(job) {
   throw error;
 }
 
-/**
- * "Last substantive progress" follows durable archive state. ChatGPT's
- * virtualizer may change mounted boundaries and scroll height without exposing
- * any new retained content; those transitions deliberately do not reset this
- * timestamp.
- */
 function materialSignature(job, patch = {}) {
   return [
-    patch.phase ?? job.phase,
+    patch.stage ?? job.stage,
     patch.turns ?? job.turns,
     patch.seenMountedTurns ?? job.seenMountedTurns,
     patch.seenMountedUnretainedTurns ?? job.seenMountedUnretainedTurns,
@@ -180,6 +176,7 @@ function materialSignature(job, patch = {}) {
     patch.failures ?? job.failures,
     patch.preBlocks ?? job.preBlocks,
     patch.codeBlocks ?? job.codeBlocks,
+    patch.mediaElements ?? job.mediaElements,
     patch.timelineMarkers ?? job.timelineMarkers,
     patch.appBlocks ?? job.appBlocks,
     patch.appBlockCaptureFailures ?? job.appBlockCaptureFailures,
@@ -205,6 +202,7 @@ function previewSignature(job) {
     job.failures,
     job.preBlocks,
     job.codeBlocks,
+    job.mediaElements,
     job.oldestRetained,
     job.newestRetained
   ].join('|');
@@ -228,7 +226,6 @@ async function assembleSnapshot(page, sourceUrl, options = {}) {
 async function maybeRefreshPreview(job, { force = false } = {}) {
   if (!job.page || job.previewPaused || !previewIsActive(job) || job.cancelRequested) return;
   if (job.previewBuildPromise) return job.previewBuildPromise;
-
   const elapsed = now() - (job.previewBuiltAt || 0);
   const signature = previewSignature(job);
   if (!force && elapsed < PREVIEW_MIN_INTERVAL_MS) return;
@@ -252,6 +249,7 @@ async function maybeRefreshPreview(job, { force = false } = {}) {
 async function launchJobBrowser(job) {
   if (job.sessionMode === 'authenticated') {
     update(job, {
+      stage: 'loading',
       phase: 'Opening saved ChatGPT session',
       detail: 'Waiting for exclusive access to ./browser-profile.',
       scanningStatus: 'Not started'
@@ -259,6 +257,7 @@ async function launchJobBrowser(job) {
     const handle = await sessionManager.openAuthenticatedContext(`archive ${job.id.slice(0, 8)}`, {
       shouldCancel: () => job.cancelRequested,
       onWait: owner => update(job, {
+        stage: 'loading',
         phase: 'Waiting for saved ChatGPT session',
         detail: `The persistent browser profile is currently in use by ${owner}. This archive will start when it is released.`
       }, false)
@@ -270,6 +269,7 @@ async function launchJobBrowser(job) {
   }
 
   update(job, {
+    stage: 'loading',
     phase: 'Launching Chromium',
     detail: 'Starting a clean anonymous headless browser.',
     scanningStatus: 'Not started'
@@ -290,6 +290,7 @@ async function runJob(job) {
 
     update(job, {
       state: 'running',
+      stage: 'loading',
       phase: 'Loading share',
       detail: job.sessionMode === 'authenticated'
         ? 'Opening the ChatGPT share page with the saved browser profile.'
@@ -298,6 +299,7 @@ async function runJob(job) {
     });
     await job.page.goto(job.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await job.page.waitForLoadState('networkidle', { timeout: 12_000 }).catch(() => {});
+    await installTransientContextRetention(job.page);
     await captureMountedMainImages(job.page).catch(() => {});
     assertNotCancelled(job);
 
@@ -328,19 +330,12 @@ async function runJob(job) {
 
     job.materialSignature = '';
     const onProgress = async patch => {
-      let nextPatch = patch;
-      const fullCheckpoint = Object.prototype.hasOwnProperty.call(patch || {}, 'scrollHeight')
-        || patch?.scanComplete === true;
+      let nextPatch = patch || {};
+      const fullCheckpoint = Object.prototype.hasOwnProperty.call(nextPatch, 'scrollHeight') || nextPatch.scanComplete === true;
       if (fullCheckpoint) {
         await captureMountedMainImages(job.page).catch(() => {});
         const appState = await captureMountedAppBlocks(job.page).catch(() => null);
-        if (appState) {
-          nextPatch = {
-            ...patch,
-            appBlocks: appState.captured,
-            appBlockCaptureFailures: appState.failures
-          };
-        }
+        if (appState) nextPatch = { ...nextPatch, appBlocks: appState.captured, appBlockCaptureFailures: appState.failures };
       }
 
       const signature = materialSignature(job, nextPatch);
@@ -354,12 +349,17 @@ async function runJob(job) {
     await crawlConversation(job.page, { onProgress, shouldCancel: () => job.cancelRequested });
     assertNotCancelled(job);
 
+    await flushTransientContextRetention(job.page).catch(() => {});
     await captureMountedMainImages(job.page, { settleMs: 1500 }).catch(() => {});
-    await captureMountedAppBlocks(job.page).catch(() => {});
+    const finalAppState = await captureMountedAppBlocks(job.page).catch(() => null);
+    if (finalAppState) {
+      job.appBlocks = finalAppState.captured;
+      job.appBlockCaptureFailures = finalAppState.failures;
+    }
     update(job, {
+      stage: 'finalization',
       phase: 'Building final static page',
       detail: 'Sanitizing retained turns, formulas, SVG, app-block frames, embedding retrievable images, and assembling the downloadable HTML archive.',
-      waitingForUser: false,
       scanComplete: true,
       pass: 0,
       direction: '',
@@ -368,9 +368,7 @@ async function runJob(job) {
 
     const snapshot = await assembleSnapshot(job.page, job.url, { preview: false, embedImages: true });
     assertNotCancelled(job);
-    if (!snapshot.stats.turns) {
-      throw new Error('No conversation turns were captured. ChatGPT may have changed the shared-page DOM.');
-    }
+    if (!snapshot.stats.turns) throw new Error('No conversation turns were captured. ChatGPT may have changed the shared-page DOM.');
 
     job.html = snapshot.html;
     job.previewHtml = snapshot.html;
@@ -378,9 +376,9 @@ async function runJob(job) {
     update(job, {
       ...snapshot.stats,
       state: 'complete',
+      stage: 'complete',
       phase: 'Complete',
       detail: 'Static HTML is ready to download.',
-      waitingForUser: false,
       scanComplete: true,
       pass: 0,
       direction: '',
@@ -391,17 +389,16 @@ async function runJob(job) {
     const cancelled = job.cancelRequested || error?.code === 'ARCHIVE_CANCELLED';
     update(job, {
       state: cancelled ? 'cancelled' : 'error',
+      stage: cancelled ? 'cancelled' : 'error',
       phase: cancelled ? 'Cancelled' : 'Error',
       detail: cancelled ? 'The archive job was cancelled.' : (error?.message || 'Archive failed.'),
       error: cancelled ? '' : (error?.message || 'Archive failed.'),
-      waitingForUser: false,
       finishedAt: now()
     });
   } finally {
     clearInterval(heartbeat);
-    if (job.authenticatedHandle) {
-      await job.authenticatedHandle.close().catch(() => {});
-    } else {
+    if (job.authenticatedHandle) await job.authenticatedHandle.close().catch(() => {});
+    else {
       await job.context?.close().catch(() => {});
       await job.browser?.close().catch(() => {});
     }
@@ -416,41 +413,29 @@ function sessionErrorStatus(error) {
   return error?.code === 'PROFILE_BUSY' ? 409 : 500;
 }
 
-app.get('/api/session/status', async (request, response) => {
+app.get('/api/session/status', async (_request, response) => {
   response.setHeader('Cache-Control', 'no-store');
   response.json(await sessionManager.status());
 });
 
-app.post('/api/session/login', async (request, response) => {
-  try {
-    response.status(202).json(await sessionManager.openLoginWindow());
-  } catch (error) {
-    response.status(sessionErrorStatus(error)).json({ error: error?.message || 'Could not open the ChatGPT login window.' });
-  }
+app.post('/api/session/login', async (_request, response) => {
+  try { response.status(202).json(await sessionManager.openLoginWindow()); }
+  catch (error) { response.status(sessionErrorStatus(error)).json({ error: error?.message || 'Could not open the ChatGPT login window.' }); }
 });
 
-app.post('/api/session/close-login', async (request, response) => {
-  try {
-    response.json(await sessionManager.closeLoginWindow());
-  } catch (error) {
-    response.status(sessionErrorStatus(error)).json({ error: error?.message || 'Could not close the ChatGPT login window.' });
-  }
+app.post('/api/session/close-login', async (_request, response) => {
+  try { response.json(await sessionManager.closeLoginWindow()); }
+  catch (error) { response.status(sessionErrorStatus(error)).json({ error: error?.message || 'Could not close the ChatGPT login window.' }); }
 });
 
-app.post('/api/session/check', async (request, response) => {
-  try {
-    response.json(await sessionManager.checkSession());
-  } catch (error) {
-    response.status(sessionErrorStatus(error)).json({ error: error?.message || 'Could not check the saved ChatGPT session.' });
-  }
+app.post('/api/session/check', async (_request, response) => {
+  try { response.json(await sessionManager.checkSession()); }
+  catch (error) { response.status(sessionErrorStatus(error)).json({ error: error?.message || 'Could not check the saved ChatGPT session.' }); }
 });
 
-app.post('/api/session/forget', async (request, response) => {
-  try {
-    response.json(await sessionManager.forgetProfile());
-  } catch (error) {
-    response.status(sessionErrorStatus(error)).json({ error: error?.message || 'Could not delete the saved ChatGPT browser profile.' });
-  }
+app.post('/api/session/forget', async (_request, response) => {
+  try { response.json(await sessionManager.forgetProfile()); }
+  catch (error) { response.status(sessionErrorStatus(error)).json({ error: error?.message || 'Could not delete the saved ChatGPT browser profile.' }); }
 });
 
 app.post('/api/archive/start', async (request, response) => {
@@ -460,9 +445,7 @@ app.post('/api/archive/start', async (request, response) => {
     if (sessionMode === 'authenticated') {
       const session = await sessionManager.status();
       if (!session.profileExists) {
-        return response.status(409).json({
-          error: 'No saved ChatGPT browser profile exists yet. Open the ChatGPT login window and sign in first.'
-        });
+        return response.status(409).json({ error: 'No saved ChatGPT browser profile exists yet. Open the ChatGPT login window and sign in first.' });
       }
     }
 
@@ -475,6 +458,7 @@ app.post('/api/archive/start', async (request, response) => {
       chatName: '',
       downloadFilename: `chatgpt-share-${id.slice(0, 8)}.html`,
       state: 'queued',
+      stage: 'queued',
       phase: 'Queued',
       detail: sessionMode === 'authenticated'
         ? 'Waiting to use the saved ChatGPT browser profile.'
@@ -482,8 +466,6 @@ app.post('/api/archive/start', async (request, response) => {
       scanningStatus: 'Not started',
       oldestRetained: 'none',
       newestRetained: 'none',
-      mountedFirst: 'none',
-      mountedLast: 'none',
       oldestConverged: null,
       oldestQuietChecks: 0,
       oldestChecks: 0,
@@ -497,6 +479,9 @@ app.post('/api/archive/start', async (request, response) => {
       seenMountedTurns: 0,
       seenMountedUnretainedTurns: 0,
       seenMountedUnretainedTurnIds: [],
+      mountObserverImmediateCaptures: 0,
+      mountObserverSettledCaptures: 0,
+      mountObserverHydrationEvents: 0,
       retainedUnresolvedTurns: 0,
       retainedUnresolvedDisclosures: 0,
       timelineMarkers: 0,
@@ -507,6 +492,7 @@ app.post('/api/archive/start', async (request, response) => {
       failures: 0,
       preBlocks: 0,
       codeBlocks: 0,
+      mediaElements: 0,
       imagesTotal: 0,
       imagesEmbedded: 0,
       imageEmbeddingFailures: 0,
@@ -515,9 +501,6 @@ app.post('/api/archive/start', async (request, response) => {
       step: 0,
       reconciliationRounds: 0,
       reconciliationStablePasses: 0,
-      diagnosticStep: 0,
-      diagnosticSteps: 0,
-      waitingForUser: false,
       scrollTop: 0,
       scrollHeight: 0,
       scrollClient: 0,
@@ -540,7 +523,7 @@ app.post('/api/archive/start', async (request, response) => {
     };
     jobs.set(id, job);
     setImmediate(() => runJob(job));
-    response.status(202).json({ jobId: id });
+    response.status(202).json({ id });
   } catch (error) {
     response.status(400).json({ error: error?.message || 'Could not start archive.' });
   }
@@ -569,9 +552,7 @@ app.get('/api/archive/preview/:id', (request, response) => {
 app.get('/api/archive/download/:id', (request, response) => {
   const job = jobs.get(request.params.id);
   if (!job) return response.status(404).json({ error: 'Job not found or expired.' });
-  if (job.state !== 'complete' || !job.html) {
-    return response.status(409).json({ error: 'Archive is not complete yet.' });
-  }
+  if (job.state !== 'complete' || !job.html) return response.status(409).json({ error: 'Archive is not complete yet.' });
   const disposition = contentDispositionFilename(job.chatName, job.id);
   job.downloadFilename = disposition.filename;
   response.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -585,7 +566,7 @@ app.post('/api/archive/cancel/:id', async (request, response) => {
   if (!job) return response.status(404).json({ error: 'Job not found or expired.' });
   if (['complete', 'error', 'cancelled'].includes(job.state)) return response.json(publicJob(job));
   job.cancelRequested = true;
-  update(job, { detail: 'Cancellation requested; stopping Chromium…', waitingForUser: false }, true);
+  update(job, { detail: 'Cancellation requested; stopping Chromium…' }, true);
   await job.context?.close().catch(() => {});
   await job.browser?.close().catch(() => {});
   response.json(publicJob(job));
@@ -593,9 +574,7 @@ app.post('/api/archive/cancel/:id', async (request, response) => {
 
 setInterval(() => {
   const cutoff = now() - 60 * 60 * 1000;
-  for (const [id, job] of jobs) {
-    if (job.finishedAt && job.finishedAt < cutoff) jobs.delete(id);
-  }
+  for (const [id, job] of jobs) if (job.finishedAt && job.finishedAt < cutoff) jobs.delete(id);
 }, 10 * 60 * 1000).unref();
 
 app.listen(PORT, HOST, () => console.log(`ChatGPT Conversation Crawler: http://${HOST}:${PORT}`));
