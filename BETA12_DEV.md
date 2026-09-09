@@ -4,7 +4,7 @@ This is a development diagnostic build for fidelity validation. It is not a clea
 
 ## Purpose
 
-`beta12-dev` keeps the proven beta11 automatic crawler and the beta11-dev diagnostic wrapper, then adds the audited fidelity corrections discovered from the beta11 authenticated/anonymous MHTML analysis and the 2026-09-09 link/image fixture.
+`beta12-dev` keeps the proven beta11 automatic crawler and the beta11-dev diagnostic wrapper, then adds the audited fidelity corrections discovered from the beta11 Authenticated/Anonymous MHTML analysis and the 2026-09-09 link/image fixture.
 
 The automatic crawler remains the production core. MHTML capture and the two-step manual comparison remain development-only instrumentation around that core.
 
@@ -45,7 +45,7 @@ Literal URLs that ChatGPT exposes only as plain text likewise remain plain text;
 
 ## Sanitizer audit status
 
-The completed beta11 MHTML removed-content audit covered 721 authenticated and 258 anonymous snapshots. Its semantic pass found:
+The completed beta11 MHTML removed-content audit covered 721 Authenticated and 258 Anonymous snapshots. Its semantic pass found:
 
 - 191 hidden-text shapes in each mode, all inside math rendering/accessibility layers already extracted before hidden-node removal;
 - no non-math hidden text examples;
@@ -95,13 +95,13 @@ The launchers intentionally start `server-dev.mjs` in this diagnostic package.
 
 ## What to upload for the rich-content fixture
 
-For the authenticated run, preserve:
+For the Authenticated run, preserve:
 
 1. final downloaded static HTML;
 2. the complete `mhtml-diagnostics/<run>/` directory, zipped (including all split ZIP parts when present);
 3. the complete `manual-inspection-diagnostics/<run>/` directory, zipped.
 
-If an anonymous comparison is useful for that conversation, preserve the anonymous final static HTML and anonymous MHTML directory as well.
+If an Anonymous comparison is useful for that conversation, preserve the Anonymous final static HTML and Anonymous MHTML directory as well.
 
 Do not upload `browser-profile/`.
 
