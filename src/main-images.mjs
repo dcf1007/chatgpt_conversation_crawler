@@ -363,10 +363,19 @@ export function finalizeMainImages(snapshot, prepared) {
   let mimeCorrections = 0;
   const failures = [];
 
+  let referenced = 0;
+  let unreferenced = 0;
+  let referencedSourceBytes = 0;
   for (const record of records) {
+    if (!snapshot.html.includes(record.token)) {
+      unreferenced++;
+      continue;
+    }
+    referenced++;
     if (record.image?.dataUrl) {
       snapshot.html = snapshot.html.replaceAll(record.token, record.image.dataUrl);
       embedded++;
+      referencedSourceBytes += Number(record.image.size || 0);
       if (record.image.source === 'browser-response' || record.image.source === 'mounted-blob') retainedDuringCrawl++;
       else recoveredAtFinal++;
       if (record.image.mimeCorrected) mimeCorrections++;
@@ -376,7 +385,8 @@ export function finalizeMainImages(snapshot, prepared) {
     }
   }
 
-  const parts = [`${embedded}/${records.length} embedded`, `${retainedDuringCrawl} retained during crawl`];
+  const parts = [`${embedded}/${referenced} embedded`, `${retainedDuringCrawl} retained during crawl`];
+  if (unreferenced) parts.push(`${unreferenced} retained source image${unreferenced === 1 ? '' : 's'} not referenced by sanitized content`);
   if (recoveredAtFinal) parts.push(`${recoveredAtFinal} recovered at finalization`);
   if (mimeCorrections) parts.push(`${mimeCorrections} MIME type${mimeCorrections === 1 ? '' : 's'} corrected from image bytes`);
   const summary = records.length ? parts.join('; ') : 'No images captured';
@@ -389,13 +399,15 @@ export function finalizeMainImages(snapshot, prepared) {
 
   snapshot.stats = {
     ...snapshot.stats,
-    imagesTotal: records.length,
+    imagesTotal: referenced,
     imagesEmbedded: embedded,
     imageEmbeddingFailures: failures.length,
     imagesRetainedDuringCrawl: retainedDuringCrawl,
     imagesRecoveredAtFinalization: recoveredAtFinal,
+    imagesUnreferencedAfterSanitization: unreferenced,
     imageMimeCorrections: mimeCorrections,
-    embeddedImageSourceBytes: prepared?.totalBytes || 0
+    embeddedImageSourceBytes: referencedSourceBytes,
+    retainedImageSourceBytes: prepared?.totalBytes || 0
   };
   return snapshot;
 }
