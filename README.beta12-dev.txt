@@ -1,0 +1,1 @@
+Development diagnostic package for v1.6.7-beta12-dev. Not a clean release. See BETA12_DEV.md. Includes the audited uploaded-image sanitizer fix, reference-aware main-image accounting, and Check-session state refresh correction.
