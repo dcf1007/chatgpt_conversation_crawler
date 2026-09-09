@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+const source=fs.readFileSync(new URL('../src/snapshot.mjs',import.meta.url),'utf8');
+const start=source.indexOf("for (const button of [...section.querySelectorAll('button,[role=\"button\"]')])");
+assert.ok(start>=0,'snapshot sanitizer button pass must exist');
+const end=source.indexOf("for (const el of [section, ...section.querySelectorAll('*')])",start);
+assert.ok(end>start,'snapshot sanitizer button pass must end before attribute stripping');
+const block=source.slice(start,end);
+assert.match(block,/preservedMedia = button\.querySelector\('img,video,audio,picture,object,embed'\)/);
+assert.match(block,/while \(button\.firstChild\) fragment\.append\(button\.firstChild\)/);
+assert.match(block,/button\.replaceWith\(fragment\)/);
+assert.ok(block.indexOf('preservedMedia')<block.indexOf("else if (text && !uiOnly)"));
+assert.match(block,/\^run code\$\/i\.test\(aria\)/);
+assert.match(source,/for \(const img of section\.querySelectorAll\('img'\)\)/);
+console.log('snapshot media-control smoke test passed');

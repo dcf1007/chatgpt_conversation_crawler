@@ -208,9 +208,15 @@ export async function buildSnapshot(page, sourceUrl, { preview = false, embedIma
         const text = (button.textContent || '').replace(/\s+/g,' ').trim();
         const aria = (button.getAttribute('aria-label') || '').replace(/\s+/g,' ').trim();
         const label = text || aria;
+        const preservedMedia = button.querySelector('img,video,audio,picture,object,embed');
+        const uiOnly = /^(copy(?: code)?|copied!?|more actions|switch model)$/i.test(text) || /^run code$/i.test(aria);
         if (/^(worked for|thought(?: for)?|thinking(?: for)?|reasoning(?: for)?)\b/i.test(label)) {
           const r = document.createElement('div'); r.className='archive-reasoning-label'; r.textContent=label; button.replaceWith(r);
-        } else if (text && !/^(copy(?: code)?|copied!?|more actions|switch model)$/i.test(text)) {
+        } else if (preservedMedia) {
+          const fragment = document.createDocumentFragment();
+          while (button.firstChild) fragment.append(button.firstChild);
+          button.replaceWith(fragment);
+        } else if (text && !uiOnly) {
           const r = document.createElement('span'); r.className='archive-inline-label'; r.textContent=text; button.replaceWith(r);
         } else button.remove();
       }

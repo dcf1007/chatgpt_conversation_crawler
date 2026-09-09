@@ -61,7 +61,7 @@ const form=$('#form'),input=$('#url'),submit=$('#submit'),previewBtn=$('#preview
 const stageName=$('#stageName'),statusPill=$('#statusPill'),currentAction=$('#currentAction'),coverage=$('#coverage'),oldestRetained=$('#oldestRetained'),loadedPosition=$('#loadedPosition'),disclosureRow=$('#disclosureRow'),disclosureActivity=$('#disclosureActivity');
 const progressWrap=$('#progressWrap'),bar=$('#bar'),stageProgressText=$('#stageProgressText'),stageStepText=$('#stageStepText'),disclosureStat=$('#disclosureStat'),richStat=$('#richStat'),structureStat=$('#structureStat'),heartbeat=$('#heartbeat'),lastProgress=$('#lastProgress'),warning=$('#warning'),doneBox=$('#doneBox');
 const sessionDetail=$('#sessionDetail'),sessionPill=$('#sessionPill'),sessionError=$('#sessionError'),loginBtn=$('#loginBtn'),checkSessionBtn=$('#checkSessionBtn'),closeLoginBtn=$('#closeLoginBtn'),forgetSessionBtn=$('#forgetSessionBtn');
-let currentArchiveId=null,pollTimer=null,lastSession=null;
+let currentArchiveId=null,pollTimer=null,lastSession=null,sessionRefreshInFlight=false;
 
 const STAGE_LABELS={queued:'Queued',loading:'Loading share',preparing:'Preparing crawler',traversal:'Traversing conversation',oldest_verification:'Verifying oldest messages',reconciliation:'Reconciling retained disclosures',finalization:'Building static archive',complete:'Complete',error:'Archive failed',cancelled:'Cancelled'};
 const STAGE_PILLS={queued:'Queued',loading:'Starting',preparing:'Starting',traversal:'Crawling',oldest_verification:'Verifying',reconciliation:'Verifying',finalization:'Finalizing',complete:'Complete',error:'Error',cancelled:'Cancelled'};
@@ -73,7 +73,8 @@ function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':
 function renderSession(s){
   lastSession=s;
   let label='Saved profile';
-  if(s.loginWindowOpen)label=s.authenticated===true?'Signed in · login open':'Login window open';
+  if(s.verificationWindowOpen)label='Checking session';
+  else if(s.loginWindowOpen)label=s.authenticated===true?'Signed in · login open':'Login window open';
   else if(!s.profileExists)label='No profile';
   else if(s.authenticated===true)label='Authenticated';
   else if(s.authenticated===false)label='Not authenticated';
@@ -84,7 +85,7 @@ function renderSession(s){
   sessionDetail.textContent=`${s.detail||'—'}${checked}${busy}`;
   loginBtn.disabled=s.busy;checkSessionBtn.disabled=s.busy;closeLoginBtn.disabled=!s.loginWindowOpen;forgetSessionBtn.disabled=s.busy;
 }
-async function refreshSession(){try{const r=await fetch('/api/session/status',{cache:'no-store'}),s=await r.json().catch(()=>({}));if(!r.ok)throw new Error(s.error||`Session status failed (${r.status}).`);renderSession(s);setSessionError('')}catch(e){setSessionError(e.message)}}
+async function refreshSession(){if(sessionRefreshInFlight)return;sessionRefreshInFlight=true;try{const r=await fetch('/api/session/status',{cache:'no-store'}),s=await r.json().catch(()=>({}));if(!r.ok)throw new Error(s.error||`Session status failed (${r.status}).`);renderSession(s);setSessionError('')}catch(e){setSessionError(e.message)}finally{sessionRefreshInFlight=false}}
 async function sessionAction(url,{confirmText}={}){if(confirmText&&!confirm(confirmText))return;setSessionError('');try{const r=await fetch(url,{method:'POST'}),s=await r.json().catch(()=>({}));if(!r.ok)throw new Error(s.error||`Session action failed (${r.status}).`);renderSession(s)}catch(e){setSessionError(e.message)}}
 
 function setProgress(percent,indeterminate=false){bar.classList.toggle('indeterminate',indeterminate);bar.style.transform='none';bar.style.width=indeterminate?'35%':`${Math.max(0,Math.min(100,percent))}%`}
@@ -148,6 +149,6 @@ loginBtn.addEventListener('click',()=>sessionAction('/api/session/login'));
 closeLoginBtn.addEventListener('click',()=>sessionAction('/api/session/close-login'));
 checkSessionBtn.addEventListener('click',()=>sessionAction('/api/session/check'));
 forgetSessionBtn.addEventListener('click',()=>sessionAction('/api/session/forget',{confirmText:'Delete the saved browser-profile and its ChatGPT session data?'}));
-refreshSession();setInterval(()=>{if(lastSession)renderSession(lastSession)},1000);
+refreshSession();setInterval(()=>{if(lastSession&&(lastSession.busy||lastSession.loginWindowOpen||lastSession.verificationWindowOpen))void refreshSession();else if(lastSession)renderSession(lastSession)},1000);
 </script>
 </body></html>
