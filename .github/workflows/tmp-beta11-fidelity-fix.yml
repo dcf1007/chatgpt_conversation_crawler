@@ -1,0 +1,227 @@
+name: Temporary beta11 fidelity patch
+on:
+  push:
+    branches: [beta11-fidelity-fix]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: beta11-fidelity-fix
+      - name: Apply audited corrections
+        shell: bash
+        run: |
+          set -euo pipefail
+          python <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path, old, new):
+              p=Path(path); text=p.read_text()
+              if old not in text:
+                  if new in text: return
+                  raise SystemExit(f'expected patch anchor missing in {path}')
+              p.write_text(text.replace(old,new,1))
+
+          snapshot_old = '''      for (const button of [...section.querySelectorAll('button,[role="button"]')]) {
+        const text = (button.textContent || '').replace(/\\s+/g,' ').trim();
+        const aria = (button.getAttribute('aria-label') || '').replace(/\\s+/g,' ').trim();
+        const label = text || aria;
+        if (/^(worked for|thought(?: for)?|thinking(?: for)?|reasoning(?: for)?)\\b/i.test(label)) {
+          const r = document.createElement('div'); r.className='archive-reasoning-label'; r.textContent=label; button.replaceWith(r);
+        } else if (text && !/^(copy(?: code)?|copied!?|more actions|switch model)$/i.test(text)) {
+          const r = document.createElement('span'); r.className='archive-inline-label'; r.textContent=text; button.replaceWith(r);
+        } else button.remove();
+      }
+'''
+          snapshot_new = '''      for (const button of [...section.querySelectorAll('button,[role="button"]')]) {
+        const text = (button.textContent || '').replace(/\\s+/g,' ').trim();
+        const aria = (button.getAttribute('aria-label') || '').replace(/\\s+/g,' ').trim();
+        const label = text || aria;
+        const preservedMedia = button.querySelector('img,video,audio,picture,object,embed');
+        const uiOnly = /^(copy(?: code)?|copied!?|more actions|switch model)$/i.test(text) || /^run code$/i.test(aria);
+        if (/^(worked for|thought(?: for)?|thinking(?: for)?|reasoning(?: for)?)\\b/i.test(label)) {
+          const r = document.createElement('div'); r.className='archive-reasoning-label'; r.textContent=label; button.replaceWith(r);
+        } else if (preservedMedia) {
+          const fragment = document.createDocumentFragment();
+          while (button.firstChild) fragment.append(button.firstChild);
+          button.replaceWith(fragment);
+        } else if (text && !uiOnly) {
+          const r = document.createElement('span'); r.className='archive-inline-label'; r.textContent=text; button.replaceWith(r);
+        } else button.remove();
+      }
+'''
+          replace_exact('src/snapshot.mjs', snapshot_old, snapshot_new)
+
+          images_old = '''  for (const record of records) {
+    if (record.image?.dataUrl) {
+      snapshot.html = snapshot.html.replaceAll(record.token, record.image.dataUrl);
+      embedded++;
+      if (record.image.source === 'browser-response' || record.image.source === 'mounted-blob') retainedDuringCrawl++;
+      else recoveredAtFinal++;
+      if (record.image.mimeCorrected) mimeCorrections++;
+    } else {
+      snapshot.html = snapshot.html.replaceAll(record.token, esc(record.url));
+      failures.push(`${record.url} — ${record.error || 'embedding failed'}`);
+    }
+  }
+
+  const parts = [`${embedded}/${records.length} embedded`, `${retainedDuringCrawl} retained during crawl`];
+'''
+          images_new = '''  let referenced = 0;
+  let unreferenced = 0;
+  let referencedSourceBytes = 0;
+  for (const record of records) {
+    if (!snapshot.html.includes(record.token)) {
+      unreferenced++;
+      continue;
+    }
+    referenced++;
+    if (record.image?.dataUrl) {
+      snapshot.html = snapshot.html.replaceAll(record.token, record.image.dataUrl);
+      embedded++;
+      referencedSourceBytes += Number(record.image.size || 0);
+      if (record.image.source === 'browser-response' || record.image.source === 'mounted-blob') retainedDuringCrawl++;
+      else recoveredAtFinal++;
+      if (record.image.mimeCorrected) mimeCorrections++;
+    } else {
+      snapshot.html = snapshot.html.replaceAll(record.token, esc(record.url));
+      failures.push(`${record.url} — ${record.error || 'embedding failed'}`);
+    }
+  }
+
+  const parts = [`${embedded}/${referenced} embedded`, `${retainedDuringCrawl} retained during crawl`];
+  if (unreferenced) parts.push(`${unreferenced} retained source image${unreferenced === 1 ? '' : 's'} not referenced by sanitized content`);
+'''
+          replace_exact('src/main-images.mjs', images_old, images_new)
+
+          stats_old = '''    imagesTotal: records.length,
+    imagesEmbedded: embedded,
+    imageEmbeddingFailures: failures.length,
+    imagesRetainedDuringCrawl: retainedDuringCrawl,
+    imagesRecoveredAtFinalization: recoveredAtFinal,
+    imageMimeCorrections: mimeCorrections,
+    embeddedImageSourceBytes: prepared?.totalBytes || 0
+'''
+          stats_new = '''    imagesTotal: referenced,
+    imagesEmbedded: embedded,
+    imageEmbeddingFailures: failures.length,
+    imagesRetainedDuringCrawl: retainedDuringCrawl,
+    imagesRecoveredAtFinalization: recoveredAtFinal,
+    imagesUnreferencedAfterSanitization: unreferenced,
+    imageMimeCorrections: mimeCorrections,
+    embeddedImageSourceBytes: referencedSourceBytes,
+    retainedImageSourceBytes: prepared?.totalBytes || 0
+'''
+          replace_exact('src/main-images.mjs', stats_old, stats_new)
+
+          index=Path('public/index.html')
+          text=index.read_text()
+          text=text.replace('let currentArchiveId=null,pollTimer=null,lastSession=null;', 'let currentArchiveId=null,pollTimer=null,lastSession=null,sessionRefreshInFlight=false;', 1)
+          text=text.replace("  if(s.loginWindowOpen)label=s.authenticated===true?'Signed in · login open':'Login window open';", "  if(s.verificationWindowOpen)label='Checking session';\n  else if(s.loginWindowOpen)label=s.authenticated===true?'Signed in · login open':'Login window open';", 1)
+          old_refresh="async function refreshSession(){try{const r=await fetch('/api/session/status',{cache:'no-store'}),s=await r.json().catch(()=>({}));if(!r.ok)throw new Error(s.error||`Session status failed (${r.status}).`);renderSession(s);setSessionError('')}catch(e){setSessionError(e.message)}}"
+          new_refresh="async function refreshSession(){if(sessionRefreshInFlight)return;sessionRefreshInFlight=true;try{const r=await fetch('/api/session/status',{cache:'no-store'}),s=await r.json().catch(()=>({}));if(!r.ok)throw new Error(s.error||`Session status failed (${r.status}).`);renderSession(s);setSessionError('')}catch(e){setSessionError(e.message)}finally{sessionRefreshInFlight=false}}"
+          if old_refresh in text: text=text.replace(old_refresh,new_refresh,1)
+          elif new_refresh not in text: raise SystemExit('refreshSession patch anchor missing')
+          old_timer="refreshSession();setInterval(()=>{if(lastSession)renderSession(lastSession)},1000);"
+          new_timer="refreshSession();setInterval(()=>{if(lastSession&&(lastSession.busy||lastSession.loginWindowOpen||lastSession.verificationWindowOpen))void refreshSession();else if(lastSession)renderSession(lastSession)},1000);"
+          if old_timer in text: text=text.replace(old_timer,new_timer,1)
+          elif new_timer not in text: raise SystemExit('session timer patch anchor missing')
+          index.write_text(text)
+          PY
+
+          cat > tests/snapshot-media-control-smoke.mjs <<'EOF'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+
+          const source = fs.readFileSync(new URL('../src/snapshot.mjs', import.meta.url), 'utf8');
+          const start = source.indexOf("for (const button of [...section.querySelectorAll('button,[role=\"button\"]')])");
+          assert.ok(start >= 0, 'snapshot sanitizer button pass must exist');
+          const end = source.indexOf("for (const el of [section, ...section.querySelectorAll('*')])", start);
+          assert.ok(end > start, 'snapshot sanitizer button pass must end before attribute stripping');
+          const block = source.slice(start, end);
+
+          assert.match(block, /preservedMedia = button\.querySelector\('img,video,audio,picture,object,embed'\)/, 'media-bearing controls must be recognized');
+          assert.match(block, /while \(button\.firstChild\) fragment\.append\(button\.firstChild\)/, 'media-bearing controls must preserve their child DOM');
+          assert.match(block, /button\.replaceWith\(fragment\)/, 'interactive wrapper must be removed without deleting media');
+          assert.ok(block.indexOf('preservedMedia') < block.indexOf("else if (text && !uiOnly)"), 'media preservation must run before generic button flattening');
+          assert.match(block, /\^run code\$\/i\.test\(aria\)/, 'Run-code controls must remain UI-only rather than leaking Run labels');
+          assert.match(source, /for \(const img of section\.querySelectorAll\('img'\)\)/, 'preserved images must still reach image tokenization');
+
+          console.log('snapshot media-control smoke test passed');
+          EOF
+
+          cat > tests/main-image-finalization-smoke.mjs <<'EOF'
+          import assert from 'node:assert/strict';
+          import { finalizeMainImages } from '../src/main-images.mjs';
+
+          const token = '__ARCHIVE_MAIN_IMAGE_TEST__';
+          const prepared = {
+            totalBytes: 3,
+            records: [{
+              token,
+              url: 'https://example.invalid/image.png',
+              error: '',
+              image: { dataUrl: 'data:image/png;base64,AAEC', size: 3, source: 'browser-response', mimeCorrected: false }
+            }]
+          };
+
+          const referenced = finalizeMainImages({ html: `<html><body><div><strong>Images</strong>pending</div><img src="${token}"></body></html>`, stats: {} }, prepared);
+          assert.equal(referenced.stats.imagesTotal, 1);
+          assert.equal(referenced.stats.imagesEmbedded, 1);
+          assert.equal(referenced.stats.imagesUnreferencedAfterSanitization, 0);
+          assert.equal(referenced.stats.embeddedImageSourceBytes, 3);
+          assert.equal(referenced.stats.retainedImageSourceBytes, 3);
+          assert.match(referenced.html, /data:image\/png;base64,AAEC/);
+          assert.doesNotMatch(referenced.html, new RegExp(token));
+
+          const omitted = finalizeMainImages({ html: '<html><body><div><strong>Images</strong>pending</div></body></html>', stats: {} }, prepared);
+          assert.equal(omitted.stats.imagesTotal, 0, 'an image with no final DOM reference must not be counted as an archive image');
+          assert.equal(omitted.stats.imagesEmbedded, 0, 'retained bytes alone must never count as embedded');
+          assert.equal(omitted.stats.imagesUnreferencedAfterSanitization, 1);
+          assert.equal(omitted.stats.embeddedImageSourceBytes, 0);
+          assert.equal(omitted.stats.retainedImageSourceBytes, 3);
+          assert.match(omitted.html, /1 retained source image not referenced by sanitized content/);
+
+          console.log('main-image finalization smoke test passed');
+          EOF
+
+          cat > tests/session-state-refresh-smoke.mjs <<'EOF'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+
+          const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+
+          assert.match(html, /sessionRefreshInFlight=false/, 'session status refresh must have an in-flight guard');
+          assert.match(html, /if\(sessionRefreshInFlight\)return;sessionRefreshInFlight=true/, 'refreshSession must reject overlapping status requests');
+          assert.match(html, /finally\{sessionRefreshInFlight=false\}/, 'refreshSession must always release its in-flight guard');
+          assert.match(
+            html,
+            /lastSession&&\(lastSession\.busy\|\|lastSession\.loginWindowOpen\|\|lastSession\.verificationWindowOpen\)\)void refreshSession\(\)/,
+            'active session operations must poll fresh backend status'
+          );
+          assert.doesNotMatch(
+            html,
+            /setInterval\(\(\)=>\{if\(lastSession\)renderSession\(lastSession\)\},1000\)/,
+            'session timer must not repaint cached state forever'
+          );
+          assert.match(html, /if\(s\.verificationWindowOpen\)label='Checking session'/, 'interactive check should be visible in the session pill');
+
+          console.log('session state refresh smoke test passed');
+          EOF
+
+          node --check src/snapshot.mjs
+          node --check src/main-images.mjs
+          for t in tests/snapshot-media-control-smoke.mjs tests/main-image-finalization-smoke.mjs tests/session-state-refresh-smoke.mjs; do node "$t"; done
+      - name: Commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'dcf1007'
+          git config user.email 'dcf1007@gmail.com'
+          git add src/snapshot.mjs src/main-images.mjs public/index.html tests/snapshot-media-control-smoke.mjs tests/main-image-finalization-smoke.mjs tests/session-state-refresh-smoke.mjs
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'beta11: preserve media controls and refresh session state'
+          git push origin HEAD:beta11-fidelity-fix
