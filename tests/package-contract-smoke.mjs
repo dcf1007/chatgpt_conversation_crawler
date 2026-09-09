@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-assert.equal(packageJson.version, '1.6.7-beta12-dev');
+assert.equal(packageJson.version, '1.6.7-beta13-dev');
 assert.equal(packageJson.scripts?.start, 'node server-dev.mjs');
 
 for (const required of [
@@ -13,7 +13,9 @@ for (const required of [
   'server-dev.mjs',
   'BETA11.md',
   'BETA12_DEV.md',
+  'BETA13_DEV.md',
   'README.beta12-dev.txt',
+  'README.beta13-dev.txt',
   'DIAGNOSTIC_BUILD_ONLY',
   'public/index.html',
   'public/preview.html',
@@ -31,11 +33,11 @@ for (const required of [
   'start-linux.sh',
   'start-macos.sh'
 ]) {
-  assert.ok(fs.existsSync(path.join(root, required)), `required beta12-dev file missing: ${required}`);
+  assert.ok(fs.existsSync(path.join(root, required)), `required beta13-dev file missing: ${required}`);
 }
 
-assert.ok(!fs.existsSync(path.join(root, 'BETA11_DEV.md')), 'beta12-dev package must not retain superseded beta11-dev instructions');
-assert.ok(!fs.existsSync(path.join(root, 'README.beta11-dev.txt')), 'beta12-dev package must not retain superseded beta11-dev package note');
-assert.ok(!fs.existsSync(path.join(root, 'src/crawler-page-diagnostics.mjs')), 'beta12-dev must not revive the old crawler-page-diagnostics implementation');
+assert.ok(!fs.existsSync(path.join(root, 'BETA11_DEV.md')), 'beta13-dev package must not retain superseded beta11-dev instructions');
+assert.ok(!fs.existsSync(path.join(root, 'README.beta11-dev.txt')), 'beta13-dev package must not retain superseded beta11-dev package note');
+assert.ok(!fs.existsSync(path.join(root, 'src/crawler-page-diagnostics.mjs')), 'beta13-dev must not revive the old crawler-page-diagnostics implementation');
 
-console.log('beta12-dev package contract smoke test passed');
+console.log('beta13-dev package contract smoke test passed');
