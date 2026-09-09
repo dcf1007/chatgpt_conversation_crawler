@@ -133,6 +133,29 @@ export async function installDisclosureState(page) {
       };
     }
 
+    // Beta13 semantic progress authority. A retained revision changes only when
+    // the crawler's richness comparator actually replaces a retained turn.
+    crawler.state.retainedRevision = Number(crawler.state.retainedRevision || 0);
+    const baseCaptureTurn = crawler.captureTurn.bind(crawler);
+    const baseCapture = crawler.capture.bind(crawler);
+
+    crawler.captureTurn = targetTurnId => {
+      const before = crawler.state?.turns?.[targetTurnId];
+      const result = baseCaptureTurn(targetTurnId);
+      if (crawler.state?.turns?.[targetTurnId] !== before) crawler.state.retainedRevision++;
+      return result;
+    };
+
+    crawler.capture = () => {
+      const before = new Map(Object.entries(crawler.state?.turns || {}));
+      const result = baseCapture();
+      for (const [id, retained] of Object.entries(crawler.state?.turns || {})) {
+        if (before.get(id) !== retained) crawler.state.retainedRevision++;
+      }
+      return result;
+    };
+
+    crawler.retainedRevision = () => Number(crawler.state.retainedRevision || 0);
     crawler.state.expansionGeneration = Number(crawler.state.expansionGeneration || 0);
     crawler.state.quiescence = { rounds: 0, requiredRounds, lastSignature: '', converged: false, scopeTurnId: '', timedOut: false };
     crawler.state.reconciliation = { converged: null, rounds: 0, stablePasses: 0 };
@@ -153,6 +176,7 @@ export async function installDisclosureState(page) {
       const retained = retainedDisclosureSummary();
       return {
         ...baseStats(), ...collapsed,
+        retainedRevision: Number(crawler.state.retainedRevision || 0),
         retainedUnresolvedTurns: retained.retainedUnresolvedTurns,
         retainedUnresolvedDisclosures: retained.retainedUnresolvedDisclosures,
         retainedUnresolvedTurnIds: retained.retainedUnresolvedTurnIds,

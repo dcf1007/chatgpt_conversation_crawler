@@ -36,13 +36,11 @@ function traversalProgressSignature(metrics, stats, { normalizeTop = false } = {
     stats.turns,
     stats.oldestRetained,
     stats.newestRetained,
-    stats.clicks,
-    stats.expanded,
-    stats.failures,
+    stats.retainedRevision,
     stats.preBlocks,
     stats.codeBlocks,
+    stats.mediaElements,
     stats.timelineMarkers,
-    stats.expansionGeneration,
     stats.retainedUnresolvedTurns,
     stats.retainedUnresolvedDisclosures
   ].join('|');
@@ -349,3 +347,5 @@ export async function crawlAutomaticConversation(page, { onProgress, shouldCance
     oldestChecks: oldest.checks
   });
 }
+
+export const __testing = { traversalProgressSignature };
