@@ -36,7 +36,7 @@ function traversalProgressSignature(metrics, stats, { normalizeTop = false } = {
     stats.turns,
     stats.oldestRetained,
     stats.newestRetained,
-    stats.retainedRevision,
+    stats.retainedCorpusFingerprint,
     stats.preBlocks,
     stats.codeBlocks,
     stats.mediaElements,

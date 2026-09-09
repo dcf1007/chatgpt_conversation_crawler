@@ -21,50 +21,39 @@ async function captureActiveTurn(page, turnId) {
   return page.evaluate(id => window.__archiveCrawler.captureTurn(id), turnId);
 }
 
-async function retainedRevision(page) {
-  return page.evaluate(() => Number(
-    window.__archiveCrawler.retainedRevision?.()
-    ?? window.__archiveCrawler.state?.retainedRevision
+async function turnRevision(page, turnId) {
+  if (!turnId) return 0;
+  return page.evaluate(id => Number(
+    window.__archiveCrawler.turnRevision?.(id)
+    ?? window.__archiveCrawler.state?.turnRevisions?.[id]
     ?? 0
-  ));
-}
-
-function logicalDisclosureKey(result) {
-  const turnId = String(result?.turnId || 'unknown-turn');
-  const kind = String(result?.kind || 'unknown');
-  const description = String(result?.description || '');
-  const prefix = `${turnId} — `;
-  const stableLabel = (description.startsWith(prefix) ? description.slice(prefix.length) : description)
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
-  return [turnId, kind, stableLabel || String(result?.controls || result?.key || '')].join('|');
+  ), turnId);
 }
 
 function semanticTurnSignature(sample, revision) {
   return [
     Number(revision || 0),
     Number(sample?.actionableCollapsed || 0),
-    Number(sample?.closedDetails || 0),
-    ...(Array.isArray(sample?.actionableKeys) ? sample.actionableKeys : [])
+    ...(Array.isArray(sample?.actionableLogicalKeys) ? sample.actionableLogicalKeys : [])
   ].join('|');
 }
 
-function semanticMountedSignature(sample, revision) {
+function semanticMountedSignature(sample) {
   return [
-    Number(revision || 0),
     Number(sample?.actionableCollapsed || 0),
-    Number(sample?.closedDetails || 0),
-    String(sample?.signature || '')
+    ...(Array.isArray(sample?.actionableLogicalKeys) ? sample.actionableLogicalKeys : [])
   ].join('|');
 }
 
 async function expandOneWithRevision(page, turnId) {
   return page.evaluate(scopeTurnId => {
     const crawler = window.__archiveCrawler;
-    const revisionBefore = Number(crawler.retainedRevision?.() ?? crawler.state?.retainedRevision ?? 0);
     const result = crawler.expandOne(scopeTurnId);
-    return { result, revisionBefore };
+    if (!result) return { result: null, turnRevisionBefore: scopeTurnId ? Number(crawler.turnRevision?.(scopeTurnId) || 0) : 0 };
+    return {
+      result,
+      turnRevisionBefore: Number(result.turnRevisionBefore ?? crawler.turnRevision?.(result.turnId) ?? 0)
+    };
   }, turnId);
 }
 
@@ -91,7 +80,7 @@ export async function waitForDisclosureHydration(page, result, shouldCancel) {
   return latest;
 }
 
-async function processExpansion(page, result, onProgress, shouldCancel) {
+async function processExpansion(page, result, turnRevisionBefore, onProgress, shouldCancel) {
   await page.evaluate(turnId => window.__archiveCrawler.noteExpansionGeneration(turnId), result.turnId || '');
   let confirmed = result.kind === 'details';
   if (result.kind === 'details') {
@@ -104,13 +93,21 @@ async function processExpansion(page, result, onProgress, shouldCancel) {
       return !Object.prototype.hasOwnProperty.call(crawler.state?.attempts || {}, key);
     }, result.key);
   }
+
   const activity = await captureActiveTurn(page, result.turnId || '');
-  const revisionAfter = await retainedRevision(page);
+  const revisionAfter = await turnRevision(page, result.turnId || '');
+  if (confirmed && result.logicalKey && result.turnId) {
+    await page.evaluate(value => window.__archiveCrawler.markDisclosureComplete?.(value), {
+      logicalKey: result.logicalKey,
+      turnId: result.turnId
+    });
+  }
+
   await onProgress?.({
     ...activity,
     expandingStatus: activity.expandingStatus || 'No disclosure expansion active in current mounted range'
   });
-  return { confirmed, revisionAfter };
+  return { confirmed, revisionAfter, retainedProgress: revisionAfter > Number(turnRevisionBefore || 0) };
 }
 
 async function markTurnQuiescence(page, turnId, quietRounds, signature, converged, timedOut = false) {
@@ -127,11 +124,10 @@ async function markTurnQuiescence(page, turnId, quietRounds, signature, converge
 /**
  * Expand mounted disclosures while semantic archive progress is being made.
  *
- * Beta13 deliberately does not require the live mounted DOM to become stable:
- * ChatGPT can mutate/virtualize an otherwise finished viewport forever. It also
- * does not treat clicks as progress. A repeated successfully expanded logical
- * disclosure that produces no newer retained generation yields back to the
- * outer traversal, where a later pass may legitimately revisit it.
+ * Beta13.1 keeps logical completion state page-side across expandMounted()
+ * invocations. A virtualizer remount can reopen a disclosure only after that
+ * same retained turn becomes richer. Activity in another turn cannot make it
+ * eligible again, and volatile mounted-DOM membership does not reset quietness.
  */
 export async function expandMounted(page, max, onProgress, shouldCancel) {
   let processed = 0;
@@ -140,44 +136,43 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
   let quietRounds = 0;
   let previousTurnSignature = '';
   let lastSemanticProgressAt = Date.now();
-  let lastObservedRevision = await retainedRevision(page);
+  let lastObservedTurnRevision = 0;
   let idleRounds = 0;
   let previousIdleSignature = '';
   let idleStartedAt = Date.now();
-  const successfulLogicalKeys = new Set();
 
   while (processed < max) {
     if (shouldCancel?.()) throw new Error('Archive cancelled.');
 
-    const { result, revisionBefore } = await expandOneWithRevision(page, activeTurnId);
+    const { result, turnRevisionBefore } = await expandOneWithRevision(page, activeTurnId);
     if (result) {
-      activeTurnId = result.turnId || activeTurnId;
-      const logicalKey = logicalDisclosureKey(result);
-      const seenSuccessful = successfulLogicalKeys.has(logicalKey);
-      const { confirmed, revisionAfter } = await processExpansion(page, result, onProgress, shouldCancel);
-      const retainedProgress = revisionAfter > revisionBefore;
+      if (result.turnId && result.turnId !== activeTurnId) {
+        activeTurnId = result.turnId;
+        lastObservedTurnRevision = Number(turnRevisionBefore || 0);
+      } else {
+        activeTurnId = result.turnId || activeTurnId;
+      }
+
+      const { confirmed, revisionAfter, retainedProgress } = await processExpansion(
+        page,
+        result,
+        turnRevisionBefore,
+        onProgress,
+        shouldCancel
+      );
 
       processed++;
       reportCounter++;
-      lastObservedRevision = Math.max(lastObservedRevision, revisionAfter);
+      lastObservedTurnRevision = Math.max(lastObservedTurnRevision, revisionAfter);
       idleRounds = 0;
       previousIdleSignature = '';
       idleStartedAt = Date.now();
 
-      if (confirmed && seenSuccessful && !retainedProgress) {
-        const stats = await page.evaluate(() => window.__archiveCrawler.stats());
-        await markTurnQuiescence(page, activeTurnId, TURN_QUIESCENT_REQUIRED_ROUNDS, `repeat-no-progress:${logicalKey}`, true, false);
-        await onProgress?.({
-          ...stats,
-          expandingStatus: `${activeTurnId} semantic fixed point · repeated disclosure produced no new retained generation; yielding to traversal`
-        });
-        break;
-      }
-
-      if (confirmed) successfulLogicalKeys.add(logicalKey);
-      if (retainedProgress || (confirmed && !seenSuccessful)) {
-        lastSemanticProgressAt = Date.now();
-      }
+      // Completing a previously actionable logical disclosure is semantic work
+      // even when it proves that the remounted control adds no richer archive
+      // state. Persisting that completion makes subsequent remounts ineligible
+      // until this same turn's retained revision increases.
+      if (confirmed || retainedProgress) lastSemanticProgressAt = Date.now();
 
       quietRounds = 0;
       previousTurnSignature = '';
@@ -190,19 +185,10 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
       continue;
     }
 
-    const currentRevision = await retainedRevision(page);
-    if (currentRevision > lastObservedRevision) {
-      lastObservedRevision = currentRevision;
-      lastSemanticProgressAt = Date.now();
-      quietRounds = 0;
-      previousTurnSignature = '';
-    }
-
     if (!activeTurnId) {
       const sample = await page.evaluate(() => window.__archiveCrawler.mountedDisclosureSample());
-      const signature = semanticMountedSignature(sample, currentRevision);
-      const signatureChanged = signature !== previousIdleSignature;
-      idleRounds = signatureChanged ? 1 : idleRounds + 1;
+      const signature = semanticMountedSignature(sample);
+      idleRounds = signature === previousIdleSignature ? idleRounds + 1 : 1;
       previousIdleSignature = signature;
 
       const requiredRounds = sample.actionableCollapsed > 0
@@ -216,11 +202,14 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
     }
 
     await captureActiveTurn(page, activeTurnId);
-    const revisionAfterCapture = await retainedRevision(page);
-    if (revisionAfterCapture > lastObservedRevision) {
-      lastObservedRevision = revisionAfterCapture;
+    const revisionAfterCapture = await turnRevision(page, activeTurnId);
+    if (revisionAfterCapture > lastObservedTurnRevision) {
+      lastObservedTurnRevision = revisionAfterCapture;
       lastSemanticProgressAt = Date.now();
+      quietRounds = 0;
+      previousTurnSignature = '';
     }
+
     const sample = await page.evaluate(turnId => window.__archiveCrawler.turnDisclosureSample(turnId), activeTurnId);
 
     if (!sample.mounted) {
@@ -228,6 +217,7 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
       activeTurnId = '';
       quietRounds = 0;
       previousTurnSignature = '';
+      lastObservedTurnRevision = 0;
       continue;
     }
 
@@ -254,6 +244,7 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
       activeTurnId = '';
       quietRounds = 0;
       previousTurnSignature = '';
+      lastObservedTurnRevision = 0;
       idleRounds = 0;
       previousIdleSignature = '';
       idleStartedAt = Date.now();
@@ -266,7 +257,6 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
 }
 
 export const __testing = {
-  logicalDisclosureKey,
   semanticTurnSignature,
   semanticMountedSignature
 };
