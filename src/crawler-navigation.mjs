@@ -12,19 +12,7 @@ export function turnNumber(turnId) {
   return Number.isFinite(value) ? value : Number.NaN;
 }
 
-/**
- * Pure displacement policy shared by automatic traversal and diagnostic
- * remounting. Requested coordinates are preserved while the active virtualized
- * window advances. Repeated same-direction logical stagnation progressively
- * increases displacement, bounded by the real scroll range.
- */
-export function assistedScrollTarget({
-  currentTop,
-  requestedTop,
-  maximumTop,
-  client,
-  stagnantSteps
-}) {
+export function assistedScrollTarget({ currentTop, requestedTop, maximumTop, client, stagnantSteps }) {
   const current = Number(currentTop || 0);
   const maximum = Math.max(0, Number(maximumTop || 0));
   const requested = clamp(Number(requestedTop || 0), 0, maximum);
@@ -39,14 +27,10 @@ export function assistedScrollTarget({
 }
 
 /**
- * Permanent page-side navigation authority. It wraps crawler.setTop() for the
- * complete crawl, not just diagnostics. Progress is measured from the leading
- * edge of the active viewport window, so distant retained/sentinel turns and a
- * pinned newest turn cannot manufacture either progress or stagnation.
- *
- * A single very tall turn can legitimately occupy several viewports. For that
- * case, motion of the same leading turn through the viewport also counts as
- * progress. Direction reversals start a fresh baseline.
+ * Install core navigation telemetry and an explicit assisted-navigation API.
+ * crawler.setTop() remains the exact positioning primitive. Adaptive recovery
+ * is available only through crawler.navigateTop(), so endpoint pinning and
+ * oldest-edge probes cannot inherit stale directional state.
  */
 export async function installCrawlerNavigation(page) {
   return page.evaluate(({ stagnantThreshold, maxAmplification, maxViewportJump, positionEpsilon }) => {
@@ -55,7 +39,7 @@ export async function installCrawlerNavigation(page) {
 
     const turnSelector = 'section[data-testid^="conversation-turn-"]';
     const parseTurn = id => Number(/conversation-turn-(\d+)/.exec(id || '')?.[1] ?? Number.NaN);
-    const originalSetTop = crawler.setTop;
+    const exactSetTop = crawler.setTop.bind(crawler);
     const state = crawler.state.navigation = {
       active: true,
       stagnantSteps: 0,
@@ -89,8 +73,7 @@ export async function installCrawlerNavigation(page) {
     function activeWindow() {
       const root = scrollRoot();
       const doc = root === document.scrollingElement || root === document.documentElement || root === document.body;
-      const rootRect = doc
-        ? { top: 0, bottom: Number(innerHeight || 0) }
+      const rootRect = doc ? { top: 0, bottom: Number(innerHeight || 0) }
         : root?.getBoundingClientRect?.() || { top: 0, bottom: Number(innerHeight || 0) };
       const viewportTop = Number(rootRect.top || 0);
       const viewportBottom = Number(rootRect.bottom || viewportTop + Number(innerHeight || 0));
@@ -101,13 +84,7 @@ export async function installCrawlerNavigation(page) {
         const rect = section.getBoundingClientRect?.() || { top: 0, bottom: 0, height: 0 };
         const top = Number(rect.top || 0);
         const bottom = Number(rect.bottom ?? (top + Number(rect.height || 0)));
-        return {
-          id,
-          number,
-          top,
-          bottom,
-          distance: Math.abs(((top + bottom) / 2) - viewportCenter)
-        };
+        return { id, number, top, bottom, distance: Math.abs(((top + bottom) / 2) - viewportCenter) };
       }).filter(entry => Number.isFinite(entry.number));
 
       let active = entries.filter(entry => entry.bottom > viewportTop && entry.top < viewportBottom);
@@ -123,6 +100,24 @@ export async function installCrawlerNavigation(page) {
         trailingNumber: active.at(-1)?.number ?? Number.NaN,
         visibleCount: active.length
       };
+    }
+
+    function resetNavigation() {
+      state.stagnantSteps = 0;
+      state.lastDirection = 0;
+      state.bestDownLeadingNumber = Number.NEGATIVE_INFINITY;
+      state.bestDownLeadingTop = Number.POSITIVE_INFINITY;
+      state.bestUpLeadingNumber = Number.POSITIVE_INFINITY;
+      state.bestUpLeadingTop = Number.NEGATIVE_INFINITY;
+      state.lastLogicalProgress = true;
+      state.lastRequestedTop = 0;
+      state.lastAppliedTop = 0;
+      state.lastLeadingTurn = '';
+      state.lastLeadingTop = 0;
+      state.lastTrailingTurn = '';
+      state.lastVisibleCount = 0;
+      state.directionResets++;
+      return true;
     }
 
     function establishBaseline(direction, windowState) {
@@ -142,28 +137,24 @@ export async function installCrawlerNavigation(page) {
       const leading = windowState.leadingNumber;
       const leadingTop = windowState.leadingTop;
       if (!Number.isFinite(leading)) return true;
-
       if (direction > 0) {
         if (leading > state.bestDownLeadingNumber) {
           state.bestDownLeadingNumber = leading;
           state.bestDownLeadingTop = Number.isFinite(leadingTop) ? leadingTop : Number.POSITIVE_INFINITY;
           return true;
         }
-        if (leading === state.bestDownLeadingNumber && Number.isFinite(leadingTop) &&
-            leadingTop < state.bestDownLeadingTop - positionEpsilon) {
+        if (leading === state.bestDownLeadingNumber && Number.isFinite(leadingTop) && leadingTop < state.bestDownLeadingTop - positionEpsilon) {
           state.bestDownLeadingTop = leadingTop;
           return true;
         }
         return false;
       }
-
       if (leading < state.bestUpLeadingNumber) {
         state.bestUpLeadingNumber = leading;
         state.bestUpLeadingTop = Number.isFinite(leadingTop) ? leadingTop : Number.NEGATIVE_INFINITY;
         return true;
       }
-      if (leading === state.bestUpLeadingNumber && Number.isFinite(leadingTop) &&
-          leadingTop > state.bestUpLeadingTop + positionEpsilon) {
+      if (leading === state.bestUpLeadingNumber && Number.isFinite(leadingTop) && leadingTop > state.bestUpLeadingTop + positionEpsilon) {
         state.bestUpLeadingTop = leadingTop;
         return true;
       }
@@ -171,7 +162,8 @@ export async function installCrawlerNavigation(page) {
     }
 
     crawler.navigationWindow = activeWindow;
-    crawler.setTop = requestedValue => {
+    crawler.resetNavigation = resetNavigation;
+    crawler.navigateTop = requestedValue => {
       const metrics = crawler.metrics();
       const currentTop = Number(metrics.top || 0);
       const maximumTop = Math.max(0, Number(metrics.height || 0) - Number(metrics.client || 0));
@@ -198,8 +190,7 @@ export async function installCrawlerNavigation(page) {
       if (direction && state.stagnantSteps >= stagnantThreshold) {
         const delta = requestedTop - currentTop;
         const multiplier = Math.min(maxAmplification, 2 ** Math.min(3, state.stagnantSteps - 1));
-        const viewportFloor = Math.max(1, Number(metrics.client || 0))
-          * Math.min(maxViewportJump, state.stagnantSteps * 0.75);
+        const viewportFloor = Math.max(1, Number(metrics.client || 0)) * Math.min(maxViewportJump, state.stagnantSteps * 0.75);
         const displacement = Math.max(Math.abs(delta) * multiplier, viewportFloor);
         appliedTop = Math.max(0, Math.min(maximumTop, currentTop + Math.sign(delta) * displacement));
         if (appliedTop !== requestedTop) state.amplifiedRequests++;
@@ -212,7 +203,7 @@ export async function installCrawlerNavigation(page) {
       state.lastLeadingTop = Number.isFinite(windowState.leadingTop) ? windowState.leadingTop : 0;
       state.lastTrailingTurn = windowState.trailingId;
       state.lastVisibleCount = windowState.visibleCount;
-      return originalSetTop(appliedTop);
+      return exactSetTop(appliedTop);
     };
 
     const baseStats = crawler.stats.bind(crawler);
@@ -230,7 +221,7 @@ export async function installCrawlerNavigation(page) {
       navigationDirectionResets: Number(state.directionResets || 0)
     });
     crawler.stats = () => ({ ...baseStats(), ...crawler.navigationSummary() });
-    crawler.__coreNavigationOriginalSetTop = originalSetTop;
+    crawler.__coreNavigationExactSetTop = exactSetTop;
     crawler.__coreNavigationInstalled = true;
     return true;
   }, {
