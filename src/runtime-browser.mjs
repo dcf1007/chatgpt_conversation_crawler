@@ -3,16 +3,50 @@ import { installChromiumBackgroundProtection } from './chromium-background-prote
 
 const foregroundSessions = new WeakMap();
 
-// Keep Chromium's renderer/timer/background-window throttles disabled for the
-// headed authenticated capture context. This remains capture behavior rather
-// than diagnostic-only behavior.
+// Permanent capture behavior: keep Chromium's renderer/timer/background-window
+// throttles disabled for headed authenticated capture contexts.
 installChromiumBackgroundProtection(chromium);
 
+async function applyForegroundState(session) {
+  const result = {
+    focusEmulation: false,
+    idleOverride: false,
+    lifecycleActive: false,
+    pageActivated: false
+  };
+
+  try {
+    await session.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+    result.focusEmulation = true;
+  } catch {}
+  try {
+    await session.send('Emulation.setIdleOverride', { isUserActive: true, isScreenUnlocked: true });
+    result.idleOverride = true;
+  } catch {}
+  try {
+    await session.send('Page.setWebLifecycleState', { state: 'active' });
+    result.lifecycleActive = true;
+  } catch {}
+  try {
+    await session.send('Page.bringToFront');
+    result.pageActivated = true;
+  } catch {}
+
+  return result;
+}
+
+async function sampleForegroundState(page) {
+  return page.evaluate(() => ({
+    hasFocus: Boolean(document.hasFocus?.()),
+    visibilityState: document.visibilityState || '',
+    hidden: Boolean(document.hidden)
+  })).catch(() => ({ hasFocus: null, visibilityState: '', hidden: null }));
+}
+
 /**
- * Ask Chromium to treat the capture page as focused even when the OS window is
- * not foregrounded. The beta13.1 diagnostic run repeatedly resumed when the
- * user focused the window, so beta14-dev makes focus scheduling explicit at
- * the page/CDP layer instead of relying only on launch flags.
+ * Install persistent Chromium page-activity protection on the capture page.
+ * This is core crawler behavior, not diagnostic behavior. The CDP overrides are
+ * best-effort so older Chromium builds can still crawl with the launch flags.
  */
 export async function installPageForegroundProtection(page) {
   if (!page?.context || typeof page.context !== 'function') return false;
@@ -48,24 +82,16 @@ export async function installPageForegroundProtection(page) {
   }).catch(() => ({ hasFocus: null, visibilityState: '', hidden: null }));
 
   const session = await context.newCDPSession(page);
-  try {
-    await session.send('Emulation.setFocusEmulationEnabled', { enabled: true });
-  } catch (error) {
-    await session.detach?.().catch?.(() => {});
-    throw error;
-  }
-
   foregroundSessions.set(page, session);
-  const after = await page.evaluate(() => ({
-    hasFocus: Boolean(document.hasFocus?.()),
-    visibilityState: document.visibilityState || '',
-    hidden: Boolean(document.hidden)
-  })).catch(() => ({ hasFocus: null, visibilityState: '', hidden: null }));
+  const applied = await applyForegroundState(session);
+  const after = await sampleForegroundState(page);
 
   await page.evaluate(value => {
     window.__archiveForegroundProtection = {
-      focusEmulation: true,
+      ...value.applied,
       installedAt: new Date().toISOString(),
+      reassertions: 0,
+      lastReassertedAt: '',
       preInstallHasFocus: value.before.hasFocus,
       preInstallVisibilityState: value.before.visibilityState,
       preInstallHidden: value.before.hidden,
@@ -73,7 +99,34 @@ export async function installPageForegroundProtection(page) {
       postInstallVisibilityState: value.after.visibilityState,
       postInstallHidden: value.after.hidden
     };
-  }, { before, after }).catch(() => {});
+  }, { before, after, applied }).catch(() => {});
+  return true;
+}
+
+/**
+ * Reassert the activity overrides on an existing capture page. Automatic
+ * traversal invokes this at scan boundaries and again after genuine logical
+ * navigation stagnation, so one transient Chromium/background state change
+ * cannot silently disable the protection for the rest of a long crawl.
+ */
+export async function ensurePageForegroundProtection(page) {
+  if (!page) return false;
+  if (!foregroundSessions.has(page)) return installPageForegroundProtection(page);
+  const session = foregroundSessions.get(page);
+  const applied = await applyForegroundState(session);
+  const after = await sampleForegroundState(page);
+  await page.evaluate(value => {
+    const previous = window.__archiveForegroundProtection || {};
+    window.__archiveForegroundProtection = {
+      ...previous,
+      ...value.applied,
+      reassertions: Number(previous.reassertions || 0) + 1,
+      lastReassertedAt: new Date().toISOString(),
+      postInstallHasFocus: value.after.hasFocus,
+      postInstallVisibilityState: value.after.visibilityState,
+      postInstallHidden: value.after.hidden
+    };
+  }, { applied, after }).catch(() => {});
   return true;
 }
 

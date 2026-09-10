@@ -7,13 +7,22 @@ for (const field of [
   'documentHidden',
   'documentHasFocus',
   'focusEmulation',
+  'idleOverride',
+  'lifecycleActive',
+  'pageActivated',
+  'foregroundReassertions',
   'focusEventCount',
   'blurEventCount',
   'visibilityChangeCount',
-  'manualScrollStagnantSteps',
-  'manualScrollRequestedTop',
-  'manualScrollAppliedTop'
+  'navigationStagnantSteps',
+  'navigationLogicalProgress',
+  'navigationRequestedTop',
+  'navigationAppliedTop',
+  'navigationLeadingTurn',
+  'navigationTrailingTurn',
+  'navigationAmplifiedRequests',
+  'navigationDirectionResets'
 ]) {
   assert.ok(source.includes(field), `MHTML manifest instrumentation missing ${field}`);
 }
-console.log('beta14 MHTML focus/visibility metadata smoke test passed');
+console.log('beta14.2 MHTML core navigation/activity metadata smoke test passed');

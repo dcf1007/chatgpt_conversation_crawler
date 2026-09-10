@@ -1,6 +1,8 @@
 import { installCrawler as installPageCrawler } from './crawler-base.mjs';
 import { installMountRetention } from './crawler-mount-retention.mjs';
 import { installDisclosureState } from './crawler-disclosure-state.mjs';
+import { installCrawlerNavigation } from './crawler-navigation.mjs';
+import { ensurePageForegroundProtection } from './runtime-browser.mjs';
 import { expandMounted, waitForDisclosureHydration } from './crawler-expansion.mjs';
 import {
   CRAWLER_PROGRESS_LIMITS,
@@ -10,11 +12,17 @@ import {
   verifyOldestMessages
 } from './crawler-traversal.mjs';
 
-/** Install all page-side state required by the automatic crawler. */
+/** Install all permanent page-side state required by the crawler. */
 export async function installCrawler(page) {
+  // Foreground-equivalent scheduling belongs to the crawler core so it remains
+  // active after development MHTML/manual wrappers are removed.
+  await ensurePageForegroundProtection(page).catch(() => {});
   await installPageCrawler(page);
   await installMountRetention(page);
   await installDisclosureState(page);
+  // Logical virtualizer progress and adaptive displacement are likewise core
+  // navigation behavior shared by automatic traversal and later diagnostics.
+  await installCrawlerNavigation(page);
 }
 
 /** Run the automatic capture pipeline. */
@@ -32,5 +40,6 @@ export const __testing = {
   waitForDisclosureHydration,
   reconcileRetainedDisclosures,
   scan,
-  verifyOldestMessages
+  verifyOldestMessages,
+  installCrawlerNavigation
 };

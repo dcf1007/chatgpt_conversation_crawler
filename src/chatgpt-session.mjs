@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { chromium } from 'playwright';
+import { chromium } from './runtime-browser.mjs';
 
 const LOGIN_URL = 'https://chatgpt.com/';
 const PROFILE_NAME = 'browser-profile';

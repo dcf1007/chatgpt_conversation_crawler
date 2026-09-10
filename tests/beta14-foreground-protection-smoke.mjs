@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  ensurePageForegroundProtection,
   installPageForegroundProtection,
   pageForegroundProtectionInstalled
 } from '../src/runtime-browser.mjs';
@@ -32,14 +33,27 @@ const page = {
 };
 
 assert.equal(await installPageForegroundProtection(page), true);
-assert.deepEqual(calls, [{ method: 'Emulation.setFocusEmulationEnabled', params: { enabled: true } }]);
+assert.deepEqual(calls, [
+  { method: 'Emulation.setFocusEmulationEnabled', params: { enabled: true } },
+  { method: 'Emulation.setIdleOverride', params: { isUserActive: true, isScreenUnlocked: true } },
+  { method: 'Page.setWebLifecycleState', params: { state: 'active' } },
+  { method: 'Page.bringToFront', params: undefined }
+]);
 assert.equal(pageForegroundProtectionInstalled(page), true);
 assert.equal(marker?.focusEmulation, true);
+assert.equal(marker?.idleOverride, true);
+assert.equal(marker?.lifecycleActive, true);
+assert.equal(marker?.pageActivated, true);
 assert.equal(marker?.preInstallHasFocus, false);
 assert.equal(marker?.preInstallVisibilityState, 'visible');
-assert.equal(await installPageForegroundProtection(page), false, 'foreground protection must be idempotent per page');
-assert.equal(calls.length, 1);
+assert.equal(await installPageForegroundProtection(page), false, 'installer must remain idempotent per page');
+assert.equal(calls.length, 4, 'idempotent install must not silently create another CDP session');
+
+assert.equal(await ensurePageForegroundProtection(page), true);
+assert.equal(calls.length, 8, 'reassertion must replay the complete active-page state');
+assert.equal(global.window.__archiveForegroundProtection.reassertions, 1);
+assert.ok(global.window.__archiveForegroundProtection.lastReassertedAt);
 assert.equal(detached, 0);
 assert.ok(global.window.__archiveFocusTelemetry, 'focus/visibility event telemetry must be installed before emulation');
 
-console.log('beta14 page foreground protection smoke test passed');
+console.log('beta14.2 permanent page foreground protection smoke test passed');

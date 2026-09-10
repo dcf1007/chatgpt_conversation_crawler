@@ -1,4 +1,5 @@
 import { expandMounted } from './crawler-expansion.mjs';
+import { ensurePageForegroundProtection } from './runtime-browser.mjs';
 
 const SCAN_MAX_STEPS = 2000;
 const SCAN_ENDPOINT_STABLE_CHECKS = 6;
@@ -6,6 +7,7 @@ const OLDEST_REQUIRED_QUIET_CHECKS = 12;
 const OLDEST_MAX_CHECKS = 180;
 const RECONCILIATION_MAX_PASSES = 2;
 const RECONCILIATION_STABLE_PASSES = 1;
+const NAVIGATION_STAGNATION_REASSERT = 2;
 
 export const CRAWLER_PROGRESS_LIMITS = Object.freeze({
   scanPasses: 3,
@@ -47,6 +49,11 @@ function traversalProgressSignature(metrics, stats, { normalizeTop = false } = {
 }
 
 export async function scan(page, direction, pass, onProgress, shouldCancel, maxSteps = SCAN_MAX_STEPS) {
+  // Reassert the permanent page-active state at every traversal boundary. A
+  // long-running authenticated capture must not depend on one CDP command sent
+  // only at startup.
+  await ensurePageForegroundProtection(page).catch(() => {});
+
   const first = await page.evaluate(() => window.__archiveCrawler.metrics());
   await page.evaluate(
     top => window.__archiveCrawler.setTop(top),
@@ -67,6 +74,15 @@ export async function scan(page, direction, pass, onProgress, shouldCancel, maxS
     const atEnd = direction === 'down' ? metrics.top >= maximumTop - 4 : metrics.top <= 4;
     const stats = await page.evaluate(() => window.__archiveCrawler.stats());
     const signature = traversalProgressSignature(metrics, stats);
+
+    // The core setTop wrapper has semantic knowledge of the active mounted
+    // viewport. If two same-direction requests fail to move that logical edge,
+    // reassert Chromium focus/idle/lifecycle activity before the assisted
+    // displacement is allowed to continue. This is a recovery path, not a
+    // substitute for the logical navigation fix.
+    if (Number(stats.navigationStagnantSteps || 0) >= NAVIGATION_STAGNATION_REASSERT) {
+      await ensurePageForegroundProtection(page).catch(() => {});
+    }
 
     if (atEnd && signature === previousSignature) stableChecks++;
     else if (atEnd) stableChecks = 1;
@@ -112,6 +128,7 @@ export async function verifyOldestMessages(page, onProgress, shouldCancel) {
   let previousSignature = '';
   let checks = 0;
 
+  await ensurePageForegroundProtection(page).catch(() => {});
   await onProgress?.({
     stage: 'oldest_verification',
     phase: 'Verifying oldest messages',
@@ -348,4 +365,4 @@ export async function crawlAutomaticConversation(page, { onProgress, shouldCance
   });
 }
 
-export const __testing = { traversalProgressSignature };
+export const __testing = { traversalProgressSignature, NAVIGATION_STAGNATION_REASSERT };

@@ -68,6 +68,7 @@ async function pageExecutionState(page) {
   return page.evaluate(() => {
     const crawler = window.__archiveCrawler;
     const metrics = crawler?.metrics?.() || {};
+    const navigation = window.__archiveCrawlerNavigation || {};
     const manualScroll = window.__archiveManualScrollAssist || {};
     const foreground = window.__archiveForegroundProtection || {};
     const focusTelemetry = window.__archiveFocusTelemetry || {};
@@ -76,7 +77,12 @@ async function pageExecutionState(page) {
       documentHidden: Boolean(document.hidden),
       documentHasFocus: Boolean(document.hasFocus?.()),
       focusEmulation: Boolean(foreground.focusEmulation),
+      idleOverride: Boolean(foreground.idleOverride),
+      lifecycleActive: Boolean(foreground.lifecycleActive),
+      pageActivated: Boolean(foreground.pageActivated),
       foregroundProtectionInstalledAt: foreground.installedAt || '',
+      foregroundReassertions: Number(foreground.reassertions || 0),
+      foregroundLastReassertedAt: foreground.lastReassertedAt || '',
       foregroundPreInstallHasFocus: foreground.preInstallHasFocus ?? null,
       foregroundPreInstallVisibilityState: foreground.preInstallVisibilityState || '',
       foregroundPostInstallHasFocus: foreground.postInstallHasFocus ?? null,
@@ -88,6 +94,16 @@ async function pageExecutionState(page) {
       liveScrollTop: Number(metrics.top ?? window.scrollY ?? 0),
       liveScrollHeight: Number(metrics.height ?? document.scrollingElement?.scrollHeight ?? 0),
       liveScrollClient: Number(metrics.client ?? window.innerHeight ?? 0),
+      navigationAssistActive: Boolean(navigation.active),
+      navigationStagnantSteps: Number(navigation.stagnantSteps || 0),
+      navigationLogicalProgress: navigation.lastLogicalProgress !== false,
+      navigationRequestedTop: Number(navigation.lastRequestedTop || 0),
+      navigationAppliedTop: Number(navigation.lastAppliedTop || 0),
+      navigationLeadingTurn: navigation.lastLeadingTurn || '',
+      navigationTrailingTurn: navigation.lastTrailingTurn || '',
+      navigationVisibleTurns: Number(navigation.lastVisibleCount || 0),
+      navigationAmplifiedRequests: Number(navigation.amplifiedRequests || 0),
+      navigationDirectionResets: Number(navigation.directionResets || 0),
       manualScrollAssistActive: Boolean(manualScroll.active),
       manualScrollStagnantSteps: Number(manualScroll.stagnantSteps || 0),
       manualScrollLogicalProgress: manualScroll.lastLogicalProgress !== false,
