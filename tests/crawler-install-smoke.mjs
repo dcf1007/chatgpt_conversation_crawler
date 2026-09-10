@@ -298,6 +298,8 @@ globalThis.__archiveCrawler = {
   markQuiescence() {},
   metrics() { return { top: 0, height: 1000, client: 1000 }; },
   setTop() {},
+  resetNavigation() {},
+  navigateTop() {},
   stats() {
     endpointStatsReads++;
     return {
