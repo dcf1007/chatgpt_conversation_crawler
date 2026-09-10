@@ -93,7 +93,7 @@ jobs:
       - name: Upload validated diagnostic ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: beta13.1-dev-diagnostic-package
+          name: beta14-dev-diagnostic-package
           path: ${{ steps.package.outputs.archive }}
           if-no-files-found: error
           retention-days: 7

@@ -1,6 +1,6 @@
 {
   "name": "chatgpt-share-archiver",
-  "version": "1.6.7-beta13.1-dev",
+  "version": "1.6.7-beta14-dev",
   "private": true,
   "type": "module",
   "scripts": {

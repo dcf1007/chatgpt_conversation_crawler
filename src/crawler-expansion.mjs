@@ -96,7 +96,16 @@ async function processExpansion(page, result, turnRevisionBefore, onProgress, sh
 
   const activity = await captureActiveTurn(page, result.turnId || '');
   const revisionAfter = await turnRevision(page, result.turnId || '');
-  if (confirmed && result.logicalKey && result.turnId) {
+  const retainedProgress = revisionAfter > Number(turnRevisionBefore || 0);
+
+  // Beta13.1 marked a logical disclosure complete immediately after a
+  // successful activation, even when that activation had just produced a richer
+  // retained turn. The real beta13.1 run proved that such disclosures can
+  // remount collapsed and expose one more richer generation (turns 6 and 14).
+  // Beta14 therefore records a fixed point only after a successful activation
+  // produces *no* newer retained generation. If it did improve the turn, leave
+  // it eligible for one more verification at the new revision.
+  if (confirmed && !retainedProgress && result.logicalKey && result.turnId) {
     await page.evaluate(value => window.__archiveCrawler.markDisclosureComplete?.(value), {
       logicalKey: result.logicalKey,
       turnId: result.turnId
@@ -107,7 +116,7 @@ async function processExpansion(page, result, turnRevisionBefore, onProgress, sh
     ...activity,
     expandingStatus: activity.expandingStatus || 'No disclosure expansion active in current mounted range'
   });
-  return { confirmed, revisionAfter, retainedProgress: revisionAfter > Number(turnRevisionBefore || 0) };
+  return { confirmed, revisionAfter, retainedProgress };
 }
 
 async function markTurnQuiescence(page, turnId, quietRounds, signature, converged, timedOut = false) {
@@ -124,10 +133,11 @@ async function markTurnQuiescence(page, turnId, quietRounds, signature, converge
 /**
  * Expand mounted disclosures while semantic archive progress is being made.
  *
- * Beta13.1 keeps logical completion state page-side across expandMounted()
- * invocations. A virtualizer remount can reopen a disclosure only after that
- * same retained turn becomes richer. Activity in another turn cannot make it
- * eligible again, and volatile mounted-DOM membership does not reset quietness.
+ * Beta14 retains beta13.1's page-side logical completion state and per-turn
+ * revisions, but a successful activation that improves the retained turn is not
+ * yet considered a fixed point. The same logical disclosure may verify once at
+ * the newer revision; only a confirmed no-progress activation suppresses its
+ * subsequent virtualized remounts at that revision.
  */
 export async function expandMounted(page, max, onProgress, shouldCancel) {
   let processed = 0;
@@ -168,10 +178,9 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
       previousIdleSignature = '';
       idleStartedAt = Date.now();
 
-      // Completing a previously actionable logical disclosure is semantic work
-      // even when it proves that the remounted control adds no richer archive
-      // state. Persisting that completion makes subsequent remounts ineligible
-      // until this same turn's retained revision increases.
+      // A confirmed activation or a richer retained generation is semantic work.
+      // No-progress confirmation also establishes the fixed point that makes a
+      // later same-revision remount ineligible.
       if (confirmed || retainedProgress) lastSemanticProgressAt = Date.now();
 
       quietRounds = 0;

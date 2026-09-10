@@ -64,6 +64,41 @@ export function createIdlePeriodicScheduler(onIdle, {
   };
 }
 
+async function pageExecutionState(page) {
+  return page.evaluate(() => {
+    const crawler = window.__archiveCrawler;
+    const metrics = crawler?.metrics?.() || {};
+    const manualScroll = window.__archiveManualScrollAssist || {};
+    const foreground = window.__archiveForegroundProtection || {};
+    const focusTelemetry = window.__archiveFocusTelemetry || {};
+    return {
+      visibilityState: document.visibilityState || '',
+      documentHidden: Boolean(document.hidden),
+      documentHasFocus: Boolean(document.hasFocus?.()),
+      focusEmulation: Boolean(foreground.focusEmulation),
+      foregroundProtectionInstalledAt: foreground.installedAt || '',
+      foregroundPreInstallHasFocus: foreground.preInstallHasFocus ?? null,
+      foregroundPreInstallVisibilityState: foreground.preInstallVisibilityState || '',
+      foregroundPostInstallHasFocus: foreground.postInstallHasFocus ?? null,
+      focusEventCount: Number(focusTelemetry.focusEvents || 0),
+      blurEventCount: Number(focusTelemetry.blurEvents || 0),
+      visibilityChangeCount: Number(focusTelemetry.visibilityChanges || 0),
+      lastFocusVisibilityEvent: focusTelemetry.lastEvent || '',
+      lastFocusVisibilityEventAt: focusTelemetry.lastEventAt || '',
+      liveScrollTop: Number(metrics.top ?? window.scrollY ?? 0),
+      liveScrollHeight: Number(metrics.height ?? document.scrollingElement?.scrollHeight ?? 0),
+      liveScrollClient: Number(metrics.client ?? window.innerHeight ?? 0),
+      manualScrollAssistActive: Boolean(manualScroll.active),
+      manualScrollStagnantSteps: Number(manualScroll.stagnantSteps || 0),
+      manualScrollLogicalProgress: manualScroll.lastLogicalProgress !== false,
+      manualScrollRequestedTop: Number(manualScroll.lastRequestedTop || 0),
+      manualScrollAppliedTop: Number(manualScroll.lastAppliedTop || 0),
+      manualScrollMountedFirst: manualScroll.lastMountedFirst || '',
+      manualScrollMountedLast: manualScroll.lastMountedLast || ''
+    };
+  }).catch(() => ({}));
+}
+
 /**
  * Capture Chromium's own MHTML serialization for a live page. Captures are
  * serialized through one promise chain so overlapping periodic/resource/DOM
@@ -107,6 +142,7 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
       ].join('-');
       const filename = `${filenameBase}.mhtml`;
       const filePath = path.join(directory, filename);
+      const executionState = await pageExecutionState(page);
 
       const commonMetadata = {
         sequence: sequenceNumber,
@@ -125,10 +161,13 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
         newestRetained: diagnosticState.newestRetained || 'none',
         mountedFirst: diagnosticState.mountedFirst || 'none',
         mountedLast: diagnosticState.mountedLast || 'none',
-        scrollHeight: diagnosticState.scrollHeight || 0,
+        scrollTop: diagnosticState.scrollTop ?? executionState.liveScrollTop ?? 0,
+        scrollHeight: diagnosticState.scrollHeight || executionState.liveScrollHeight || 0,
+        scrollClient: diagnosticState.scrollClient || executionState.liveScrollClient || 0,
         preBlocks: diagnosticState.preBlocks || 0,
         codeBlocks: diagnosticState.codeBlocks || 0,
         appBlocks: diagnosticState.appBlocks || 0,
+        ...executionState,
         ...metadata
       };
 
