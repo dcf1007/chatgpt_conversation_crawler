@@ -227,6 +227,7 @@ async function probeBracket(page, targetTurnId, retainedTurnIds, analysis, shoul
   if (!analysis.nearestBeforeId) return { found: false, probes: 0 };
   await page.evaluate(beforeId => {
     document.querySelector(`section[data-testid="${beforeId}"]`)?.scrollIntoView({ block: 'end', inline: 'nearest' });
+    window.__archiveCrawler.resetNavigation();
   }, analysis.nearestBeforeId);
   await page.waitForTimeout(240);
 
@@ -239,7 +240,7 @@ async function probeBracket(page, targetTurnId, retainedTurnIds, analysis, shoul
     const maximumTop = Math.max(0, state.height - state.client);
     const nextTop = Math.min(maximumTop, state.top + Math.max(72, Math.min(180, Math.floor(state.client * 0.10))));
     if (nextTop <= state.top + 1) break;
-    await page.evaluate(top => window.__archiveCrawler.setTop(top), nextTop);
+    await page.evaluate(top => window.__archiveCrawler.navigateTop(top), nextTop);
     await page.waitForTimeout(160);
   }
   return { found: false, probes: REMOUNT_BRACKET_PROBES };
@@ -257,7 +258,10 @@ async function remountTarget(page, targetTurnId, retainedTurnIds, shouldCancel, 
   let totalSteps = 0;
   for (let sweep = 0; sweep < REMOUNT_SWEEP_FRACTIONS.length; sweep++) {
     if (shouldCancel?.()) throw new Error('Archive cancelled.');
-    await page.evaluate(() => window.__archiveCrawler.setTop(0));
+    await page.evaluate(() => {
+      window.__archiveCrawler.resetNavigation();
+      window.__archiveCrawler.setTop(0);
+    });
     await page.waitForTimeout(350);
 
     for (let step = 0; step < REMOUNT_SWEEP_MAX_STEPS; step++) {
@@ -294,7 +298,7 @@ async function remountTarget(page, targetTurnId, retainedTurnIds, shouldCancel, 
         if (remainingTurns <= 3) fraction = Math.min(fraction, 0.12);
       }
       const nextTop = Math.min(maximumTop, state.top + Math.max(96, Math.floor(state.client * fraction)));
-      await page.evaluate(top => window.__archiveCrawler.setTop(top), nextTop);
+      await page.evaluate(top => window.__archiveCrawler.navigateTop(top), nextTop);
       await page.waitForTimeout(REMOUNT_SWEEP_INTERVAL_MS);
 
       if (step % 20 === 0) {
