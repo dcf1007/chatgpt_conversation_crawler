@@ -6,13 +6,14 @@ const previousDocument = globalThis.document;
 const previousInnerHeight = globalThis.innerHeight;
 
 let top = 1000;
+let client = 1000;
 let leadingTurn = 2;
 let leadingTop = 100;
 const applied = [];
 const crawler = {
   state: {},
   metrics() {
-    return { top, height: 100_000, client: 1000 };
+    return { top, height: 100_000, client };
   },
   setTop(value) {
     top = Number(value);
@@ -58,14 +59,24 @@ try {
   assert.equal(await installCrawlerNavigation(page), true);
   assert.equal(await installCrawlerNavigation(page), false, 'core navigation installer must be idempotent');
 
+  // Exact positioning must remain exact and must not mutate assisted-navigation
+  // state. This is the endpoint contract beta14.2 accidentally broke.
+  const initialResets = window.__archiveCrawlerNavigation.directionResets;
   crawler.setTop(1400);
+  crawler.setTop(0);
+  assert.equal(applied.at(-1), 0, 'exact setTop(0) must always land at the requested endpoint');
+  assert.equal(window.__archiveCrawlerNavigation.directionResets, initialResets);
+  assert.equal(window.__archiveCrawlerNavigation.stagnantSteps, 0);
+
+  top = 1000;
+  crawler.navigateTop(1400);
   assert.equal(applied.at(-1), 1400);
   assert.equal(window.__archiveCrawlerNavigation.lastLeadingTurn, 'conversation-turn-2');
   assert.equal(window.__archiveCrawlerNavigation.stagnantSteps, 0);
 
   leadingTurn = 4;
   leadingTop = 100;
-  crawler.setTop(1800);
+  crawler.navigateTop(1800);
   assert.equal(applied.at(-1), 1800, 'advancing active leading edge must preserve requested scroll');
   assert.equal(window.__archiveCrawlerNavigation.lastLogicalProgress, true);
   assert.equal(window.__archiveCrawlerNavigation.stagnantSteps, 0);
@@ -74,29 +85,53 @@ try {
   // moves. Its own movement through the viewport is real progress and must not
   // trigger an amplified jump that could skip lazy/nested content.
   leadingTop = -300;
-  crawler.setTop(2200);
+  crawler.navigateTop(2200);
   assert.equal(applied.at(-1), 2200, 'same-turn viewport motion must count as progress');
   assert.equal(window.__archiveCrawlerNavigation.lastLogicalProgress, true);
   assert.equal(window.__archiveCrawlerNavigation.stagnantSteps, 0);
 
-  crawler.setTop(2600);
+  crawler.navigateTop(2600);
   assert.equal(applied.at(-1), 2600);
   assert.equal(window.__archiveCrawlerNavigation.stagnantSteps, 1);
 
-  crawler.setTop(3000);
+  crawler.navigateTop(3000);
   assert.ok(applied.at(-1) > 3000, 'second genuine same-direction stagnation must amplify displacement');
   assert.equal(window.__archiveCrawlerNavigation.stagnantSteps, 2);
   assert.equal(window.__archiveCrawlerNavigation.amplifiedRequests, 1);
 
+  // Exact endpoint moves remain exact even after the assisted path has reached
+  // an amplified/stagnant state.
+  crawler.setTop(0);
+  assert.equal(applied.at(-1), 0);
+  assert.equal(window.__archiveCrawlerNavigation.stagnantSteps, 2, 'exact positioning must not secretly rewrite assisted state');
+
+  crawler.resetNavigation();
+  assert.equal(window.__archiveCrawlerNavigation.stagnantSteps, 0);
+  assert.equal(window.__archiveCrawlerNavigation.lastDirection, 0);
+
+  // Browser zoom changes CSS-pixel client height. Exact endpoint behavior must
+  // remain invariant when client jumps from 1000 to 4000 as seen in diagnostics.
+  client = 4000;
+  top = 5000;
+  crawler.setTop(0);
+  assert.equal(applied.at(-1), 0, 'zoom-sized client changes must not amplify exact top positioning');
+  crawler.setTop(1520);
+  assert.equal(applied.at(-1), 1520, 'oldest-edge nudge must remain an exact coordinate at large client sizes');
+  crawler.setTop(0);
+  assert.equal(applied.at(-1), 0);
+
+  client = 1000;
+  top = 2000;
   leadingTurn = 2;
   leadingTop = 100;
-  crawler.setTop(1200);
+  crawler.resetNavigation();
+  crawler.navigateTop(1200);
   assert.equal(applied.at(-1), 1200, 'reverse recovery starts a new directional baseline');
   assert.equal(window.__archiveCrawlerNavigation.stagnantSteps, 0);
 
   leadingTurn = 4;
-  crawler.setTop(1600);
-  assert.equal(applied.at(-1), 1600, 'downward recovery after reversal must not inherit stale high-water state');
+  crawler.navigateTop(1600);
+  assert.equal(applied.at(-1), 1600, 'downward recovery after reset must not inherit stale high-water state');
   assert.equal(window.__archiveCrawlerNavigation.stagnantSteps, 0);
 
   const stats = crawler.stats();
@@ -112,4 +147,4 @@ try {
   else globalThis.innerHeight = previousInnerHeight;
 }
 
-console.log('beta14.2 permanent core virtualizer navigation smoke test passed');
+console.log('beta14.3 exact/assisted virtualizer navigation contract smoke test passed');
