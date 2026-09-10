@@ -35,7 +35,10 @@ export function assistedManualScrollTarget({
 /**
  * Development-only navigation assist for the independent manual comparison.
  * It wraps crawler.setTop() only during manual inspection. Logical progress is
- * measured from mounted conversation-turn numbers, not from scrollTop alone.
+ * measured from the virtualizer's leading mounted conversation-turn edge, not
+ * from scrollTop alone. ChatGPT can keep the newest turn mounted while this
+ * leading edge advances, so the maximum mounted turn is not a valid forward
+ * progress signal.
  */
 export async function installManualScrollAssist(page) {
   return page.evaluate(({ stagnantThreshold, maxAmplification, maxViewportJump }) => {
@@ -80,22 +83,33 @@ export async function installManualScrollAssist(page) {
       const bounds = mountedBounds();
 
       let logicalProgress = true;
-      if (direction > 0) {
-        logicalProgress = Number.isFinite(bounds.maximum) && bounds.maximum > state.bestDownEdge;
-        if (Number.isFinite(bounds.maximum)) state.bestDownEdge = Math.max(state.bestDownEdge, bounds.maximum);
-      } else if (direction < 0) {
-        logicalProgress = Number.isFinite(bounds.minimum) && bounds.minimum < state.bestUpEdge;
-        if (Number.isFinite(bounds.minimum)) state.bestUpEdge = Math.min(state.bestUpEdge, bounds.minimum);
-      }
-
       if (!direction) {
         state.stagnantSteps = 0;
         state.lastDirection = 0;
-      } else if (direction !== state.lastDirection || logicalProgress) {
+      } else if (direction !== state.lastDirection) {
+        // A reversal starts a new directional run. Its current leading edge is
+        // the baseline; an all-time edge from a previous run must not make the
+        // recovery leg look stagnant before it reaches the old high-water mark.
         state.stagnantSteps = 0;
         state.lastDirection = direction;
+        if (Number.isFinite(bounds.minimum)) {
+          if (direction > 0) state.bestDownEdge = bounds.minimum;
+          else state.bestUpEdge = bounds.minimum;
+        }
       } else {
-        state.stagnantSteps++;
+        if (direction > 0) {
+          // The beta14 result kept conversation-turn-120 mounted throughout the
+          // target search. Forward progress is therefore the leading/minimum edge
+          // moving to a later turn, not the maximum mounted edge increasing.
+          logicalProgress = Number.isFinite(bounds.minimum) && bounds.minimum > state.bestDownEdge;
+          if (Number.isFinite(bounds.minimum)) state.bestDownEdge = Math.max(state.bestDownEdge, bounds.minimum);
+        } else {
+          logicalProgress = Number.isFinite(bounds.minimum) && bounds.minimum < state.bestUpEdge;
+          if (Number.isFinite(bounds.minimum)) state.bestUpEdge = Math.min(state.bestUpEdge, bounds.minimum);
+        }
+
+        if (logicalProgress) state.stagnantSteps = 0;
+        else state.stagnantSteps++;
       }
 
       let appliedTop = requestedTop;

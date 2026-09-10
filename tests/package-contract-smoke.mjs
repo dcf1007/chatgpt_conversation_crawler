@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-assert.equal(packageJson.version, '1.6.7-beta14-dev');
+assert.equal(packageJson.version, '1.6.7-beta14.1-dev');
 assert.equal(packageJson.scripts?.start, 'node server-dev.mjs');
 
 for (const required of [
@@ -16,10 +16,12 @@ for (const required of [
   'BETA13_DEV.md',
   'BETA13_1_DEV.md',
   'BETA14_DEV.md',
+  'BETA14_1_DEV.md',
   'README.beta12-dev.txt',
   'README.beta13-dev.txt',
   'README.beta13.1-dev.txt',
   'README.beta14-dev.txt',
+  'README.beta14.1-dev.txt',
   'DIAGNOSTIC_BUILD_ONLY',
   'public/index.html',
   'public/preview.html',
@@ -40,11 +42,11 @@ for (const required of [
   'start-linux.sh',
   'start-macos.sh'
 ]) {
-  assert.ok(fs.existsSync(path.join(root, required)), `required beta14-dev file missing: ${required}`);
+  assert.ok(fs.existsSync(path.join(root, required)), `required beta14.1-dev file missing: ${required}`);
 }
 
-assert.ok(!fs.existsSync(path.join(root, 'BETA11_DEV.md')), 'beta14-dev package must not retain superseded beta11-dev instructions');
-assert.ok(!fs.existsSync(path.join(root, 'README.beta11-dev.txt')), 'beta14-dev package must not retain superseded beta11-dev package note');
-assert.ok(!fs.existsSync(path.join(root, 'src/crawler-page-diagnostics.mjs')), 'beta14-dev must not revive the old crawler-page-diagnostics implementation');
+assert.ok(!fs.existsSync(path.join(root, 'BETA11_DEV.md')), 'beta14.1-dev package must not retain superseded beta11-dev instructions');
+assert.ok(!fs.existsSync(path.join(root, 'README.beta11-dev.txt')), 'beta14.1-dev package must not retain superseded beta11-dev package note');
+assert.ok(!fs.existsSync(path.join(root, 'src/crawler-page-diagnostics.mjs')), 'beta14.1-dev must not revive the old crawler-page-diagnostics implementation');
 
-console.log('beta14-dev package contract smoke test passed');
+console.log('beta14.1-dev package contract smoke test passed');
