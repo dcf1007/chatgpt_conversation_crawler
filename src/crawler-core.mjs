@@ -15,7 +15,7 @@ import {
 /** Install all permanent page-side state required by the crawler. */
 export async function installCrawler(page) {
   // Foreground-equivalent scheduling belongs to the crawler core so it remains
-  // active after development MHTML/manual wrappers are removed.
+  // active after development diagnostics are removed.
   await ensurePageForegroundProtection(page).catch(() => {});
   await installPageCrawler(page);
   await installMountRetention(page);
