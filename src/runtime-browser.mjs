@@ -27,11 +27,10 @@ async function applyForegroundState(session) {
     await session.send('Page.setWebLifecycleState', { state: 'active' });
     result.lifecycleActive = true;
   } catch {}
-  try {
-    await session.send('Page.bringToFront');
-    result.pageActivated = true;
-  } catch {}
 
+  // Do not call Page.bringToFront here. The crawler only needs renderer/activity
+  // protection; activating the native browser window defeats the user's ability
+  // to keep a long authenticated crawl minimized or behind other windows.
   return result;
 }
 
