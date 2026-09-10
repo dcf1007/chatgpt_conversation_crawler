@@ -10,7 +10,8 @@ for (const required of [
   'automatic traversal',
   'Emulation.setIdleOverride',
   'Page.setWebLifecycleState',
-  'Page.bringToFront is no longer used',
+  'Page.bringToFront',
+  'is no longer used',
   'permanent crawler core',
   'MHTML'
 ]) {
