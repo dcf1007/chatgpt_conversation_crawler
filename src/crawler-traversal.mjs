@@ -49,10 +49,11 @@ function traversalProgressSignature(metrics, stats, { normalizeTop = false } = {
 }
 
 export async function scan(page, direction, pass, onProgress, shouldCancel, maxSteps = SCAN_MAX_STEPS) {
-  // Reassert the permanent page-active state at every traversal boundary. A
-  // long-running authenticated capture must not depend on one CDP command sent
-  // only at startup.
+  // Keep renderer/activity protection alive without ever activating the native
+  // browser window. Navigation state is reset for each traversal phase so a
+  // previous direction cannot contaminate the next scan.
   await ensurePageForegroundProtection(page).catch(() => {});
+  await page.evaluate(() => window.__archiveCrawler.resetNavigation?.());
 
   const first = await page.evaluate(() => window.__archiveCrawler.metrics());
   await page.evaluate(
@@ -75,11 +76,6 @@ export async function scan(page, direction, pass, onProgress, shouldCancel, maxS
     const stats = await page.evaluate(() => window.__archiveCrawler.stats());
     const signature = traversalProgressSignature(metrics, stats);
 
-    // The core setTop wrapper has semantic knowledge of the active mounted
-    // viewport. If two same-direction requests fail to move that logical edge,
-    // reassert Chromium focus/idle/lifecycle activity before the assisted
-    // displacement is allowed to continue. This is a recovery path, not a
-    // substitute for the logical navigation fix.
     if (Number(stats.navigationStagnantSteps || 0) >= NAVIGATION_STAGNATION_REASSERT) {
       await ensurePageForegroundProtection(page).catch(() => {});
     }
@@ -118,7 +114,10 @@ export async function scan(page, direction, pass, onProgress, shouldCancel, maxS
     const nextTop = direction === 'down'
       ? Math.min(maximumTop, metrics.top + stepSize)
       : Math.max(0, metrics.top - stepSize);
-    await page.evaluate(top => window.__archiveCrawler.setTop(top), nextTop);
+    await page.evaluate(top => {
+      const crawler = window.__archiveCrawler;
+      return (crawler.navigateTop || crawler.setTop)(top);
+    }, nextTop);
     await page.waitForTimeout(direction === 'up' ? 260 : 200);
   }
 }
@@ -129,6 +128,7 @@ export async function verifyOldestMessages(page, onProgress, shouldCancel) {
   let checks = 0;
 
   await ensurePageForegroundProtection(page).catch(() => {});
+  await page.evaluate(() => window.__archiveCrawler.resetNavigation?.());
   await onProgress?.({
     stage: 'oldest_verification',
     phase: 'Verifying oldest messages',
@@ -187,6 +187,9 @@ export async function verifyOldestMessages(page, onProgress, shouldCancel) {
       const maximumTop = Math.max(0, metrics.height - metrics.client);
       const nudge = Math.min(maximumTop, Math.max(220, Math.floor(metrics.client * 0.38)));
       if (nudge > 0) {
+        // Endpoint verification deliberately uses exact positioning. The
+        // beta14.2 global wrapper turned this probe into an adaptive move and
+        // allowed zoom-dependent navigation state to leak into convergence.
         await page.evaluate(top => window.__archiveCrawler.setTop(top), nudge);
         await page.waitForTimeout(260);
         await page.evaluate(() => window.__archiveCrawler.setTop(0));
