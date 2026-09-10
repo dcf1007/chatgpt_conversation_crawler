@@ -53,7 +53,7 @@ export async function scan(page, direction, pass, onProgress, shouldCancel, maxS
   // browser window. Navigation state is reset for each traversal phase so a
   // previous direction cannot contaminate the next scan.
   await ensurePageForegroundProtection(page).catch(() => {});
-  await page.evaluate(() => window.__archiveCrawler.resetNavigation?.());
+  await page.evaluate(() => window.__archiveCrawler.resetNavigation());
 
   const first = await page.evaluate(() => window.__archiveCrawler.metrics());
   await page.evaluate(
@@ -114,10 +114,7 @@ export async function scan(page, direction, pass, onProgress, shouldCancel, maxS
     const nextTop = direction === 'down'
       ? Math.min(maximumTop, metrics.top + stepSize)
       : Math.max(0, metrics.top - stepSize);
-    await page.evaluate(top => {
-      const crawler = window.__archiveCrawler;
-      return (crawler.navigateTop || crawler.setTop)(top);
-    }, nextTop);
+    await page.evaluate(top => window.__archiveCrawler.navigateTop(top), nextTop);
     await page.waitForTimeout(direction === 'up' ? 260 : 200);
   }
 }
@@ -128,7 +125,7 @@ export async function verifyOldestMessages(page, onProgress, shouldCancel) {
   let checks = 0;
 
   await ensurePageForegroundProtection(page).catch(() => {});
-  await page.evaluate(() => window.__archiveCrawler.resetNavigation?.());
+  await page.evaluate(() => window.__archiveCrawler.resetNavigation());
   await onProgress?.({
     stage: 'oldest_verification',
     phase: 'Verifying oldest messages',
