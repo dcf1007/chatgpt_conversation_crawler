@@ -19,7 +19,24 @@ set "NPM_CMD=%NODE_DIR%npm.cmd"
 
 echo Using Node: "%NODE_EXE%"
 "%NODE_EXE%" --version
-for /f "delims=" %%V in ('"%NODE_EXE%" -p "Number(process.versions.node.split('.')[0])"') do set "NODE_MAJOR=%%V"
+
+rem Do not query the quoted Node executable through FOR /F command substitution.
+rem FOR /F reparses its command through cmd.exe and can strip the command quotes
+rem from paths such as C:\Program Files\nodejs\node.exe. Run Node directly and
+rem read the result from a temporary file instead.
+set "NODE_MAJOR_FILE=%TEMP%\chatgpt-share-archiver-node-major-%RANDOM%-%RANDOM%.txt"
+"%NODE_EXE%" -p "Number(process.versions.node.split('.')[0])" > "%NODE_MAJOR_FILE%" 2>nul
+if errorlevel 1 (
+  del /q "%NODE_MAJOR_FILE%" >nul 2>&1
+  echo.
+  echo Could not determine the active Node.js version.
+  pause
+  exit /b 1
+)
+set "NODE_MAJOR="
+set /p "NODE_MAJOR="<"%NODE_MAJOR_FILE%"
+del /q "%NODE_MAJOR_FILE%" >nul 2>&1
+
 if not defined NODE_MAJOR (
   echo.
   echo Could not determine the active Node.js version.
