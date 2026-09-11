@@ -27,7 +27,7 @@ export function evaluateArchiveIntegrity(stats = {}) {
     warnings.push({
       code: 'traversal-not-converged',
       count: scanLimits,
-      message: `${scanLimits} traversal pass(es) reached their safety limit before endpoint convergence was proven.`
+      message: `${scanLimits} traversal sweep(s) reached their safety limit before endpoint convergence was proven.`
     });
   }
 
@@ -36,6 +36,16 @@ export function evaluateArchiveIntegrity(stats = {}) {
       code: 'oldest-edge-not-converged',
       count: 1,
       message: `Oldest-message verification stopped at its safety limit after ${numeric(stats.oldestChecks)} check(s).`
+    });
+  }
+
+  const turnProcessingFailures = numeric(stats.turnProcessingFailures);
+  if (turnProcessingFailures > 0) {
+    warnings.push({
+      code: 'turn-processing-not-converged',
+      count: turnProcessingFailures,
+      turnIds: turnList(stats.turnProcessingFailureTurnIds),
+      message: `${turnProcessingFailures} retained turn(s) did not reach their turn-local viewport/disclosure fixed point.`
     });
   }
 
@@ -74,7 +84,7 @@ export function evaluateArchiveIntegrity(stats = {}) {
       code: 'hydration-conflict-unresolved',
       count: unresolvedHydration,
       turnIds: turnList(stats.hydrationConflictTurnIds),
-      message: `${unresolvedHydration} turn(s) retained content from competing hydration generations because no single observed generation covered the complete retained union.`
+      message: `${unresolvedHydration} turn(s) retained semantic evidence from competing observed hydration generations because no later single observed generation covered all accumulated evidence.`
     });
   }
 
