@@ -137,22 +137,19 @@ async function markTurnQuiescence(page, turnId, quietRounds, signature, converge
 }
 
 /**
- * Expand mounted disclosures while semantic archive progress is being made.
- *
- * Page-side logical completion state is revision-scoped, but a successful
- * activation that improves the retained turn is not
- * yet considered a fixed point. The same logical disclosure may verify once at
- * the newer revision; only a confirmed no-progress activation suppresses its
- * subsequent virtualized remounts at that revision.
+ * Expand disclosures while semantic archive progress is being made. When a
+ * scope turn is supplied, no neighboring mounted turn can steal the expansion
+ * loop; this is the primitive used by turn-by-turn processing/reconciliation.
  */
-export async function expandMounted(page, max, onProgress, shouldCancel) {
+async function expandScope(page, max, onProgress, shouldCancel, scopeTurnId = '') {
+  const fixedScopeTurnId = String(scopeTurnId || '');
   let processed = 0;
   let reportCounter = 0;
-  let activeTurnId = '';
+  let activeTurnId = fixedScopeTurnId;
   let quietRounds = 0;
   let previousTurnSignature = '';
   let lastSemanticProgressAt = Date.now();
-  let lastObservedTurnRevision = 0;
+  let lastObservedTurnRevision = fixedScopeTurnId ? await turnRevision(page, fixedScopeTurnId) : 0;
   let idleRounds = 0;
   let previousIdleSignature = '';
   let idleStartedAt = Date.now();
@@ -162,13 +159,17 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
   while (processed < max) {
     if (shouldCancel?.()) throw new Error('Archive cancelled.');
 
-    const { result, turnRevisionBefore } = await expandOneWithRevision(page, activeTurnId);
+    const requestedTurnId = fixedScopeTurnId || activeTurnId;
+    const { result, turnRevisionBefore } = await expandOneWithRevision(page, requestedTurnId);
     if (result) {
+      if (fixedScopeTurnId && result.turnId && result.turnId !== fixedScopeTurnId) {
+        throw new Error(`Scoped disclosure expansion escaped ${fixedScopeTurnId} into ${result.turnId}.`);
+      }
       if (result.turnId && result.turnId !== activeTurnId) {
         activeTurnId = result.turnId;
         lastObservedTurnRevision = Number(turnRevisionBefore || 0);
       } else {
-        activeTurnId = result.turnId || activeTurnId;
+        activeTurnId = result.turnId || activeTurnId || fixedScopeTurnId;
       }
 
       const expansion = await processExpansion(
@@ -241,6 +242,10 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
     const sample = await page.evaluate(turnId => window.__archiveCrawler.turnDisclosureSample(turnId), activeTurnId);
     if (!sample.mounted) {
       await markTurnQuiescence(page, activeTurnId, quietRounds, `missing:${activeTurnId}`, false, false);
+      if (fixedScopeTurnId) {
+        exitReason = 'scope-unmounted';
+        break;
+      }
       activeTurnId = '';
       quietRounds = 0;
       previousTurnSignature = '';
@@ -278,6 +283,10 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
     }
 
     if (converged || turnTimedOut) {
+      if (fixedScopeTurnId) {
+        exitReason = converged && sample.actionableCollapsed === 0 ? 'fixed-point' : turnTimedOut ? 'turn-quiescence-timeout' : 'semantic-stall';
+        break;
+      }
       activeTurnId = '';
       quietRounds = 0;
       previousTurnSignature = '';
@@ -296,7 +305,7 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
     await page.evaluate(value => window.__archiveCrawler.noteExpansionLimit?.(value), {
       processed,
       limit: max,
-      scopeTurnId: activeTurnId || '',
+      scopeTurnId: fixedScopeTurnId || activeTurnId || '',
       reason: exitReason
     });
   }
@@ -307,6 +316,16 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
     processed,
     limit: max,
     reason: exitReason,
-    timedOut
+    timedOut,
+    scopeTurnId: fixedScopeTurnId
   };
+}
+
+export async function expandMounted(page, max, onProgress, shouldCancel) {
+  return expandScope(page, max, onProgress, shouldCancel, '');
+}
+
+export async function expandTurn(page, turnId, max, onProgress, shouldCancel) {
+  if (!turnId) throw new Error('expandTurn requires a retained turn id.');
+  return expandScope(page, max, onProgress, shouldCancel, turnId);
 }
