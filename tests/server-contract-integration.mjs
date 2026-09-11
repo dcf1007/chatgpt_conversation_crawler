@@ -29,6 +29,22 @@ async function waitForServer() {
   throw new Error(`server did not start: ${output}`);
 }
 
+async function stopChild() {
+  if (child.exitCode != null) return;
+  child.kill('SIGTERM');
+  const exited = await Promise.race([
+    new Promise(resolve => child.once('exit', () => resolve(true))),
+    new Promise(resolve => setTimeout(() => resolve(false), 1500))
+  ]);
+  if (exited || child.exitCode != null) return;
+  // The contract test deliberately starts an archive job before shutdown. Its
+  // browser/session cleanup can keep the event loop alive after the HTTP
+  // assertions have already passed. Bound test teardown rather than allowing a
+  // successful integration test to occupy CI indefinitely.
+  child.kill('SIGKILL');
+  if (child.exitCode == null) await new Promise(resolve => child.once('exit', resolve));
+}
+
 try {
   await waitForServer();
   const start = await fetch(`${base}/api/archive/start`, {
@@ -58,6 +74,5 @@ try {
 
   console.log('server start/status/preview/download integration contract passed');
 } finally {
-  child.kill('SIGTERM');
-  if (child.exitCode == null) await new Promise(resolve => child.once('exit', resolve));
+  await stopChild();
 }
