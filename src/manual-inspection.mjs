@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { navigateToRetainedTurn } from './crawler-navigation.mjs';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MANUAL_DIAGNOSTIC_ROOT = path.join(PROJECT_ROOT, 'manual-inspection-diagnostics');
@@ -8,12 +9,6 @@ const MANUAL_POLL_INTERVAL_MS = 250;
 const MANUAL_SAFETY_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const MAX_MANUAL_EVENTS_PER_STEP = 800;
 const TARGET_COUNT = 2;
-const REMOUNT_SWEEP_FRACTIONS = Object.freeze([0.50, 0.28, 0.14, 0.08]);
-const REMOUNT_SWEEP_MAX_STEPS = 700;
-const REMOUNT_SWEEP_INTERVAL_MS = 170;
-const REMOUNT_TARGET_SETTLE_MS = 500;
-const REMOUNT_BRACKET_PROBES = 18;
-const REMOUNT_REGRESSION_RECOVERY_LIMIT = 12;
 
 function turnNumber(turnId) {
   return Number(/conversation-turn-(\d+)/.exec(turnId || '')?.[1] ?? Number.MAX_SAFE_INTEGER);
@@ -107,59 +102,6 @@ export function selectTargetsFromTurns(turns, { count = TARGET_COUNT, excludeIds
   }));
 }
 
-/**
- * Preserve the closest mounted predecessor observed while seeking a retained
- * target. ChatGPT's virtualizer can snap backward after useful progress; a
- * worse predecessor must never replace the best-known target anchor.
- */
-export function bestRemountPredecessor(previous, analysis, scrollTop) {
-  const index = Number(analysis?.nearestBeforeIndex ?? -1);
-  const id = String(analysis?.nearestBeforeId || '');
-  if (index < 0 || !id) return previous || null;
-  if (previous && Number(previous.index) >= index) return previous;
-  return { id, index, scrollTop: Number(scrollTop || 0) };
-}
-
-/**
- * Classify the actual mounted set relative to a retained target. Mounted first
- * and last are not assumed to imply a contiguous virtualized range.
- */
-export function analyzeRemountWindow(retainedTurnIds, mountedTurnIds, targetTurnId) {
-  const retained = Array.isArray(retainedTurnIds) ? retainedTurnIds : [];
-  const mounted = Array.isArray(mountedTurnIds) ? mountedTurnIds : [];
-  const order = new Map(retained.map((id, index) => [id, index]));
-  const targetIndex = order.has(targetTurnId) ? order.get(targetTurnId) : -1;
-  const mountedInOrder = mounted
-    .filter(id => order.has(id))
-    .map(id => ({ id, index: order.get(id) }))
-    .sort((left, right) => left.index - right.index || left.id.localeCompare(right.id));
-
-  const targetMounted = mounted.includes(targetTurnId);
-  const before = targetIndex >= 0
-    ? mountedInOrder.filter(entry => entry.index < targetIndex).at(-1) || null
-    : null;
-  const after = targetIndex >= 0
-    ? mountedInOrder.find(entry => entry.index > targetIndex) || null
-    : null;
-
-  let relation = 'unknown';
-  if (targetMounted) relation = 'mounted';
-  else if (before && after) relation = 'bracketed';
-  else if (before) relation = 'before-target';
-  else if (after) relation = 'after-target';
-
-  return {
-    targetIndex,
-    targetMounted,
-    relation,
-    nearestBeforeId: before?.id || '',
-    nearestBeforeIndex: before?.index ?? -1,
-    nearestAfterId: after?.id || '',
-    nearestAfterIndex: after?.index ?? -1,
-    mountedCount: mountedInOrder.length
-  };
-}
-
 async function getSessionMode(page) {
   return page.evaluate(() => window.__archiveCrawlerDevSessionMode || 'unknown').catch(() => 'unknown');
 }
@@ -198,163 +140,19 @@ async function getManualPageMetrics(page, targetTurnId) {
   }, targetTurnId).catch(() => ({}));
 }
 
-async function sampleRemountState(page, targetTurnId) {
-  return page.evaluate(targetId => {
-    const crawler = window.__archiveCrawler;
-    const metrics = crawler.metrics();
-    const selector = 'section[data-testid^="conversation-turn-"]';
-    const mountedIds = [...document.querySelectorAll(selector)]
-      .map(turn => turn.getAttribute('data-testid'))
-      .filter(Boolean);
-    return {
-      found: mountedIds.includes(targetId),
-      mountedIds,
-      top: Number(metrics.top || 0),
-      height: Number(metrics.height || 0),
-      client: Number(metrics.client || 0)
-    };
-  }, targetTurnId);
-}
-
-async function focusMountedTarget(page, targetTurnId) {
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const existed = await page.evaluate(targetId => {
-      const target = document.querySelector(`section[data-testid="${targetId}"]`);
-      if (!target) return false;
-      target.scrollIntoView({ block: 'center', inline: 'nearest' });
-      return true;
-    }, targetTurnId);
-    if (!existed) return false;
-    await page.waitForTimeout(attempt === 0 ? REMOUNT_TARGET_SETTLE_MS : 220);
-    const state = await sampleRemountState(page, targetTurnId);
-    if (state.found) return true;
-  }
-  return false;
-}
-
-async function probeBracket(page, targetTurnId, retainedTurnIds, analysis, shouldCancel) {
-  if (!analysis.nearestBeforeId) return { found: false, probes: 0 };
-  await page.evaluate(beforeId => {
-    document.querySelector(`section[data-testid="${beforeId}"]`)?.scrollIntoView({ block: 'end', inline: 'nearest' });
-    window.__archiveCrawler.resetNavigation();
-  }, analysis.nearestBeforeId);
-  await page.waitForTimeout(240);
-
-  for (let probe = 0; probe < REMOUNT_BRACKET_PROBES; probe++) {
-    if (shouldCancel?.()) throw new Error('Archive cancelled.');
-    const state = await sampleRemountState(page, targetTurnId);
-    if (state.found && await focusMountedTarget(page, targetTurnId)) return { found: true, probes: probe + 1 };
-    const current = analyzeRemountWindow(retainedTurnIds, state.mountedIds, targetTurnId);
-    if (current.relation === 'after-target') break;
-    const maximumTop = Math.max(0, state.height - state.client);
-    const nextTop = Math.min(maximumTop, state.top + Math.max(72, Math.min(180, Math.floor(state.client * 0.10))));
-    if (nextTop <= state.top + 1) break;
-    await page.evaluate(top => window.__archiveCrawler.navigateTop(top), nextTop);
-    await page.waitForTimeout(160);
-  }
-  return { found: false, probes: REMOUNT_BRACKET_PROBES };
-}
-
 async function remountTarget(page, targetTurnId, retainedTurnIds, shouldCancel, onProgress) {
-  const targetIndex = retainedTurnIds.indexOf(targetTurnId);
-  if (targetIndex < 0) return { found: false, reason: 'target-not-retained' };
-
-  let state = await sampleRemountState(page, targetTurnId);
-  if (state.found && await focusMountedTarget(page, targetTurnId)) {
-    return { found: true, strategy: 'already-mounted', sweeps: 0, steps: 0 };
-  }
-
-  let totalSteps = 0;
-  let bestPredecessor = null;
-  let regressionRecoveries = 0;
-  for (let sweep = 0; sweep < REMOUNT_SWEEP_FRACTIONS.length; sweep++) {
-    if (shouldCancel?.()) throw new Error('Archive cancelled.');
-    await page.evaluate(startTop => {
-      window.__archiveCrawler.resetNavigation();
-      window.__archiveCrawler.setTop(startTop);
-    }, bestPredecessor?.scrollTop || 0);
-    await page.waitForTimeout(350);
-
-    for (let step = 0; step < REMOUNT_SWEEP_MAX_STEPS; step++) {
-      if (shouldCancel?.()) throw new Error('Archive cancelled.');
-      totalSteps++;
-      state = await sampleRemountState(page, targetTurnId);
-      if (state.found && await focusMountedTarget(page, targetTurnId)) {
-        return { found: true, strategy: 'monotonic-forward-sweep', sweeps: sweep + 1, steps: totalSteps };
-      }
-
-      const analysis = analyzeRemountWindow(retainedTurnIds, state.mountedIds, targetTurnId);
-      const previousBest = bestPredecessor;
-      bestPredecessor = bestRemountPredecessor(bestPredecessor, analysis, state.top);
-
-      // Once the virtualizer has exposed a closer predecessor, never silently
-      // accept a snap back to an older one. Restore the recorded scroll region
-      // and let the shared assisted navigation resume from that logical bound.
-      if (previousBest && analysis.nearestBeforeIndex >= 0 && analysis.nearestBeforeIndex < previousBest.index) {
-        regressionRecoveries++;
-        await page.evaluate(top => {
-          window.__archiveCrawler.resetNavigation();
-          window.__archiveCrawler.navigateTop(top);
-        }, previousBest.scrollTop);
-        await page.waitForTimeout(REMOUNT_SWEEP_INTERVAL_MS);
-        if (regressionRecoveries >= REMOUNT_REGRESSION_RECOVERY_LIMIT) break;
-        continue;
-      }
-      if (!previousBest || bestPredecessor?.index > previousBest.index) regressionRecoveries = 0;
-
-      // A direct predecessor (or an already bracketed target) is close enough
-      // for bounded local probing; do not restart a broad sweep from the top.
-      if (analysis.relation === 'bracketed' || analysis.nearestBeforeIndex === targetIndex - 1) {
-        const bracket = await probeBracket(page, targetTurnId, retainedTurnIds, analysis, shouldCancel);
-        totalSteps += bracket.probes;
-        if (bracket.found) {
-          return {
-            found: true,
-            strategy: 'best-predecessor-anchor',
-            sweeps: sweep + 1,
-            steps: totalSteps,
-            nearestBeforeId: analysis.nearestBeforeId,
-            nearestAfterId: analysis.nearestAfterId
-          };
-        }
-      }
-      if (analysis.relation === 'after-target') break;
-
-      const maximumTop = Math.max(0, state.height - state.client);
-      if (state.top >= maximumTop - 2) break;
-      let fraction = REMOUNT_SWEEP_FRACTIONS[sweep];
-      if (analysis.nearestBeforeIndex >= 0) {
-        const remainingTurns = targetIndex - analysis.nearestBeforeIndex;
-        if (remainingTurns <= 8) fraction = Math.min(fraction, 0.24);
-        if (remainingTurns <= 3) fraction = Math.min(fraction, 0.12);
-      }
-      const nextTop = Math.min(maximumTop, state.top + Math.max(96, Math.floor(state.client * fraction)));
-      await page.evaluate(top => window.__archiveCrawler.navigateTop(top), nextTop);
-      await page.waitForTimeout(REMOUNT_SWEEP_INTERVAL_MS);
-
-      if (step % 20 === 0) {
-        await onProgress?.({
-          phase: 'Remounting diagnostic target',
-          detail: `Locating ${targetTurnId} for manual validation.`,
-          scanningStatus: `Target remount · sweep ${sweep + 1}/${REMOUNT_SWEEP_FRACTIONS.length} · step ${step + 1}`,
-          scanComplete: true
-        });
-      }
-    }
-  }
-
-  state = await sampleRemountState(page, targetTurnId);
-  const finalAnalysis = analyzeRemountWindow(retainedTurnIds, state.mountedIds, targetTurnId);
+  const result = await navigateToRetainedTurn(page, targetTurnId, retainedTurnIds, {
+    shouldCancel,
+    onProgress: progress => onProgress?.({
+      ...progress,
+      phase: 'Remounting diagnostic target',
+      detail: `Locating ${targetTurnId} for manual validation using the shared retained-turn navigator.`,
+      scanComplete: true
+    })
+  });
   return {
-    found: false,
-    strategy: 'monotonic-forward-sweep',
-    reason: 'target-never-mounted',
-    steps: totalSteps,
-    finalRelation: finalAnalysis.relation,
-    nearestBeforeId: finalAnalysis.nearestBeforeId,
-    nearestAfterId: finalAnalysis.nearestAfterId,
-    bestPredecessorId: bestPredecessor?.id || '',
-    bestPredecessorIndex: bestPredecessor?.index ?? -1
+    ...result,
+    strategy: result.found ? result.strategy : 'logical-turn-navigation'
   };
 }
 
