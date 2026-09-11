@@ -333,13 +333,21 @@ async function stopManualInspectionUi(page) {
 }
 
 async function assembleDiagnosticSnapshot(page, sourceUrl) {
-  const [{ buildSnapshot, captureArchiveState }, appBlocks, mainImages, { finalizeConversationFidelity }] = await Promise.all([
+  const [{ buildSnapshot, captureArchiveState }, appBlocks, mainImages, { finalizeConversationFidelity }, { evaluateArchiveIntegrity }] = await Promise.all([
     import('./snapshot.mjs'),
     import('./app-blocks.mjs'),
     import('./main-images.mjs'),
-    import('./archive-fidelity.mjs')
+    import('./archive-fidelity.mjs'),
+    import('./archive-integrity.mjs')
   ]);
-  const archiveState = await captureArchiveState(page);
+  const [archiveState, currentStats] = await Promise.all([
+    captureArchiveState(page),
+    getCrawlerStats(page)
+  ]);
+  // Diagnostic snapshots are built before the normal server-side final integrity
+  // evaluation. Attach integrity only to this detached clone so diagnostics are
+  // truthful without mutating live retained crawler state.
+  archiveState.integrity = evaluateArchiveIntegrity(currentStats);
   const preparedImages = await mainImages.prepareMainImages(page, archiveState);
   const preparedEmbeddedContent = await appBlocks.prepareEmbeddedContent(page, {
     embedSvgImages: true,
