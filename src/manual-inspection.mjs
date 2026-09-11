@@ -140,6 +140,43 @@ async function getManualPageMetrics(page, targetTurnId) {
   }, targetTurnId).catch(() => ({}));
 }
 
+export function buildManualRemountDiagnosticState(target, step) {
+  return {
+    active: false,
+    phase: 'remounting-target',
+    stepIndex: Number(step?.index || 0),
+    stepCount: Number(step?.count || 0),
+    stepLabel: 'Remounting diagnostic target',
+    targetTurnId: String(target?.id || ''),
+    targetReason: String(target?.reason || ''),
+    finishRequested: false,
+    interactionCount: 0
+  };
+}
+
+async function publishManualRemountDiagnosticState(page, target, step) {
+  const nextState = buildManualRemountDiagnosticState(target, step);
+  await page.evaluate(state => {
+    const previous = window.__archiveManualInspection;
+    previous?.observer?.disconnect?.();
+    if (previous?.clickListener) document.removeEventListener('click', previous.clickListener, true);
+
+    document.getElementById('archive-manual-inspection-panel')?.remove();
+    document.getElementById('archive-manual-inspection-style')?.remove();
+    for (const turn of document.querySelectorAll('[data-archive-manual-inspection-target]')) {
+      turn.removeAttribute('data-archive-manual-inspection-target');
+    }
+
+    window.__archiveManualInspection = {
+      ...state,
+      startedAt: new Date().toISOString(),
+      events: [],
+      observer: null,
+      clickListener: null
+    };
+  }, nextState);
+}
+
 async function remountTarget(page, targetTurnId, retainedTurnIds, shouldCancel, onProgress) {
   const result = await navigateToRetainedTurn(page, targetTurnId, retainedTurnIds, {
     shouldCancel,
@@ -391,6 +428,7 @@ function summarizeTarget(target) {
 }
 
 async function captureManualStep({ page, target, step, retainedTurnIds, diagnosticDirectory, shouldCancel, onProgress, convergeMounted }) {
+  await publishManualRemountDiagnosticState(page, target, step);
   const remount = await remountTarget(page, target.id, retainedTurnIds, shouldCancel, onProgress);
   if (!remount.found) {
     const detail = [remount.reason, remount.finalRelation, remount.nearestBeforeId, remount.nearestAfterId].filter(Boolean).join(' · ');
