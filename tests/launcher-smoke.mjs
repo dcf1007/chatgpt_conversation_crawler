@@ -27,16 +27,15 @@ assert.match(windowsSetup, /LSS 20/);
 
 // A quoted executable path such as C:\Program Files\nodejs\node.exe must not be
 // placed inside FOR /F command substitution. cmd.exe reparses that nested command
-// and can treat C:\Program as the executable. Ignore comment lines when checking
-// for the forbidden executable statement so the explanatory comments remain free
-// to describe the regression itself.
+// and can treat C:\Program as the executable. The normal `where node` discovery
+// may still use FOR /F; only a nested command body containing NODE_EXE is forbidden.
 const executableWindowsSetupLines = windowsSetup
   .split(/\r?\n/)
   .filter(line => !/^\s*rem(?:\s|$)/i.test(line))
   .join('\n');
 assert.doesNotMatch(
   executableWindowsSetupLines,
-  /for\s+\/f[^\r\n]*NODE_EXE/i,
+  /for\s+\/f[^\r\n]*\bin\s*\(\s*'[^'\r\n]*NODE_EXE/i,
   'setup-windows.bat must not execute the resolved Node path through FOR /F command substitution'
 );
 assert.match(
