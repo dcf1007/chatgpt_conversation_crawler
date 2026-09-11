@@ -28,10 +28,11 @@ async function applyForegroundState(session) {
     result.lifecycleActive = true;
   } catch {}
 
-  // Do not call Page.bringToFront here. The crawler only needs renderer/activity
-  // protection; activating the native browser window defeats the user's ability
-  // to keep a long authenticated crawl minimized or behind other windows.
   return result;
+}
+
+function foregroundStateApplied(result) {
+  return Boolean(result?.focusEmulation || result?.idleOverride || result?.lifecycleActive);
 }
 
 async function sampleForegroundState(page) {
@@ -42,18 +43,21 @@ async function sampleForegroundState(page) {
   })).catch(() => ({ hasFocus: null, visibilityState: '', hidden: null }));
 }
 
-/**
- * Install persistent Chromium page-activity protection on the capture page.
- * This is core crawler behavior, not diagnostic behavior. The CDP overrides are
- * best-effort so older Chromium builds can still crawl with the launch flags.
- */
-export async function installPageForegroundProtection(page) {
-  if (!page?.context || typeof page.context !== 'function') return false;
-  if (foregroundSessions.has(page)) return false;
-  const context = page.context();
-  if (!context?.newCDPSession) return false;
+async function createProtectedSession(page) {
+  const context = page?.context?.();
+  if (!context?.newCDPSession) return { session: null, applied: null };
+  const session = await context.newCDPSession(page);
+  const applied = await applyForegroundState(session);
+  if (!foregroundStateApplied(applied)) {
+    await session.detach?.().catch(() => {});
+    return { session: null, applied };
+  }
+  foregroundSessions.set(page, session);
+  return { session, applied };
+}
 
-  const before = await page.evaluate(() => {
+async function installFocusTelemetry(page) {
+  return page.evaluate(() => {
     if (!window.__archiveFocusTelemetry) {
       const telemetry = window.__archiveFocusTelemetry = {
         focusEvents: 0,
@@ -79,17 +83,33 @@ export async function installPageForegroundProtection(page) {
       hidden: Boolean(document.hidden)
     };
   }).catch(() => ({ hasFocus: null, visibilityState: '', hidden: null }));
+}
 
-  const session = await context.newCDPSession(page);
-  foregroundSessions.set(page, session);
-  const applied = await applyForegroundState(session);
+/**
+ * Install non-window-activating Chromium activity protection on the capture
+ * page. CDP overrides remain best-effort, but a session is only cached when at
+ * least one override was actually accepted.
+ */
+export async function installPageForegroundProtection(page) {
+  if (!page?.context || typeof page.context !== 'function') return false;
+  if (foregroundSessions.has(page)) return false;
+
+  const before = await installFocusTelemetry(page);
+  let created;
+  try {
+    created = await createProtectedSession(page);
+  } catch {
+    return false;
+  }
+  if (!created.session) return false;
+
   const after = await sampleForegroundState(page);
-
   await page.evaluate(value => {
     window.__archiveForegroundProtection = {
       ...value.applied,
       installedAt: new Date().toISOString(),
       reassertions: 0,
+      sessionRecoveries: 0,
       lastReassertedAt: '',
       preInstallHasFocus: value.before.hasFocus,
       preInstallVisibilityState: value.before.visibilityState,
@@ -98,21 +118,38 @@ export async function installPageForegroundProtection(page) {
       postInstallVisibilityState: value.after.visibilityState,
       postInstallHidden: value.after.hidden
     };
-  }, { before, after, applied }).catch(() => {});
+  }, { before, after, applied: created.applied }).catch(() => {});
   return true;
 }
 
 /**
- * Reassert the activity overrides on an existing capture page. Automatic
- * traversal invokes this at scan boundaries and again after genuine logical
- * navigation stagnation, so one transient Chromium/background state change
- * cannot silently disable the protection for the rest of a long crawl.
+ * Reassert activity protection. If the cached CDP session has become stale,
+ * discard it and create one fresh session exactly once. No recovery path calls
+ * Page.bringToFront or otherwise activates the native browser window.
  */
 export async function ensurePageForegroundProtection(page) {
   if (!page) return false;
   if (!foregroundSessions.has(page)) return installPageForegroundProtection(page);
-  const session = foregroundSessions.get(page);
-  const applied = await applyForegroundState(session);
+
+  let session = foregroundSessions.get(page);
+  let applied = await applyForegroundState(session);
+  let recovered = false;
+
+  if (!foregroundStateApplied(applied)) {
+    foregroundSessions.delete(page);
+    await session?.detach?.().catch(() => {});
+    let created;
+    try {
+      created = await createProtectedSession(page);
+    } catch {
+      return false;
+    }
+    if (!created.session) return false;
+    session = created.session;
+    applied = created.applied;
+    recovered = true;
+  }
+
   const after = await sampleForegroundState(page);
   await page.evaluate(value => {
     const previous = window.__archiveForegroundProtection || {};
@@ -120,12 +157,13 @@ export async function ensurePageForegroundProtection(page) {
       ...previous,
       ...value.applied,
       reassertions: Number(previous.reassertions || 0) + 1,
+      sessionRecoveries: Number(previous.sessionRecoveries || 0) + (value.recovered ? 1 : 0),
       lastReassertedAt: new Date().toISOString(),
       postInstallHasFocus: value.after.hasFocus,
       postInstallVisibilityState: value.after.visibilityState,
       postInstallHidden: value.after.hidden
     };
-  }, { applied, after }).catch(() => {});
+  }, { applied, after, recovered }).catch(() => {});
   return true;
 }
 
@@ -133,4 +171,5 @@ export function pageForegroundProtectionInstalled(page) {
   return Boolean(page && foregroundSessions.has(page));
 }
 
+export const __testing = { foregroundStateApplied };
 export { chromium };

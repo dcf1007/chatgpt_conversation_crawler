@@ -323,6 +323,13 @@ async function snapshotFrameTree(frame, state, depth = 0) {
   return { html, frameCount, svgCount, imageCount, canvasCount, textLength, structuralBytes: totalStructuralBytes };
 }
 
+function shouldReplaceAppBlock(previous, candidate) {
+  if (!previous) return true;
+  if (candidate.score > previous.score) return true;
+  return candidate.score === previous.score
+    && previous.contentFingerprint !== candidate.contentFingerprint;
+}
+
 export async function captureMountedAppBlocks(page) {
   const state = appState(page);
   const roots = await page.locator(APP_BLOCK_ROOT_SELECTOR).elementHandles().catch(() => []);
@@ -368,6 +375,7 @@ export async function captureMountedAppBlocks(page) {
       }
 
       const previous = state.blocks.get(key);
+      const contentFingerprint = crypto.createHash('sha256').update(snapshot.html).digest('hex');
       const score = (snapshot.frameCount || 0) * 10_000_000
         + (snapshot.svgCount || 0) * 1_000_000
         + (snapshot.imageCount || 0) * 100_000
@@ -375,7 +383,7 @@ export async function captureMountedAppBlocks(page) {
         + (snapshot.textLength || 0) * 10
         + Math.min(structuralBytes, 99_999);
 
-      if (!previous || score > previous.score || (score === previous.score && structuralBytes > previous.structuralBytes)) {
+      if (shouldReplaceAppBlock(previous, { score, contentFingerprint })) {
         const projectedTotal = state.totalHtmlBytes - (previous?.structuralBytes || 0) + structuralBytes;
         if (projectedTotal > MAX_TOTAL_APP_BLOCK_HTML_BYTES) {
           state.failures.set(key, `Total app-block structural HTML budget exceeds ${MAX_TOTAL_APP_BLOCK_HTML_BYTES / 1024 / 1024} MiB.`);
@@ -389,6 +397,7 @@ export async function captureMountedAppBlocks(page) {
           sourceUrl,
           html: snapshot.html,
           score,
+          contentFingerprint,
           structuralBytes,
           frameCount: snapshot.frameCount || 0,
           svgCount: snapshot.svgCount || 0,
@@ -647,3 +656,5 @@ export function finalizeEmbeddedContent(snapshot, prepared) {
   };
   return snapshot;
 }
+
+export const __testing = { shouldReplaceAppBlock };

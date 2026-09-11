@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from './src/runtime-browser.mjs';
-import { crawlConversation, CRAWLER_PROGRESS_LIMITS } from './src/crawler.mjs';
+import { installCrawler, crawlConversation, CRAWLER_PROGRESS_LIMITS } from './src/crawler.mjs';
 import { buildSnapshot } from './src/snapshot.mjs';
 import { evaluateArchiveIntegrity } from './src/archive-integrity.mjs';
 import {
@@ -309,6 +309,9 @@ async function runJob(job) {
     });
     await job.page.goto(job.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await job.page.waitForLoadState('networkidle', { timeout: 12_000 }).catch(() => {});
+    // Install the permanent crawler before transient-context observation so
+    // timeline markers cannot appear and disappear during a crawler-less gap.
+    await installCrawler(job.page);
     await installTransientContextRetention(job.page);
     await captureMountedMainImages(job.page).catch(() => {});
     assertNotCancelled(job);

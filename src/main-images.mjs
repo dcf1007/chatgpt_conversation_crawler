@@ -88,6 +88,7 @@ function storeBuffer(page, urls, buffer, declared, source) {
   }
   if (state.totalBytes + buffer.length > MAX_CACHE_BYTES) throw new Error(`main-image retention cache exceeds ${MAX_CACHE_BYTES / 1024 / 1024} MiB`);
   const record = {
+    digest,
     type,
     reportedType,
     mimeCorrected: Boolean(reportedType && reportedType !== type),
@@ -271,6 +272,16 @@ const esc = value => String(value).replace(/[&<>"']/g, char => ({
   '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
 }[char]));
 
+function reserveUniqueImageBytes(budget, image, maxBytes = MAX_CACHE_BYTES) {
+  const key = image?.digest || image?.dataUrl || '';
+  if (!key || budget.digests.has(key)) return true;
+  const size = Number(image?.size || 0);
+  if (budget.totalBytes + size > maxBytes) return false;
+  budget.digests.add(key);
+  budget.totalBytes += size;
+  return true;
+}
+
 export async function prepareMainImages(page, archiveState = null) {
   await captureMountedMainImages(page, { settleMs: 1200 }).catch(() => {});
   await flushPending(page);
@@ -295,7 +306,7 @@ export async function prepareMainImages(page, archiveState = null) {
   const prefix = crypto.randomUUID().replaceAll('-', '');
   const records = new Array(urls.length);
   let next = 0;
-  let totalBytes = 0;
+  const budget = { totalBytes: 0, digests: new Set() };
 
   async function worker() {
     while (true) {
@@ -305,10 +316,9 @@ export async function prepareMainImages(page, archiveState = null) {
       const token = `__ARCHIVE_MAIN_IMAGE_${prefix}_${String(index).padStart(5, '0')}__`;
       try {
         const image = await resolveMainImage(page, url);
-        if (totalBytes + image.size > MAX_CACHE_BYTES) {
+        if (!reserveUniqueImageBytes(budget, image)) {
           throw new Error(`archive image budget exceeds ${MAX_CACHE_BYTES / 1024 / 1024} MiB`);
         }
-        totalBytes += image.size;
         records[index] = { url, token, image, error: '' };
       } catch (error) {
         records[index] = { url, token, image: null, error: error?.message || 'embedding failed' };
@@ -354,7 +364,7 @@ export async function prepareMainImages(page, archiveState = null) {
     }
   }
 
-  return { records, rewrite, totalBytes, usingCopy: Boolean(archiveState) };
+  return { records, rewrite, totalBytes: budget.totalBytes, usingCopy: Boolean(archiveState) };
 }
 
 export async function restoreMainImages(page, prepared) {
@@ -379,6 +389,7 @@ export function finalizeMainImages(snapshot, prepared) {
   let referenced = 0;
   let unreferenced = 0;
   let referencedSourceBytes = 0;
+  const referencedDigests = new Set();
   for (const record of records) {
     if (!snapshot.html.includes(record.token)) {
       unreferenced++;
@@ -388,7 +399,11 @@ export function finalizeMainImages(snapshot, prepared) {
     if (record.image?.dataUrl) {
       snapshot.html = snapshot.html.replaceAll(record.token, record.image.dataUrl);
       embedded++;
-      referencedSourceBytes += Number(record.image.size || 0);
+      const digestKey = record.image.digest || record.image.dataUrl;
+      if (!referencedDigests.has(digestKey)) {
+        referencedDigests.add(digestKey);
+        referencedSourceBytes += Number(record.image.size || 0);
+      }
       if (record.image.source === 'browser-response' || record.image.source === 'mounted-blob') retainedDuringCrawl++;
       else recoveredAtFinal++;
       if (record.image.mimeCorrected) mimeCorrections++;
@@ -424,3 +439,5 @@ export function finalizeMainImages(snapshot, prepared) {
   };
   return snapshot;
 }
+
+export const __testing = { reserveUniqueImageBytes };

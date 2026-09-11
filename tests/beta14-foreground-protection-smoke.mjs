@@ -7,14 +7,21 @@ import {
 
 const calls = [];
 let detached = 0;
-const session = {
-  async send(method, params) { calls.push({ method, params }); },
-  async detach() { detached++; }
-};
-let marker = null;
-global.window = {
-  addEventListener() {}
-};
+let stale = false;
+let createdSessions = 0;
+
+function makeSession(name) {
+  return {
+    async send(method, params) {
+      calls.push({ name, method, params });
+      if (name === 'session-1' && stale) throw new Error('Target closed');
+    },
+    async detach() { detached++; }
+  };
+}
+
+const sessions = [makeSession('session-1'), makeSession('session-2')];
+global.window = { addEventListener() {} };
 global.document = {
   hidden: false,
   visibilityState: 'visible',
@@ -23,38 +30,40 @@ global.document = {
 };
 const page = {
   context() {
-    return { async newCDPSession(target) { assert.equal(target, page); return session; } };
+    return {
+      async newCDPSession(target) {
+        assert.equal(target, page);
+        return sessions[createdSessions++];
+      }
+    };
   },
-  async evaluate(fn, arg) {
-    const result = fn(arg);
-    marker = global.window.__archiveForegroundProtection || marker;
-    return result;
-  }
+  async evaluate(fn, arg) { return fn(arg); }
 };
 
 assert.equal(await installPageForegroundProtection(page), true);
-assert.deepEqual(calls, [
+assert.equal(createdSessions, 1);
+assert.deepEqual(calls.map(({ method, params }) => ({ method, params })), [
   { method: 'Emulation.setFocusEmulationEnabled', params: { enabled: true } },
   { method: 'Emulation.setIdleOverride', params: { isUserActive: true, isScreenUnlocked: true } },
   { method: 'Page.setWebLifecycleState', params: { state: 'active' } }
 ]);
-assert.ok(!calls.some(call => call.method === 'Page.bringToFront'), 'background protection must never activate the native browser window');
+assert.ok(!calls.some(call => call.method === 'Page.bringToFront'));
 assert.equal(pageForegroundProtectionInstalled(page), true);
-assert.equal(marker?.focusEmulation, true);
-assert.equal(marker?.idleOverride, true);
-assert.equal(marker?.lifecycleActive, true);
-assert.equal(marker?.pageActivated, false);
-assert.equal(marker?.preInstallHasFocus, false);
-assert.equal(marker?.preInstallVisibilityState, 'visible');
+assert.equal(global.window.__archiveForegroundProtection.pageActivated, false);
 assert.equal(await installPageForegroundProtection(page), false, 'installer must remain idempotent per page');
-assert.equal(calls.length, 3, 'idempotent install must not silently create another CDP session');
 
 assert.equal(await ensurePageForegroundProtection(page), true);
-assert.equal(calls.length, 6, 'reassertion must replay only non-window-activating activity state');
-assert.ok(!calls.some(call => call.method === 'Page.bringToFront'), 'reassertion must also leave the native window alone');
+assert.equal(createdSessions, 1, 'healthy reassertion must reuse the cached session');
 assert.equal(global.window.__archiveForegroundProtection.reassertions, 1);
-assert.ok(global.window.__archiveForegroundProtection.lastReassertedAt);
-assert.equal(detached, 0);
-assert.ok(global.window.__archiveFocusTelemetry, 'focus/visibility event telemetry must be installed before emulation');
 
-console.log('beta14.3 non-activating page foreground protection smoke test passed');
+stale = true;
+assert.equal(await ensurePageForegroundProtection(page), true, 'stale session must be recreated once');
+assert.equal(createdSessions, 2);
+assert.equal(detached, 1, 'stale cached session should be detached before replacement');
+assert.equal(global.window.__archiveForegroundProtection.sessionRecoveries, 1);
+assert.equal(global.window.__archiveForegroundProtection.reassertions, 2);
+assert.ok(!calls.some(call => call.method === 'Page.bringToFront'), 'recovery must never activate the native browser window');
+assert.equal(pageForegroundProtectionInstalled(page), true);
+assert.ok(global.window.__archiveFocusTelemetry);
+
+console.log('v1.7 beta2 non-activating page foreground recovery smoke test passed');

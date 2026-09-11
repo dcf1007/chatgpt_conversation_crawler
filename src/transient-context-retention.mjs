@@ -39,14 +39,17 @@ async function drain(page) {
  */
 export async function installTransientContextRetention(page) {
   const state = stateFor(page);
-  if (state.installed) return;
-  state.installed = true;
+  if (!state.installed) {
+    state.installed = true;
+    await page.exposeBinding(BINDING, async (_source, kind) => {
+      if (kind === 'app' || kind === 'image') state.requestedKinds.add(kind);
+      await drain(page);
+    });
+  }
 
-  await page.exposeBinding(BINDING, async (_source, kind) => {
-    if (kind === 'app' || kind === 'image') state.requestedKinds.add(kind);
-    await drain(page);
-  });
-
+  // Re-run the page-side installation check on every call. A document reload
+  // destroys the old MutationObserver even though the Node-side page object and
+  // exposed binding survive.
   await page.evaluate(bindingName => {
     if (window.__archiveTransientContextObserver) return;
     const turnSelector = 'section[data-testid^="conversation-turn-"]';
@@ -99,6 +102,7 @@ export async function installTransientContextRetention(page) {
     if (document.querySelector(`${turnSelector} img`)) notify('image');
   }, BINDING);
   state.observerInstalled = true;
+  await page.evaluate(() => window.__archiveCrawler?.captureTimelineMarkers?.()).catch(() => {});
 }
 
 export async function flushTransientContextRetention(page) {
