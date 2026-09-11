@@ -1,5 +1,165 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ChatGPT Archive Live Preview</title><style>:root{color-scheme:light dark}*{box-sizing:border-box}html,body{height:100%;margin:0;font-family:system-ui,sans-serif;background:Canvas;color:CanvasText}body{display:grid;grid-template-rows:auto 1fr}.top{display:flex;gap:14px;align-items:center;padding:10px 14px;border-bottom:1px solid color-mix(in srgb,CanvasText 16%,transparent);font-size:13px}.grow{flex:1}.muted{opacity:.65}iframe{width:100%;height:100%;border:0;background:white}.waiting{display:grid;place-items:center;height:100%;padding:30px;text-align:center}</style></head><body><div class="top"><strong>Live archive preview</strong><span id="state" class="muted">Starting…</span><span class="grow"></span><span id="refresh" class="muted"></span></div><div id="host" class="waiting"><div><p>Waiting for the first preview snapshot…</p><p class="muted">Preview generation is active only while this window remains open.</p></div></div><script>
-const params=new URLSearchParams(location.search),id=params.get('id'),state=document.querySelector('#state'),refresh=document.querySelector('#refresh'),host=document.querySelector('#host');let iframe=null,lastVersion=-1,lastPreviewAt=0;
-const stageLabel={queued:'Queued',loading:'Loading',preparing:'Preparing',traversal:'Traversing',oldest_verification:'Verifying oldest',reconciliation:'Reconciling',finalization:'Finalizing',complete:'Complete',error:'Error',cancelled:'Cancelled'};
-async function tick(){if(!id){state.textContent='Preview error: missing archive id';return}try{const sr=await fetch(`/api/archive/status/${encodeURIComponent(id)}?preview=1`,{cache:'no-store'});if(!sr.ok)throw new Error(`status ${sr.status}`);const s=await sr.json();state.textContent=`${stageLabel[s.stage]||s.phase||s.status} · ${s.turns} turns · ${s.expansions} expanded`;if(s.previewReady&&s.previewVersion!==lastVersion){const pr=await fetch(`/api/archive/preview/${encodeURIComponent(id)}?t=${Date.now()}`,{cache:'no-store'});if(pr.ok&&pr.status!==204){const html=await pr.text();if(!iframe){iframe=document.createElement('iframe');host.replaceWith(iframe)}const oldY=iframe.contentWindow?.scrollY||0;iframe.srcdoc=html;iframe.onload=()=>{try{iframe.contentWindow.scrollTo(0,oldY)}catch{}};lastVersion=s.previewVersion;lastPreviewAt=Date.now()}}refresh.textContent=lastPreviewAt?`preview updated ${Math.max(0,Math.floor((Date.now()-lastPreviewAt)/1000))}s ago`:'waiting for preview';if(!['done','error','cancelled'].includes(s.status))setTimeout(tick,1500);else state.textContent=s.status==='done'?`Complete · ${s.turns} turns`:s.status==='error'?`Error: ${s.error}`:'Cancelled'}catch(e){state.textContent=`Preview connection error: ${e.message}`;setTimeout(tick,2500)}}tick();setInterval(()=>{if(lastPreviewAt)refresh.textContent=`preview updated ${Math.max(0,Math.floor((Date.now()-lastPreviewAt)/1000))}s ago`},1000);
-</script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ChatGPT Archive Live Preview</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      font-family: system-ui, sans-serif;
+      background: Canvas;
+      color: CanvasText;
+    }
+
+    body {
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    .top {
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      padding: 10px 14px;
+      border-bottom: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+      font-size: 13px;
+    }
+
+    .grow {
+      flex: 1;
+    }
+
+    .muted {
+      opacity: .65;
+    }
+
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: white;
+    }
+
+    .waiting {
+      display: grid;
+      place-items: center;
+      height: 100%;
+      padding: 30px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <strong>Live archive preview</strong>
+    <span id="state" class="muted">Starting…</span>
+    <span class="grow"></span>
+    <span id="refresh" class="muted"></span>
+  </div>
+  <div id="host" class="waiting">
+    <div>
+      <p>Waiting for the first preview snapshot…</p>
+      <p class="muted">Preview generation is active only while this window remains open.</p>
+    </div>
+  </div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const id = params.get('id');
+    const state = document.querySelector('#state');
+    const refresh = document.querySelector('#refresh');
+    const host = document.querySelector('#host');
+    let iframe = null;
+    let lastVersion = -1;
+    let lastPreviewAt = 0;
+
+    const stageLabel = {
+      queued: 'Queued',
+      loading: 'Loading',
+      preparing: 'Preparing',
+      traversal: 'Traversing',
+      oldest_verification: 'Verifying oldest',
+      reconciliation: 'Reconciling',
+      finalization: 'Finalizing',
+      complete: 'Complete',
+      error: 'Error',
+      cancelled: 'Cancelled'
+    };
+
+    async function tick() {
+      if (!id) {
+        state.textContent = 'Preview error: missing archive id';
+        return;
+      }
+
+      try {
+        const statusResponse = await fetch(
+          `/api/archive/status/${encodeURIComponent(id)}?preview=1`,
+          { cache: 'no-store' }
+        );
+        if (!statusResponse.ok) throw new Error(`status ${statusResponse.status}`);
+
+        const status = await statusResponse.json();
+        state.textContent = `${stageLabel[status.stage] || status.phase || status.status} · ${status.turns} turns · ${status.expansions} expanded`;
+
+        if (status.previewReady && status.previewVersion !== lastVersion) {
+          const previewResponse = await fetch(
+            `/api/archive/preview/${encodeURIComponent(id)}?t=${Date.now()}`,
+            { cache: 'no-store' }
+          );
+          if (previewResponse.ok && previewResponse.status !== 204) {
+            const html = await previewResponse.text();
+            if (!iframe) {
+              iframe = document.createElement('iframe');
+              host.replaceWith(iframe);
+            }
+            const oldY = iframe.contentWindow?.scrollY || 0;
+            iframe.srcdoc = html;
+            iframe.onload = () => {
+              try {
+                iframe.contentWindow.scrollTo(0, oldY);
+              } catch {}
+            };
+            lastVersion = status.previewVersion;
+            lastPreviewAt = Date.now();
+          }
+        }
+
+        refresh.textContent = lastPreviewAt
+          ? `preview updated ${Math.max(0, Math.floor((Date.now() - lastPreviewAt) / 1000))}s ago`
+          : 'waiting for preview';
+
+        if (!['done', 'error', 'cancelled'].includes(status.status)) {
+          setTimeout(tick, 1500);
+        } else {
+          state.textContent = status.status === 'done'
+            ? `Complete · ${status.turns} turns`
+            : status.status === 'error'
+              ? `Error: ${status.error}`
+              : 'Cancelled';
+        }
+      } catch (error) {
+        state.textContent = `Preview connection error: ${error.message}`;
+        setTimeout(tick, 2500);
+      }
+    }
+
+    tick();
+    setInterval(() => {
+      if (lastPreviewAt) {
+        refresh.textContent = `preview updated ${Math.max(0, Math.floor((Date.now() - lastPreviewAt) / 1000))}s ago`;
+      }
+    }, 1000);
+  </script>
+</body>
+</html>

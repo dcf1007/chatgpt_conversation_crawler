@@ -13,9 +13,9 @@ for (const label of ['Current action', 'Coverage', 'Position in loaded content',
 }
 assert.match(server, /stage: job\.stage/);
 assert.match(server, /progressLimits: CRAWLER_PROGRESS_LIMITS/);
-assert.match(html, /job\.stage==='traversal'/);
-assert.match(html, /job\.stage==='oldest_verification'/);
-assert.match(html, /job\.stage==='reconciliation'/);
+assert.match(html, /job\.stage\s*===\s*'traversal'/);
+assert.match(html, /job\.stage\s*===\s*'oldest_verification'/);
+assert.match(html, /job\.stage\s*===\s*'reconciliation'/);
 assert.doesNotMatch(html, /function stageFor|diagnostic validation|waiting for you/i, 'clean UI must not contain development diagnostic state');
 assert.doesNotMatch(server, /diagnosticStep|diagnosticSteps|waitingForUser/, 'clean server contract must not carry development-only state');
 assert.match(core, /installDisclosureState/);

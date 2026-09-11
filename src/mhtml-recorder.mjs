@@ -69,7 +69,6 @@ async function pageExecutionState(page) {
     const crawler = window.__archiveCrawler;
     const metrics = crawler?.metrics?.() || {};
     const navigation = window.__archiveCrawlerNavigation || {};
-    const manualScroll = window.__archiveManualScrollAssist || {};
     const foreground = window.__archiveForegroundProtection || {};
     const focusTelemetry = window.__archiveFocusTelemetry || {};
     return {
@@ -103,22 +102,16 @@ async function pageExecutionState(page) {
       navigationTrailingTurn: navigation.lastTrailingTurn || '',
       navigationVisibleTurns: Number(navigation.lastVisibleCount || 0),
       navigationAmplifiedRequests: Number(navigation.amplifiedRequests || 0),
-      navigationDirectionResets: Number(navigation.directionResets || 0),
-      manualScrollAssistActive: Boolean(manualScroll.active),
-      manualScrollStagnantSteps: Number(manualScroll.stagnantSteps || 0),
-      manualScrollLogicalProgress: manualScroll.lastLogicalProgress !== false,
-      manualScrollRequestedTop: Number(manualScroll.lastRequestedTop || 0),
-      manualScrollAppliedTop: Number(manualScroll.lastAppliedTop || 0),
-      manualScrollMountedFirst: manualScroll.lastMountedFirst || '',
-      manualScrollMountedLast: manualScroll.lastMountedLast || ''
+      navigationDirectionResets: Number(navigation.directionResets || 0)
     };
   }).catch(() => ({}));
 }
 
 /**
- * Capture Chromium's own MHTML serialization for a live page. Captures are
- * serialized through one promise chain so overlapping periodic/resource/DOM
- * triggers cannot issue Page.captureSnapshot concurrently.
+ * Capture Chromium's own MHTML serialization for a live page. Capture requests
+ * are coalesced: one snapshot may be active and only the newest pending request
+ * is retained. This prevents diagnostic activity from building an unbounded
+ * Page.captureSnapshot backlog that can perturb the crawl being measured.
  */
 export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
   const directory = path.join(projectRoot, 'mhtml-diagnostics', diagnosticState.id);
@@ -130,85 +123,111 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
 
   let sequenceNumber = 0;
   let closed = false;
-  let captureQueue = Promise.resolve();
+  let pendingCapture = null;
+  let drainPromise = null;
   let idlePeriodic;
 
   async function appendManifest(entry) {
     await fs.appendFile(manifestPath, `${JSON.stringify(entry)}\n`, 'utf8');
   }
 
+  async function captureOne(request) {
+    const { reason, metadata, requestedAt } = request;
+    sequenceNumber++;
+    const filenameBase = [
+      String(sequenceNumber).padStart(4, '0'),
+      timestampForFilename(requestedAt),
+      sanitizeFilenamePart(diagnosticState.sessionMode),
+      sanitizeFilenamePart(reason)
+    ].join('-');
+    const filename = `${filenameBase}.mhtml`;
+    const filePath = path.join(directory, filename);
+    const executionState = await pageExecutionState(page);
+
+    const commonMetadata = {
+      sequence: sequenceNumber,
+      requestedAt: requestedAt.toISOString(),
+      capturedAt: new Date().toISOString(),
+      reason,
+      sessionMode: diagnosticState.sessionMode,
+      diagnosticId: diagnosticState.id,
+      sourceUrl: diagnosticState.url,
+      stage: diagnosticState.stage || '',
+      phase: diagnosticState.phase || '',
+      pass: diagnosticState.pass || 0,
+      direction: diagnosticState.direction || '',
+      step: diagnosticState.step || 0,
+      mountedTurns: diagnosticState.mountedTurns || 0,
+      retainedTurns: diagnosticState.retainedTurns || 0,
+      oldestRetained: diagnosticState.oldestRetained || 'none',
+      newestRetained: diagnosticState.newestRetained || 'none',
+      mountedFirst: diagnosticState.mountedFirst || 'none',
+      mountedLast: diagnosticState.mountedLast || 'none',
+      scrollTop: diagnosticState.scrollTop ?? executionState.liveScrollTop ?? 0,
+      scrollHeight: diagnosticState.scrollHeight || executionState.liveScrollHeight || 0,
+      scrollClient: diagnosticState.scrollClient || executionState.liveScrollClient || 0,
+      preBlocks: diagnosticState.preBlocks || 0,
+      codeBlocks: diagnosticState.codeBlocks || 0,
+      appBlocks: diagnosticState.appBlocks || 0,
+      ...executionState,
+      ...metadata
+    };
+
+    try {
+      const snapshot = await cdpSession.send('Page.captureSnapshot', { format: 'mhtml' });
+      const mhtml = String(snapshot?.data || '');
+      await fs.writeFile(filePath, mhtml, 'utf8');
+      await appendManifest({
+        ...commonMetadata,
+        filename,
+        bytes: Buffer.byteLength(mhtml, 'utf8'),
+        ok: true
+      });
+    } catch (error) {
+      await appendManifest({
+        ...commonMetadata,
+        filename,
+        bytes: 0,
+        ok: false,
+        error: error?.message || String(error)
+      }).catch(() => {});
+    }
+  }
+
+  async function drainCaptures() {
+    while (!closed && pendingCapture) {
+      const request = pendingCapture;
+      pendingCapture = null;
+      await captureOne(request);
+    }
+  }
+
   function capture(reason, metadata = {}) {
-    if (closed) return captureQueue;
-    const requestedAt = new Date();
+    if (closed) return drainPromise || Promise.resolve();
 
     // Event-driven captures provide better information than a blind clock tick.
     // Reset the idle timer so periodic MHTML is emitted only when there has
     // been no other capture request for a full interval.
     if (reason !== 'periodic-10s') idlePeriodic?.noteActivity();
 
-    captureQueue = captureQueue.then(async () => {
-      if (closed) return;
+    // Replace a not-yet-started request with the newest state. The currently
+    // active snapshot is never cancelled; there is simply at most one pending
+    // successor behind it.
+    pendingCapture = {
+      reason,
+      metadata,
+      requestedAt: new Date()
+    };
 
-      sequenceNumber++;
-      const filenameBase = [
-        String(sequenceNumber).padStart(4, '0'),
-        timestampForFilename(requestedAt),
-        sanitizeFilenamePart(diagnosticState.sessionMode),
-        sanitizeFilenamePart(reason)
-      ].join('-');
-      const filename = `${filenameBase}.mhtml`;
-      const filePath = path.join(directory, filename);
-      const executionState = await pageExecutionState(page);
-
-      const commonMetadata = {
-        sequence: sequenceNumber,
-        requestedAt: requestedAt.toISOString(),
-        capturedAt: new Date().toISOString(),
-        reason,
-        sessionMode: diagnosticState.sessionMode,
-        diagnosticId: diagnosticState.id,
-        sourceUrl: diagnosticState.url,
-        phase: diagnosticState.phase || '',
-        pass: diagnosticState.pass || 0,
-        direction: diagnosticState.direction || '',
-        step: diagnosticState.step || 0,
-        turns: diagnosticState.turns || 0,
-        oldestRetained: diagnosticState.oldestRetained || 'none',
-        newestRetained: diagnosticState.newestRetained || 'none',
-        mountedFirst: diagnosticState.mountedFirst || 'none',
-        mountedLast: diagnosticState.mountedLast || 'none',
-        scrollTop: diagnosticState.scrollTop ?? executionState.liveScrollTop ?? 0,
-        scrollHeight: diagnosticState.scrollHeight || executionState.liveScrollHeight || 0,
-        scrollClient: diagnosticState.scrollClient || executionState.liveScrollClient || 0,
-        preBlocks: diagnosticState.preBlocks || 0,
-        codeBlocks: diagnosticState.codeBlocks || 0,
-        appBlocks: diagnosticState.appBlocks || 0,
-        ...executionState,
-        ...metadata
-      };
-
-      try {
-        const snapshot = await cdpSession.send('Page.captureSnapshot', { format: 'mhtml' });
-        const mhtml = String(snapshot?.data || '');
-        await fs.writeFile(filePath, mhtml, 'utf8');
-        await appendManifest({
-          ...commonMetadata,
-          filename,
-          bytes: Buffer.byteLength(mhtml, 'utf8'),
-          ok: true
+    if (!drainPromise) {
+      drainPromise = drainCaptures()
+        .catch(() => {})
+        .finally(() => {
+          drainPromise = null;
+          if (!closed && pendingCapture) void capture(pendingCapture.reason, pendingCapture.metadata);
         });
-      } catch (error) {
-        await appendManifest({
-          ...commonMetadata,
-          filename,
-          bytes: 0,
-          ok: false,
-          error: error?.message || String(error)
-        }).catch(() => {});
-      }
-    }).catch(() => {});
-
-    return captureQueue;
+    }
+    return drainPromise;
   }
 
   idlePeriodic = createIdlePeriodicScheduler(() => {
@@ -222,8 +241,9 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
   async function close() {
     if (closed) return;
     idlePeriodic.stop();
-    await captureQueue.catch(() => {});
+    await drainPromise?.catch(() => {});
     closed = true;
+    pendingCapture = null;
     await cdpSession.detach().catch(() => {});
   }
 

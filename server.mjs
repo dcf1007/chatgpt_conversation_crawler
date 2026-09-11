@@ -354,7 +354,6 @@ async function runJob(job) {
       const signature = materialSignature(job, nextPatch);
       const substantive = signature !== job.materialSignature;
       update(job, nextPatch, substantive);
-      job.maxObservedScrollHeight = Math.max(job.maxObservedScrollHeight || 0, Number(nextPatch.scrollHeight || 0));
       job.materialSignature = signature;
       await maybeRefreshPreview(job);
     };
@@ -550,8 +549,7 @@ app.post('/api/archive/start', async (request, response) => {
       context: null,
       authenticatedHandle: null,
       page: null,
-      materialSignature: '',
-      maxObservedScrollHeight: 0
+      materialSignature: ''
     };
     jobs.set(id, job);
     setImmediate(() => runJob(job));

@@ -6,7 +6,7 @@ cd "$SCRIPT_DIR"
 
 URL="http://localhost:${PORT:-3000}"
 
-echo "Starting ChatGPT Conversation Crawler - beta11-dev diagnostics..."
+echo "Starting ChatGPT Conversation Crawler - development diagnostics..."
 
 if ! command -v node >/dev/null 2>&1; then
   echo
@@ -32,7 +32,7 @@ fi
 if [[ ! -f "$SCRIPT_DIR/server-dev.mjs" || ! -f "$SCRIPT_DIR/server.mjs" ]]; then
   echo
   echo "server-dev.mjs or server.mjs is missing from this folder."
-  echo "Re-extract the complete beta11-dev archive before starting the crawler."
+  echo "Re-extract the complete development archive before starting the crawler."
   exit 1
 fi
 

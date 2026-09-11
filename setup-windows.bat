@@ -19,6 +19,20 @@ set "NPM_CMD=%NODE_DIR%npm.cmd"
 
 echo Using Node: "%NODE_EXE%"
 "%NODE_EXE%" --version
+for /f "delims=" %%V in ('"%NODE_EXE%" -p "Number(process.versions.node.split('.')[0])"') do set "NODE_MAJOR=%%V"
+if not defined NODE_MAJOR (
+  echo.
+  echo Could not determine the active Node.js version.
+  pause
+  exit /b 1
+)
+if %NODE_MAJOR% LSS 20 (
+  echo.
+  echo Node.js 20 or newer is required. Found:
+  "%NODE_EXE%" --version
+  pause
+  exit /b 1
+)
 
 if not exist "%NPM_CMD%" (
   echo.

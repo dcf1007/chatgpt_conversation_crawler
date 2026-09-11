@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-echo Starting ChatGPT Conversation Crawler - beta11-dev diagnostics...
+echo Starting ChatGPT Conversation Crawler - development diagnostics...
 where node >nul 2>&1
 if errorlevel 1 (
   echo.
@@ -12,12 +12,31 @@ if errorlevel 1 (
   exit /b 1
 )
 
+for /f "delims=" %%V in ('node -p "Number(process.versions.node.split('.')[0])"') do set "NODE_MAJOR=%%V"
+if not defined NODE_MAJOR (
+  echo.
+  echo Could not determine the active Node.js version.
+  pause
+  exit /b 1
+)
+if %NODE_MAJOR% LSS 20 (
+  echo.
+  echo Node.js 20 or newer is required. Found:
+  node --version
+  pause
+  exit /b 1
+)
+
+if not defined PORT set "PORT=3000"
+set "CRAWLER_URL=http://localhost:%PORT%"
+
 if not exist "node_modules\playwright\package.json" goto :needs_setup
 if not exist "node_modules\express\package.json" goto :needs_setup
 if not exist "%~dp0server-dev.mjs" goto :missing_entrypoint
 if not exist "%~dp0server.mjs" goto :missing_entrypoint
 
-start "" /b cmd /c "ping 127.0.0.1 -n 3 >nul & start http://localhost:3000"
+start "" /b cmd /c "ping 127.0.0.1 -n 3 >nul & start %CRAWLER_URL%"
+echo Local UI: %CRAWLER_URL%
 node "%~dp0server-dev.mjs"
 set "EXITCODE=%ERRORLEVEL%"
 
@@ -32,7 +51,7 @@ exit /b %EXITCODE%
 :missing_entrypoint
 echo.
 echo server-dev.mjs or server.mjs is missing from this folder.
-echo Re-extract the complete beta11-dev archive before starting the crawler.
+echo Re-extract the complete development archive before starting the crawler.
 pause
 exit /b 1
 

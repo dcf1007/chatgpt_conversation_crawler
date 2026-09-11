@@ -59,6 +59,8 @@ async function samplePage(page) {
     })();
 
     const manualState = window.__archiveManualInspection || {};
+    const crawlerMetrics = window.__archiveCrawler?.metrics?.() || {};
+    const progressState = window.__archiveDiagnosticProgress || {};
     const rawCollapsedControls = document.querySelectorAll(`${turnSelector} [aria-expanded="false"]`).length;
     const rawClosedDetails = document.querySelectorAll(`${turnSelector} details:not([open])`).length;
     const reconciliationConverged = crawlerStats.reconciliationConverged === true
@@ -68,7 +70,17 @@ async function samplePage(page) {
         : null;
 
     return {
-      turns: sections.length,
+      mountedTurns: sections.length,
+      retainedTurns: Number(crawlerStats.turns || 0),
+      oldestRetained: String(crawlerStats.oldestRetained || 'none'),
+      newestRetained: String(crawlerStats.newestRetained || 'none'),
+      phase: String(progressState.phase || ''),
+      pass: Number(progressState.pass || 0),
+      direction: String(progressState.direction || ''),
+      step: Number(progressState.step || 0),
+      stage: String(progressState.stage || ''),
+      scrollTop: Number(crawlerMetrics.top ?? scrollRoot?.scrollTop ?? window.scrollY ?? 0),
+      scrollClient: Number(crawlerMetrics.client ?? scrollRoot?.clientHeight ?? window.innerHeight ?? 0),
       mountedFirst: mountedIds[0] || 'none',
       mountedLast: mountedIds[mountedIds.length - 1] || 'none',
       scrollHeight: Number(scrollRoot?.scrollHeight || document.documentElement?.scrollHeight || 0),
@@ -115,7 +127,17 @@ async function samplePage(page) {
 
 function sampleSignature(sample) {
   return [
-    sample.turns,
+    sample.mountedTurns,
+    sample.retainedTurns,
+    sample.oldestRetained,
+    sample.newestRetained,
+    sample.phase,
+    sample.pass,
+    sample.direction,
+    sample.step,
+    sample.stage,
+    Math.round(sample.scrollTop),
+    Math.round(sample.scrollClient),
     sample.mountedFirst,
     sample.mountedLast,
     sample.scrollHeight,
@@ -190,7 +212,8 @@ async function startRecorder(page, mode) {
       pass: 0,
       direction: '',
       step: 0,
-      turns: 0,
+      mountedTurns: 0,
+      retainedTurns: 0,
       oldestRetained: 'none',
       newestRetained: 'none',
       mountedFirst: 'none',
@@ -226,7 +249,17 @@ async function startRecorder(page, mode) {
       if (sample) {
         Object.assign(diagnosticState, {
           url: page.url(),
-          turns: sample.turns,
+          phase: sample.phase || diagnosticState.phase,
+          pass: sample.pass,
+          direction: sample.direction,
+          step: sample.step,
+          stage: sample.stage,
+          mountedTurns: sample.mountedTurns,
+          retainedTurns: sample.retainedTurns,
+          oldestRetained: sample.oldestRetained,
+          newestRetained: sample.newestRetained,
+          scrollTop: sample.scrollTop,
+          scrollClient: sample.scrollClient,
           mountedFirst: sample.mountedFirst,
           mountedLast: sample.mountedLast,
           scrollHeight: sample.scrollHeight,

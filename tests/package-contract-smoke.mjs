@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-assert.equal(packageJson.version, '1.7.0-beta2-dev');
+assert.equal(packageJson.version, '1.7.0-beta3-dev');
 assert.equal(packageJson.scripts?.start, 'node server-dev.mjs');
 
 for (const required of [
@@ -30,6 +30,8 @@ for (const required of [
   'README.v1.7.0-beta1-dev.txt',
   'V1_7_BETA2_DEV.md',
   'README.v1.7.0-beta2-dev.txt',
+  'V1_7_BETA3_DEV.md',
+  'README.v1.7.0-beta3-dev.txt',
   'src/archive-integrity.mjs',
   'DIAGNOSTIC_BUILD_ONLY',
   'public/index.html',
@@ -43,7 +45,6 @@ for (const required of [
   'src/transient-context-retention.mjs',
   'src/chromium-background-protection.mjs',
   'src/runtime-browser.mjs',
-  'src/manual-scroll-assist.mjs',
   'src/mhtml-dev-hook.mjs',
   'src/mhtml-recorder.mjs',
   'src/mhtml-start-gate.mjs',
@@ -52,11 +53,12 @@ for (const required of [
   'start-linux.sh',
   'start-macos.sh'
 ]) {
-  assert.ok(fs.existsSync(path.join(root, required)), `required v1.7 beta2 file missing: ${required}`);
+  assert.ok(fs.existsSync(path.join(root, required)), `required v1.7 beta3 file missing: ${required}`);
 }
 
 assert.ok(!fs.existsSync(path.join(root, 'BETA11_DEV.md')), 'beta14.3-dev package must not retain superseded beta11-dev instructions');
 assert.ok(!fs.existsSync(path.join(root, 'README.beta11-dev.txt')), 'beta14.3-dev package must not retain superseded beta11-dev package note');
-assert.ok(!fs.existsSync(path.join(root, 'src/crawler-page-diagnostics.mjs')), 'beta14.3-dev must not revive the old crawler-page-diagnostics implementation');
+assert.ok(!fs.existsSync(path.join(root, 'src/crawler-page-diagnostics.mjs')), 'v1.7 beta3 must not revive the old crawler-page-diagnostics implementation');
+assert.ok(!fs.existsSync(path.join(root, 'src/manual-scroll-assist.mjs')), 'v1.7 beta3 must remove the obsolete manual-scroll-assist implementation');
 
-console.log('v1.7 beta2 package contract smoke test passed');
+console.log('v1.7 beta3 package contract smoke test passed');

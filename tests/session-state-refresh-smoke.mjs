@@ -3,9 +3,9 @@ import fs from 'node:fs';
 
 const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 
-assert.match(html, /sessionRefreshInFlight=false/, 'session status refresh must have an in-flight guard');
-assert.match(html, /if\(sessionRefreshInFlight\)return;sessionRefreshInFlight=true/, 'refreshSession must reject overlapping status requests');
-assert.match(html, /finally\{sessionRefreshInFlight=false\}/, 'refreshSession must always release its in-flight guard');
+assert.match(html, /sessionRefreshInFlight\s*=\s*false/, 'session status refresh must have an in-flight guard');
+assert.match(html, /if\s*\(sessionRefreshInFlight\)\s*return;[\s\S]*?sessionRefreshInFlight\s*=\s*true/, 'refreshSession must reject overlapping status requests');
+assert.match(html, /finally\s*\{[\s\S]*?sessionRefreshInFlight\s*=\s*false/, 'refreshSession must always release its in-flight guard');
 assert.match(
   html,
   /lastSession&&\(lastSession\.busy\|\|lastSession\.loginWindowOpen\|\|lastSession\.verificationWindowOpen\)\)void refreshSession\(\)/,

@@ -40,12 +40,34 @@ async function retainPartialManualState(page) {
  * comparison after automatic capture completes.
  */
 export async function crawlConversation(page, options = {}) {
-  const automaticResult = await crawlAutomaticConversation(page, options);
+  // The development MHTML recorder samples this lightweight page-side progress
+  // record. Publishing only the small fields it needs keeps diagnostics truthful
+  // without adding another telemetry subsystem to the permanent crawler core.
+  const forwardProgress = async patch => {
+    const progress = patch || {};
+    await page.evaluate(value => {
+      window.__archiveDiagnosticProgress = value;
+    }, {
+      stage: String(progress.stage || ''),
+      phase: String(progress.phase || ''),
+      pass: Number(progress.pass || 0),
+      direction: String(progress.direction || ''),
+      step: Number(progress.step || 0),
+      scanningStatus: String(progress.scanningStatus || ''),
+      scanComplete: Boolean(progress.scanComplete)
+    }).catch(() => {});
+    return options.onProgress?.(progress);
+  };
+
+  const automaticResult = await crawlAutomaticConversation(page, {
+    ...options,
+    onProgress: forwardProgress
+  });
 
   if (process.env[MANUAL_INSPECTION_ENV] !== '1') return automaticResult;
 
   const { runManualInspection } = await import('./manual-inspection.mjs');
-  const onDiagnosticProgress = patch => options.onProgress?.({
+  const onDiagnosticProgress = patch => forwardProgress({
     ...patch,
     stage: 'diagnostic_validation'
   });
@@ -57,7 +79,7 @@ export async function crawlConversation(page, options = {}) {
       convergeMounted: async () => {
         // Human interaction can mount another nested generation. Reuse the
         // permanent turn-scoped fixed point and retention authority.
-        await crawlerTesting.expandMounted(page, 500, options.onProgress, options.shouldCancel);
+        await crawlerTesting.expandMounted(page, 500, forwardProgress, options.shouldCancel);
         await page.evaluate(() => window.__archiveCrawler.capture());
       }
     });

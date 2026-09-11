@@ -7,6 +7,6 @@ assert.match(workflow, /needs:\s*validate/, 'release job must depend on validati
 assert.match(workflow, /github\.event_name\s*!=\s*'pull_request'/, 'pull requests must validate without publishing');
 assert.match(workflow, /npm install/, 'runtime validation must install dependencies');
 assert.match(workflow, /for test_file in tests\/\*\.mjs/, 'workflow must execute the whole runtime smoke suite');
-assert.match(workflow, /name:\s*beta14\.3-dev-diagnostic-package/, 'validated PR artifact must use the beta14.3-dev name');
+assert.match(workflow, /name:\s*dev-diagnostic-package/, 'validated PR artifact must use a stable development name');
 
-console.log('beta14.3-dev release workflow smoke test passed');
+console.log('v1.7 beta3 release workflow smoke test passed');

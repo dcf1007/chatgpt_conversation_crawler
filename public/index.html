@@ -5,7 +5,287 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>ChatGPT Conversation Crawler</title>
   <style>
-    :root{color-scheme:light dark}*{box-sizing:border-box}body{margin:0;min-height:100vh;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:Canvas;color:CanvasText}main{width:min(1020px,calc(100% - 32px));margin:0 auto;padding:30px 0 50px}.card{border:1px solid color-mix(in srgb,CanvasText 18%,transparent);border-radius:16px;padding:24px;box-shadow:0 10px 32px color-mix(in srgb,CanvasText 7%,transparent)}h1{margin:0 0 8px;font-size:clamp(24px,5vw,34px)}p{line-height:1.5}.label{display:block;font-weight:650;margin:22px 0 8px}.input{width:100%;padding:12px 13px;border:1px solid color-mix(in srgb,CanvasText 24%,transparent);border-radius:10px;font:inherit;background:Canvas;color:CanvasText}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}button,.button-link{padding:11px 15px;border:0;border-radius:10px;font:inherit;font-weight:650;cursor:pointer;background:CanvasText;color:Canvas;text-decoration:none}button.secondary,.button-link.secondary{background:color-mix(in srgb,CanvasText 10%,Canvas);color:CanvasText;border:1px solid color-mix(in srgb,CanvasText 20%,transparent)}button.danger{background:#a22;color:white}button:disabled{opacity:.5;cursor:not-allowed}.note{margin-top:18px;font-size:14px;color:color-mix(in srgb,CanvasText 72%,transparent)}.session{margin:22px 0;padding:16px;border:1px solid color-mix(in srgb,CanvasText 16%,transparent);border-radius:12px;background:color-mix(in srgb,CanvasText 3%,Canvas)}.row-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.title{font-weight:760}.muted{opacity:.68}.small{font-size:13px;line-height:1.45}.pill{padding:5px 9px;border-radius:999px;font-size:12px;font-weight:750;background:color-mix(in srgb,CanvasText 9%,Canvas);white-space:nowrap}.mode-box{margin-top:16px;padding-top:14px;border-top:1px solid color-mix(in srgb,CanvasText 12%,transparent)}.mode-option{display:flex;align-items:flex-start;gap:9px;margin:7px 0;cursor:pointer}.mode-option input{width:auto;margin-top:.27em}.mode-option small{display:block;opacity:.68;margin-top:2px}.error{color:#c33}.session-error{display:none;margin-top:10px;color:#c33;font-size:13px}#jobPanel{display:none;margin-top:22px;border-top:1px solid color-mix(in srgb,CanvasText 14%,transparent);padding-top:22px}.phase{font-size:20px;font-weight:750}.activity{display:grid;gap:7px;margin-top:12px;padding:12px 14px;border-radius:11px;background:color-mix(in srgb,CanvasText 5%,Canvas);border:1px solid color-mix(in srgb,CanvasText 11%,transparent)}.activity-row{display:grid;grid-template-columns:170px minmax(0,1fr);gap:10px;line-height:1.4}.activity-label{font-size:12px;font-weight:750;text-transform:uppercase;letter-spacing:.035em;opacity:.58;padding-top:2px}.activity-value{overflow-wrap:anywhere}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;font-size:13px}.progress{height:9px;margin:16px 0 5px;border-radius:999px;overflow:hidden;background:color-mix(in srgb,CanvasText 10%,Canvas)}.bar{height:100%;width:0;background:CanvasText;transition:width .25s ease}.bar.indeterminate{width:35%;animation:indeterminate 1.4s ease-in-out infinite}@keyframes indeterminate{0%{transform:translateX(-110%)}100%{transform:translateX(320%)}}.progress-caption{display:flex;justify-content:space-between;gap:12px;font-size:12px;color:color-mix(in srgb,CanvasText 62%,transparent)}.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:18px}.stat{border:1px solid color-mix(in srgb,CanvasText 14%,transparent);border-radius:10px;padding:12px;min-width:0}.stat .value{font-size:19px;font-weight:760;overflow-wrap:anywhere}.stat .label{font-size:12px;opacity:.64;margin-top:2px}.health{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.health>div{padding:10px 12px;border-radius:10px;background:color-mix(in srgb,CanvasText 6%,Canvas);font-size:13px}.warning{margin-top:12px;padding:11px 13px;border-radius:10px;border:1px solid #b77;background:color-mix(in srgb,#b77 12%,Canvas);display:none}.done{margin-top:14px;padding:12px 14px;border-radius:10px;border:1px solid color-mix(in srgb,CanvasText 18%,transparent);display:none}@media(max-width:720px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.health{grid-template-columns:1fr}.row-head{display:block}.pill{display:inline-block;margin-top:8px}.activity-row{grid-template-columns:1fr;gap:2px}}
+:root {
+  color-scheme:light dark
+}
+* {
+  box-sizing:border-box
+}
+body {
+  margin:0;
+  min-height:100vh;
+  font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  background:Canvas;
+  color:CanvasText
+}
+main {
+  width:min(1020px,calc(100% - 32px));
+  margin:0 auto;
+  padding:30px 0 50px
+}
+.card {
+  border:1px solid color-mix(in srgb,CanvasText 18%,transparent);
+  border-radius:16px;
+  padding:24px;
+  box-shadow:0 10px 32px color-mix(in srgb,CanvasText 7%,transparent)
+}
+h1 {
+  margin:0 0 8px;
+  font-size:clamp(24px,5vw,34px)
+}
+p {
+  line-height:1.5
+}
+.label {
+  display:block;
+  font-weight:650;
+  margin:22px 0 8px
+}
+.input {
+  width:100%;
+  padding:12px 13px;
+  border:1px solid color-mix(in srgb,CanvasText 24%,transparent);
+  border-radius:10px;
+  font:inherit;
+  background:Canvas;
+  color:CanvasText
+}
+.actions {
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  margin-top:12px
+}
+button,.button-link {
+  padding:11px 15px;
+  border:0;
+  border-radius:10px;
+  font:inherit;
+  font-weight:650;
+  cursor:pointer;
+  background:CanvasText;
+  color:Canvas;
+  text-decoration:none
+}
+button.secondary,.button-link.secondary {
+  background:color-mix(in srgb,CanvasText 10%,Canvas);
+  color:CanvasText;
+  border:1px solid color-mix(in srgb,CanvasText 20%,transparent)
+}
+button.danger {
+  background:#a22;
+  color:white
+}
+button:disabled {
+  opacity:.5;
+  cursor:not-allowed
+}
+.note {
+  margin-top:18px;
+  font-size:14px;
+  color:color-mix(in srgb,CanvasText 72%,transparent)
+}
+.session {
+  margin:22px 0;
+  padding:16px;
+  border:1px solid color-mix(in srgb,CanvasText 16%,transparent);
+  border-radius:12px;
+  background:color-mix(in srgb,CanvasText 3%,Canvas)
+}
+.row-head {
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px
+}
+.title {
+  font-weight:760
+}
+.muted {
+  opacity:.68
+}
+.small {
+  font-size:13px;
+  line-height:1.45
+}
+.pill {
+  padding:5px 9px;
+  border-radius:999px;
+  font-size:12px;
+  font-weight:750;
+  background:color-mix(in srgb,CanvasText 9%,Canvas);
+  white-space:nowrap
+}
+.mode-box {
+  margin-top:16px;
+  padding-top:14px;
+  border-top:1px solid color-mix(in srgb,CanvasText 12%,transparent)
+}
+.mode-option {
+  display:flex;
+  align-items:flex-start;
+  gap:9px;
+  margin:7px 0;
+  cursor:pointer
+}
+.mode-option input {
+  width:auto;
+  margin-top:.27em
+}
+.mode-option small {
+  display:block;
+  opacity:.68;
+  margin-top:2px
+}
+.error {
+  color:#c33
+}
+.session-error {
+  display:none;
+  margin-top:10px;
+  color:#c33;
+  font-size:13px
+}
+#jobPanel {
+  display:none;
+  margin-top:22px;
+  border-top:1px solid color-mix(in srgb,CanvasText 14%,transparent);
+  padding-top:22px
+}
+.phase {
+  font-size:20px;
+  font-weight:750
+}
+.activity {
+  display:grid;
+  gap:7px;
+  margin-top:12px;
+  padding:12px 14px;
+  border-radius:11px;
+  background:color-mix(in srgb,CanvasText 5%,Canvas);
+  border:1px solid color-mix(in srgb,CanvasText 11%,transparent)
+}
+.activity-row {
+  display:grid;
+  grid-template-columns:170px minmax(0,1fr);
+  gap:10px;
+  line-height:1.4
+}
+.activity-label {
+  font-size:12px;
+  font-weight:750;
+  text-transform:uppercase;
+  letter-spacing:.035em;
+  opacity:.58;
+  padding-top:2px
+}
+.activity-value {
+  overflow-wrap:anywhere
+}
+.mono {
+  font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;
+  font-size:13px
+}
+.progress {
+  height:9px;
+  margin:16px 0 5px;
+  border-radius:999px;
+  overflow:hidden;
+  background:color-mix(in srgb,CanvasText 10%,Canvas)
+}
+.bar {
+  height:100%;
+  width:0;
+  background:CanvasText;
+  transition:width .25s ease
+}
+.bar.indeterminate {
+  width:35%;
+  animation:indeterminate 1.4s ease-in-out infinite
+}
+@keyframes indeterminate {
+  0% {
+    transform:translateX(-110%)
+  }
+  100% {
+    transform:translateX(320%)
+  }
+}
+.progress-caption {
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  font-size:12px;
+  color:color-mix(in srgb,CanvasText 62%,transparent)
+}
+.stats {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:10px;
+  margin-top:18px
+}
+.stat {
+  border:1px solid color-mix(in srgb,CanvasText 14%,transparent);
+  border-radius:10px;
+  padding:12px;
+  min-width:0
+}
+.stat .value {
+  font-size:19px;
+  font-weight:760;
+  overflow-wrap:anywhere
+}
+.stat .label {
+  font-size:12px;
+  opacity:.64;
+  margin-top:2px
+}
+.health {
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px;
+  margin-top:10px
+}
+.health>div {
+  padding:10px 12px;
+  border-radius:10px;
+  background:color-mix(in srgb,CanvasText 6%,Canvas);
+  font-size:13px
+}
+.warning {
+  margin-top:12px;
+  padding:11px 13px;
+  border-radius:10px;
+  border:1px solid #b77;
+  background:color-mix(in srgb,#b77 12%,Canvas);
+  display:none
+}
+.done {
+  margin-top:14px;
+  padding:12px 14px;
+  border-radius:10px;
+  border:1px solid color-mix(in srgb,CanvasText 18%,transparent);
+  display:none
+}
+@media(max-width:720px) {
+  .stats {
+    grid-template-columns:repeat(2,minmax(0,1fr))
+  }
+  .health {
+    grid-template-columns:1fr
+  }
+  .row-head {
+    display:block
+  }
+  .pill {
+    display:inline-block;
+    margin-top:8px
+  }
+  .activity-row {
+    grid-template-columns:1fr;
+    gap:2px
+  }
+}
   </style>
 </head>
 <body><main><div class="card">
@@ -53,21 +333,82 @@
     <div id="warning" class="warning"></div><div id="doneBox" class="done"></div>
   </section>
 
-  <p class="note">Progress bars are local to the current stage. <strong>Coverage</strong> means every turn ID actually observed by the mount observer has a retained candidate; beta11 additionally re-captures richer remount and hydration generations. <strong>Position in loaded content</strong> is not an estimate of total archive completion.</p>
+  <p class="note">
+    Progress bars are local to the current stage. <strong>Coverage</strong> means every turn ID actually observed by the mount observer has a retained candidate;
+    competing hydration generations are reconciled without discarding unique observed content. <strong>Position in loaded content</strong> is not an estimate of total archive completion.
+  </p>
 </div></main>
 <script>
 const $=selector=>document.querySelector(selector);
-const form=$('#form'),input=$('#url'),submit=$('#submit'),previewBtn=$('#previewBtn'),cancelBtn=$('#cancelBtn'),jobPanel=$('#jobPanel');
-const stageName=$('#stageName'),statusPill=$('#statusPill'),currentAction=$('#currentAction'),coverage=$('#coverage'),oldestRetained=$('#oldestRetained'),loadedPosition=$('#loadedPosition'),disclosureRow=$('#disclosureRow'),disclosureActivity=$('#disclosureActivity');
-const progressWrap=$('#progressWrap'),bar=$('#bar'),stageProgressText=$('#stageProgressText'),stageStepText=$('#stageStepText'),disclosureStat=$('#disclosureStat'),richStat=$('#richStat'),structureStat=$('#structureStat'),heartbeat=$('#heartbeat'),lastProgress=$('#lastProgress'),warning=$('#warning'),doneBox=$('#doneBox');
-const sessionDetail=$('#sessionDetail'),sessionPill=$('#sessionPill'),sessionError=$('#sessionError'),loginBtn=$('#loginBtn'),checkSessionBtn=$('#checkSessionBtn'),closeLoginBtn=$('#closeLoginBtn'),forgetSessionBtn=$('#forgetSessionBtn');
-let currentArchiveId=null,pollTimer=null,lastSession=null,sessionRefreshInFlight=false;
-
-const STAGE_LABELS={queued:'Queued',loading:'Loading share',preparing:'Preparing crawler',traversal:'Traversing conversation',oldest_verification:'Verifying oldest messages',reconciliation:'Reconciling retained disclosures',finalization:'Building static archive',complete:'Complete',error:'Archive failed',cancelled:'Cancelled'};
-const STAGE_PILLS={queued:'Queued',loading:'Starting',preparing:'Starting',traversal:'Crawling',oldest_verification:'Verifying',reconciliation:'Verifying',finalization:'Finalizing',complete:'Complete',error:'Error',cancelled:'Cancelled'};
-function age(ms){if(!ms)return'—';const s=Math.max(0,Math.floor((Date.now()-ms)/1000));if(s<2)return'just now';if(s<60)return`${s}s ago`;const m=Math.floor(s/60),r=s%60;return`${m}m ${r}s ago`}
+const form = $('#form');
+const input = $('#url');
+const submit = $('#submit');
+const previewBtn = $('#previewBtn');
+const cancelBtn = $('#cancelBtn');
+const jobPanel = $('#jobPanel');
+const stageName = $('#stageName');
+const statusPill = $('#statusPill');
+const currentAction = $('#currentAction');
+const coverage = $('#coverage');
+const oldestRetained = $('#oldestRetained');
+const loadedPosition = $('#loadedPosition');
+const disclosureRow = $('#disclosureRow');
+const disclosureActivity = $('#disclosureActivity');
+const progressWrap = $('#progressWrap');
+const bar = $('#bar');
+const stageProgressText = $('#stageProgressText');
+const stageStepText = $('#stageStepText');
+const disclosureStat = $('#disclosureStat');
+const richStat = $('#richStat');
+const structureStat = $('#structureStat');
+const heartbeat = $('#heartbeat');
+const lastProgress = $('#lastProgress');
+const warning = $('#warning');
+const doneBox = $('#doneBox');
+const sessionDetail = $('#sessionDetail');
+const sessionPill = $('#sessionPill');
+const sessionError = $('#sessionError');
+const loginBtn = $('#loginBtn');
+const checkSessionBtn = $('#checkSessionBtn');
+const closeLoginBtn = $('#closeLoginBtn');
+const forgetSessionBtn = $('#forgetSessionBtn');
+let currentArchiveId = null;
+let pollTimer = null;
+let lastSession = null;
+let sessionRefreshInFlight = false;
+const STAGE_LABELS = {
+  queued: 'Queued',
+  loading: 'Loading share',
+  preparing: 'Preparing crawler',
+  traversal: 'Traversing conversation',
+  oldest_verification: 'Verifying oldest messages',
+  reconciliation: 'Reconciling retained disclosures',
+  finalization: 'Building static archive',
+  complete: 'Complete',
+  error: 'Archive failed',
+  cancelled: 'Cancelled'
+};
+const STAGE_PILLS = {
+  queued: 'Queued',
+  loading: 'Starting',
+  preparing: 'Starting',
+  traversal: 'Crawling',
+  oldest_verification: 'Verifying',
+  reconciliation: 'Verifying',
+  finalization: 'Finalizing',
+  complete: 'Complete',
+  error: 'Error',
+  cancelled: 'Cancelled'
+};
+function age(ms){if(!ms)return'—';
+const s=Math.max(0,Math.floor((Date.now()-ms)/1000));
+if(s<2)return'just now';
+if(s<60)return`${s}s ago`;
+const m=Math.floor(s/60),r=s%60;
+return`${m}m ${r}s ago`}
 function selectedSessionMode(){return document.querySelector('input[name="sessionMode"]:checked')?.value||'authenticated'}
-function setSessionError(message=''){sessionError.textContent=message;sessionError.style.display=message?'block':'none'}
+function setSessionError(message=''){sessionError.textContent=message;
+sessionError.style.display=message?'block':'none'}
 function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 
 function renderSession(s){
@@ -85,20 +426,87 @@ function renderSession(s){
   sessionDetail.textContent=`${s.detail||'—'}${checked}${busy}`;
   loginBtn.disabled=s.busy;checkSessionBtn.disabled=s.busy;closeLoginBtn.disabled=!s.loginWindowOpen;forgetSessionBtn.disabled=s.busy;
 }
-async function refreshSession(){if(sessionRefreshInFlight)return;sessionRefreshInFlight=true;try{const r=await fetch('/api/session/status',{cache:'no-store'}),s=await r.json().catch(()=>({}));if(!r.ok)throw new Error(s.error||`Session status failed (${r.status}).`);renderSession(s);setSessionError('')}catch(e){setSessionError(e.message)}finally{sessionRefreshInFlight=false}}
-async function sessionAction(url,{confirmText}={}){if(confirmText&&!confirm(confirmText))return;setSessionError('');try{const r=await fetch(url,{method:'POST'}),s=await r.json().catch(()=>({}));if(!r.ok)throw new Error(s.error||`Session action failed (${r.status}).`);renderSession(s)}catch(e){setSessionError(e.message)}}
+async function refreshSession() {
+  if (sessionRefreshInFlight) return;
+  sessionRefreshInFlight = true;
+  try {
+    const response = await fetch('/api/session/status', { cache: 'no-store' });
+    const session = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(session.error || `Session status failed (${response.status}).`);
+    renderSession(session);
+    setSessionError('');
+  } catch (error) {
+    setSessionError(error.message);
+  } finally {
+    sessionRefreshInFlight = false;
+  }
+}
+async function sessionAction(url, { confirmText } = {}) {
+  if (confirmText && !confirm(confirmText)) return;
+  setSessionError('');
+  try {
+    const response = await fetch(url, { method: 'POST' });
+    const session = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(session.error || `Session action failed (${response.status}).`);
+    renderSession(session);
+  } catch (error) {
+    setSessionError(error.message);
+  }
+}
 
 function setProgress(percent,indeterminate=false){bar.classList.toggle('indeterminate',indeterminate);bar.style.transform='none';bar.style.width=indeterminate?'35%':`${Math.max(0,Math.min(100,percent))}%`}
 function positiveLimit(value){const number=Number(value);return Number.isFinite(number)&&number>0?number:null}
-function renderProgress(job){
-  progressWrap.style.display='block';
-  const limits=job.progressLimits||{};
-  const position=Number(job.positionInLoadedContent||0);
-  if(job.stage==='traversal'&&job.scanPass){const total=positiveLimit(limits.scanPasses),percent=job.direction==='up'?100-position:position;setProgress(percent);stageProgressText.textContent=total?`Pass ${job.scanPass} of ${total} · ${job.direction==='up'?'upward':'downward'}`:`Pass ${job.scanPass} · ${job.direction==='up'?'upward':'downward'}`;stageStepText.textContent=job.step?`step ${job.step}`:'working';return}
-  if(job.stage==='oldest_verification'){const required=positiveLimit(limits.oldestRequiredQuietChecks);if(!required){setProgress(0,true);stageProgressText.textContent=`Stable top checks ${job.oldestQuietChecks||0}`;stageStepText.textContent=job.oldestChecks?`check ${job.oldestChecks}`:'probing top edge';return}setProgress((Number(job.oldestQuietChecks||0)/required)*100);stageProgressText.textContent=`Stable top checks ${job.oldestQuietChecks||0} / ${required}`;stageStepText.textContent=job.oldestChecks?`check ${job.oldestChecks}`:'probing top edge';return}
-  if(job.stage==='reconciliation'){const maximum=positiveLimit(limits.reconciliationMaxPasses),percent=job.direction==='up'?100-position:position;setProgress(percent);stageProgressText.textContent=maximum?`Reconciliation pass ${job.reconciliationRounds||1} of at most ${maximum}`:`Reconciliation pass ${job.reconciliationRounds||1}`;stageStepText.textContent=job.step?`step ${job.step}`:'working';return}
-  if(job.stage==='complete'){setProgress(100);stageProgressText.textContent='Archive complete';stageStepText.textContent='';return}
-  setProgress(0,true);stageProgressText.textContent=STAGE_LABELS[job.stage]||job.phase||'Working';stageStepText.textContent='';
+function renderProgress(job) {
+  progressWrap.style.display = 'block';
+  const limits = job.progressLimits || {};
+  const position = Number(job.positionInLoadedContent || 0);
+
+  if (job.stage === 'traversal' && job.scanPass) {
+    const total = positiveLimit(limits.scanPasses);
+    const percent = job.direction === 'up' ? 100 - position : position;
+    setProgress(percent);
+    stageProgressText.textContent = total
+      ? `Pass ${job.scanPass} of ${total} · ${job.direction === 'up' ? 'upward' : 'downward'}`
+      : `Pass ${job.scanPass} · ${job.direction === 'up' ? 'upward' : 'downward'}`;
+    stageStepText.textContent = job.step ? `step ${job.step}` : 'working';
+    return;
+  }
+
+  if (job.stage === 'oldest_verification') {
+    const required = positiveLimit(limits.oldestRequiredQuietChecks);
+    if (!required) {
+      setProgress(0, true);
+      stageProgressText.textContent = `Stable top checks ${job.oldestQuietChecks || 0}`;
+      stageStepText.textContent = job.oldestChecks ? `check ${job.oldestChecks}` : 'probing top edge';
+      return;
+    }
+    setProgress((Number(job.oldestQuietChecks || 0) / required) * 100);
+    stageProgressText.textContent = `Stable top checks ${job.oldestQuietChecks || 0} / ${required}`;
+    stageStepText.textContent = job.oldestChecks ? `check ${job.oldestChecks}` : 'probing top edge';
+    return;
+  }
+
+  if (job.stage === 'reconciliation') {
+    const maximum = positiveLimit(limits.reconciliationMaxPasses);
+    const percent = job.direction === 'up' ? 100 - position : position;
+    setProgress(percent);
+    stageProgressText.textContent = maximum
+      ? `Reconciliation pass ${job.reconciliationRounds || 1} of at most ${maximum}`
+      : `Reconciliation pass ${job.reconciliationRounds || 1}`;
+    stageStepText.textContent = job.step ? `step ${job.step}` : 'working';
+    return;
+  }
+
+  if (job.stage === 'complete') {
+    setProgress(100);
+    stageProgressText.textContent = 'Archive complete';
+    stageStepText.textContent = '';
+    return;
+  }
+
+  setProgress(0, true);
+  stageProgressText.textContent = STAGE_LABELS[job.stage] || job.phase || 'Working';
+  stageStepText.textContent = '';
 }
 
 function renderJob(job){
@@ -131,16 +539,71 @@ function renderJob(job){
   else if(job.status==='cancelled')doneBox.textContent='Archive cancelled.';
 }
 
-async function pollJob(){if(!currentArchiveId)return;try{const r=await fetch(`/api/archive/status/${encodeURIComponent(currentArchiveId)}`,{cache:'no-store'});if(!r.ok)throw new Error(`Status request failed (${r.status}).`);const job=await r.json();renderJob(job);if(!['done','error','cancelled'].includes(job.status))pollTimer=setTimeout(pollJob,1000);else refreshSession()}catch(e){warning.style.display='block';warning.textContent=e.message;pollTimer=setTimeout(pollJob,2500)}}
+async function pollJob() {
+  if (!currentArchiveId) return;
+  try {
+    const response = await fetch(
+      `/api/archive/status/${encodeURIComponent(currentArchiveId)}`,
+      { cache: 'no-store' }
+    );
+    if (!response.ok) throw new Error(`Status request failed (${response.status}).`);
+    const job = await response.json();
+    renderJob(job);
+    if (!['done', 'error', 'cancelled'].includes(job.status)) {
+      pollTimer = setTimeout(pollJob, 1000);
+    } else {
+      refreshSession();
+    }
+  } catch (error) {
+    warning.style.display = 'block';
+    warning.textContent = error.message;
+    pollTimer = setTimeout(pollJob, 2500);
+  }
+}
 
-form.addEventListener('submit',async event=>{
-  event.preventDefault();clearTimeout(pollTimer);currentArchiveId=null;doneBox.style.display='none';warning.style.display='none';jobPanel.style.display='block';submit.disabled=true;previewBtn.disabled=true;cancelBtn.disabled=true;stageName.textContent='Starting archive…';statusPill.textContent='Starting';currentAction.textContent='Creating a tracked archive.';coverage.textContent='0 retained / 0 observed · 0 missing';oldestRetained.textContent='none';loadedPosition.textContent='—';setProgress(0,true);
-  try{
-    const r=await fetch('/api/archive/start',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:input.value.trim(),sessionMode:selectedSessionMode()})});
-    const data=await r.json().catch(()=>({}));if(!r.ok)throw new Error(data.error||`Could not start archive (${r.status}).`);
-    if(typeof data.id!=='string'||!data.id)throw new Error('Archive start response did not include a canonical id.');
-    currentArchiveId=data.id;previewBtn.disabled=false;cancelBtn.disabled=false;pollJob();refreshSession();
-  }catch(e){stageName.textContent='Could not start';currentAction.textContent=e.message;submit.disabled=false;refreshSession()}
+form.addEventListener('submit', async event => {
+  event.preventDefault();
+  clearTimeout(pollTimer);
+  currentArchiveId = null;
+  doneBox.style.display = 'none';
+  warning.style.display = 'none';
+  jobPanel.style.display = 'block';
+  submit.disabled = true;
+  previewBtn.disabled = true;
+  cancelBtn.disabled = true;
+  stageName.textContent = 'Starting archive…';
+  statusPill.textContent = 'Starting';
+  currentAction.textContent = 'Creating a tracked archive.';
+  coverage.textContent = '0 retained / 0 observed · 0 missing';
+  oldestRetained.textContent = 'none';
+  loadedPosition.textContent = '—';
+  setProgress(0, true);
+
+  try {
+    const response = await fetch('/api/archive/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        url: input.value.trim(),
+        sessionMode: selectedSessionMode()
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Could not start archive (${response.status}).`);
+    if (typeof data.id !== 'string' || !data.id) {
+      throw new Error('Archive start response did not include a canonical id.');
+    }
+    currentArchiveId = data.id;
+    previewBtn.disabled = false;
+    cancelBtn.disabled = false;
+    pollJob();
+    refreshSession();
+  } catch (error) {
+    stageName.textContent = 'Could not start';
+    currentAction.textContent = error.message;
+    submit.disabled = false;
+    refreshSession();
+  }
 });
 
 previewBtn.addEventListener('click',()=>{if(currentArchiveId)window.open(`/preview.html?id=${encodeURIComponent(currentArchiveId)}`,'chatgptArchivePreview')});

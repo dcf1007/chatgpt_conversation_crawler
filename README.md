@@ -8,7 +8,7 @@ It is designed for long conversations where ChatGPT lazily loads history, virtua
 
 ## Current release
 
-**v1.6.7-beta11** is the regression-hardening release following the beta8–beta10 cleanup audit. See `BETA11.md` for the detailed change rationale and regression matrix.
+**v1.7.0-beta3-dev** is the current development diagnostic prerelease. It combines v1.7 archive-integrity/hydration reconciliation, retained-fidelity/runtime hardening, and diagnostic/launcher cleanup. See `V1_7_BETA1_DEV.md`, `V1_7_BETA2_DEV.md`, and `V1_7_BETA3_DEV.md` for the batch boundaries.
 
 ## Architecture
 
@@ -147,24 +147,13 @@ The standalone unmanaged login browser is intentionally unaffected.
 Two related guarantees are separate:
 
 1. **Identity coverage:** every `conversation-turn-*` ID observed by the mount observer must have a retained candidate. A healthy completed crawl reports zero observed-but-unretained turns.
-2. **Generation richness:** every remount and descendant-hydration mutation for an observed turn is synchronously offered to `captureTurn()`. Richness-aware replacement decides whether it supersedes the retained copy.
+2. **Generation reconciliation:** every remount and descendant-hydration mutation for an observed turn is synchronously offered to `captureTurn()`. Clearly more complete generations can replace older retained content; when generations are incomparable, the crawler compares their actual content units and retains the multiset union so unique observed content is not discarded.
 
 The crawler does not infer completeness from numerical turn IDs being contiguous.
 
-### Richness ordering
+### Competing hydration generations
 
-For copies of the same turn, beta11 prioritizes:
-
-1. more `<pre>`;
-2. more `<code>`;
-3. more media (`img`, `svg`, `canvas`, `video`);
-4. more app-block roots;
-5. fewer remaining recognized disclosures;
-6. larger HTML;
-7. more text;
-8. more elements.
-
-This ordering is specifically intended to prevent a text-heavier earlier copy from blocking a later user-visible media/app generation.
+A later single generation resolves a hydration conflict only when it covers the retained union. Repeated identical content within one real generation keeps its occurrence count; deduplication applies only to overlap between competing generations. If no single generation resolves the conflict before finalization, the merged non-duplicated content remains in the archive and the integrity report records the affected turn.
 
 ## Transient context retention
 
@@ -279,3 +268,6 @@ Current gates include:
 - `v1.6.7-beta10.1` — corrected clean launchers.
 - `v1.6.7-beta10.2` — interim live-preview identifier compatibility hotfix.
 - `v1.6.7-beta11` — canonical contracts, richer remount/hydration retention, transient-context protection, clean state boundary and integration release gates.
+- `v1.7.0-beta1-dev` — archive-integrity convergence reporting and content-aware hydration reconciliation.
+- `v1.7.0-beta2-dev` — non-activating foreground-session recovery and retained image/app/transient fidelity hardening.
+- `v1.7.0-beta3-dev` — truthful/bounded diagnostics, shared navigation cleanup, readable maintained source, and Windows launcher parity.
