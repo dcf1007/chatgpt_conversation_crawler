@@ -223,37 +223,13 @@ export async function installDisclosureState(page) {
         ].join(':')).join('|');
     }
 
-    // Beta13.1 semantic progress authority. Revisions are scoped to a turn and
-    // logical-disclosure completion survives expandMounted() calls. A remount
-    // is actionable again only after that same retained turn actually improves.
+    // Turn revisions are owned by crawler-base and advance only for genuinely
+    // novel semantic generations. This keeps disclosure liveness independent
+    // from which generation wins archival retention and prevents a known poorer
+    // remount from reopening an already-proven disclosure forever.
     crawler.state.retainedRevision = Number(crawler.state.retainedRevision || 0);
     crawler.state.turnRevisions = crawler.state.turnRevisions || Object.create(null);
     crawler.state.disclosureCompletions = crawler.state.disclosureCompletions || Object.create(null);
-    const baseCaptureTurn = crawler.captureTurn.bind(crawler);
-    const baseCapture = crawler.capture.bind(crawler);
-
-    crawler.captureTurn = targetTurnId => {
-      const before = crawler.state?.turns?.[targetTurnId];
-      const result = baseCaptureTurn(targetTurnId);
-      if (crawler.state?.turns?.[targetTurnId] !== before) {
-        crawler.state.retainedRevision++;
-        crawler.state.turnRevisions[targetTurnId] = turnRevision(targetTurnId) + 1;
-      }
-      return result;
-    };
-
-    crawler.capture = () => {
-      const before = new Map(Object.entries(crawler.state?.turns || {}));
-      const result = baseCapture();
-      for (const [id, retained] of Object.entries(crawler.state?.turns || {})) {
-        if (before.get(id) !== retained) {
-          crawler.state.retainedRevision++;
-          crawler.state.turnRevisions[id] = turnRevision(id) + 1;
-        }
-      }
-      return result;
-    };
-
     crawler.retainedRevision = () => Number(crawler.state.retainedRevision || 0);
     crawler.turnRevision = targetTurnId => turnRevision(targetTurnId);
     crawler.retainedCorpusFingerprint = retainedCorpusFingerprint;

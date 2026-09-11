@@ -5,17 +5,16 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from './src/runtime-browser.mjs';
 import { crawlConversation, CRAWLER_PROGRESS_LIMITS } from './src/crawler.mjs';
 import { buildSnapshot } from './src/snapshot.mjs';
+import { evaluateArchiveIntegrity } from './src/archive-integrity.mjs';
 import {
   captureMountedAppBlocks,
   prepareEmbeddedContent,
-  restoreEmbeddedContent,
   finalizeEmbeddedContent
 } from './src/app-blocks.mjs';
 import {
   installMainImageCapture,
   captureMountedMainImages,
   prepareMainImages,
-  restoreMainImages,
   finalizeMainImages
 } from './src/main-images.mjs';
 import {
@@ -123,6 +122,15 @@ function publicJob(job) {
     mountObserverHydrationEvents: job.mountObserverHydrationEvents || 0,
     retainedUnresolvedTurns: job.retainedUnresolvedTurns || 0,
     retainedUnresolvedDisclosures: job.retainedUnresolvedDisclosures || 0,
+    hydrationConflictsResolved: job.hydrationConflictsResolved || 0,
+    hydrationConflictsUnresolved: job.hydrationConflictsUnresolved || 0,
+    hydrationConflictTurnIds: Array.isArray(job.hydrationConflictTurnIds) ? job.hydrationConflictTurnIds : [],
+    scanLimitEvents: job.scanLimitEvents || 0,
+    expansionLimitEvents: job.expansionLimitEvents || 0,
+    hydrationTimeoutEvents: job.hydrationTimeoutEvents || 0,
+    integrityStatus: job.integrityStatus || '',
+    integrityWarningCount: job.integrityWarningCount || 0,
+    integrityWarnings: Array.isArray(job.integrityWarnings) ? job.integrityWarnings : [],
     timelineMarkers: job.timelineMarkers || 0,
     appBlocks: job.appBlocks || 0,
     appBlockCaptureFailures: job.appBlockCaptureFailures || 0,
@@ -209,15 +217,17 @@ function previewSignature(job) {
 }
 
 async function assembleSnapshot(page, sourceUrl, options = {}) {
-  const mainImages = options.embedImages === false ? null : await prepareMainImages(page);
-  const prepared = await prepareEmbeddedContent(page, { embedSvgImages: options.embedImages !== false });
-  let snapshot;
-  try {
-    snapshot = await buildSnapshot(page, sourceUrl, options);
-  } finally {
-    await restoreEmbeddedContent(page, prepared);
-    if (mainImages) await restoreMainImages(page, mainImages);
-  }
+  const archiveState = await page.evaluate(() => {
+    const state = window.__archiveCrawler?.state;
+    if (!state) throw new Error('Archive state was not initialized.');
+    return structuredClone(state);
+  });
+  const mainImages = options.embedImages === false ? null : await prepareMainImages(page, archiveState);
+  const prepared = await prepareEmbeddedContent(page, {
+    embedSvgImages: options.embedImages !== false,
+    archiveState
+  });
+  let snapshot = await buildSnapshot(page, sourceUrl, { ...options, archiveState });
   snapshot = finalizeEmbeddedContent(snapshot, prepared);
   if (mainImages) snapshot = finalizeMainImages(snapshot, mainImages);
   return finalizeConversationFidelity(snapshot);
@@ -349,6 +359,20 @@ async function runJob(job) {
     await crawlConversation(job.page, { onProgress, shouldCancel: () => job.cancelRequested });
     assertNotCancelled(job);
 
+    const finalStats = await job.page.evaluate(async () => {
+      await window.__archiveCrawler.flushMountRetention?.();
+      window.__archiveCrawler.capture?.();
+      return window.__archiveCrawler.stats?.() || {};
+    });
+    const integrity = evaluateArchiveIntegrity(finalStats);
+    await job.page.evaluate(value => { window.__archiveCrawler.state.integrity = value; }, integrity);
+    update(job, {
+      ...finalStats,
+      integrityStatus: integrity.status,
+      integrityWarningCount: integrity.warningCount,
+      integrityWarnings: integrity.warnings
+    });
+
     await flushTransientContextRetention(job.page).catch(() => {});
     await captureMountedMainImages(job.page, { settleMs: 1500 }).catch(() => {});
     const finalAppState = await captureMountedAppBlocks(job.page).catch(() => null);
@@ -377,8 +401,13 @@ async function runJob(job) {
       ...snapshot.stats,
       state: 'complete',
       stage: 'complete',
-      phase: 'Complete',
-      detail: 'Static HTML is ready to download.',
+      phase: integrity.warningCount ? 'Complete with integrity warnings' : 'Complete',
+      detail: integrity.warningCount
+        ? `Static HTML is ready to download with ${integrity.warningCount} integrity warning(s); all observed retained content was preserved.`
+        : 'Static HTML is ready to download and the crawler integrity checks converged.',
+      integrityStatus: integrity.status,
+      integrityWarningCount: integrity.warningCount,
+      integrityWarnings: integrity.warnings,
       scanComplete: true,
       pass: 0,
       direction: '',

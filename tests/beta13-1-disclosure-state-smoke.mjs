@@ -59,7 +59,9 @@ const state = {
   successfulExpansions: 0,
   clickCount: 0,
   lastExpansion: '',
-  lastExpansionTurn: ''
+  lastExpansionTurn: '',
+  retainedRevision: 0,
+  turnRevisions: Object.create(null)
 };
 
 const crawler = {
@@ -70,6 +72,8 @@ const crawler = {
       richerCapturePending = false;
       retainedGeneration++;
       state.turns[turnId] = { ...state.turns[turnId], htmlLength: 100 + retainedGeneration };
+      state.retainedRevision++;
+      state.turnRevisions[turnId] = Number(state.turnRevisions[turnId] || 0) + 1;
     }
     return this.activity();
   },

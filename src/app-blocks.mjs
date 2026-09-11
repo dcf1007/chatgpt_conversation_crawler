@@ -425,7 +425,7 @@ export function getCapturedAppBlocks(page) {
   };
 }
 
-export async function prepareEmbeddedContent(page, { embedSvgImages = true } = {}) {
+export async function prepareEmbeddedContent(page, { embedSvgImages = true, archiveState = null } = {}) {
   await captureMountedAppBlocks(page).catch(() => {});
   const retainedApps = getCapturedAppBlocks(page);
   const prefix = crypto.randomUUID().replaceAll('-', '');
@@ -438,10 +438,13 @@ export async function prepareEmbeddedContent(page, { embedSvgImages = true } = {
     else sourceFallback[block.sourceUrl] = '';
   });
 
-  const rewrite = await page.evaluate(({ blockTokens, sourceFallback, prefix, rootSelector }) => {
-    const turns = window.__archiveCrawler?.state?.turns;
-    if (!turns) return { originals: [], appUses: [], missingApps: [], svgs: [] };
+  const turnsInput = archiveState?.turns || null;
+  const rewrite = await page.evaluate(({ blockTokens, sourceFallback, prefix, rootSelector, turnsInput }) => {
+    const turns = turnsInput || window.__archiveCrawler?.state?.turns;
+    const usingCopy = Boolean(turnsInput);
+    if (!turns) return { originals: [], updates: [], appUses: [], missingApps: [], svgs: [] };
     const originals = [];
+    const updates = [];
     const appUses = [];
     const missingApps = [];
     const svgs = [];
@@ -493,11 +496,18 @@ export async function prepareEmbeddedContent(page, { embedSvgImages = true } = {
 
       if (changed) {
         originals.push({ id: turn.id, html: turn.html });
-        turn.html = holder.innerHTML;
+        updates.push({ id: turn.id, html: holder.innerHTML });
+        if (!usingCopy) turn.html = holder.innerHTML;
       }
     }
-    return { originals, appUses, missingApps, svgs };
-  }, { blockTokens, sourceFallback, prefix, rootSelector: APP_BLOCK_ROOT_SELECTOR });
+    return { originals, updates, appUses, missingApps, svgs };
+  }, { blockTokens, sourceFallback, prefix, rootSelector: APP_BLOCK_ROOT_SELECTOR, turnsInput });
+
+  if (archiveState?.turns) {
+    for (const update of rewrite.updates) {
+      if (archiveState.turns[update.id]) archiveState.turns[update.id].html = update.html;
+    }
+  }
 
   const state = appState(page);
   const svgRecords = [];
@@ -558,10 +568,11 @@ export async function prepareEmbeddedContent(page, { embedSvgImages = true } = {
 
   const blockMap = new Map(retainedApps.blocks.map(block => [block.key, block]));
   const tokenToBlock = new Map(Object.entries(blockTokens).map(([key, token]) => [token, blockMap.get(key)]));
-  return { rewrite, retainedApps, tokenToBlock, svgRecords };
+  return { rewrite, retainedApps, tokenToBlock, svgRecords, usingCopy: Boolean(archiveState) };
 }
 
 export async function restoreEmbeddedContent(page, prepared) {
+  if (prepared?.usingCopy) return;
   const originals = prepared?.rewrite?.originals || [];
   if (!originals.length) return;
   await page.evaluate(items => {

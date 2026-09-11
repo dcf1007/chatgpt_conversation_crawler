@@ -271,12 +271,13 @@ const esc = value => String(value).replace(/[&<>"']/g, char => ({
   '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
 }[char]));
 
-export async function prepareMainImages(page) {
+export async function prepareMainImages(page, archiveState = null) {
   await captureMountedMainImages(page, { settleMs: 1200 }).catch(() => {});
   await flushPending(page);
 
-  const urls = await page.evaluate(() => {
-    const turns = window.__archiveCrawler?.state?.turns;
+  const turnsInput = archiveState?.turns || null;
+  const urls = await page.evaluate(turns => {
+    turns ||= window.__archiveCrawler?.state?.turns;
     if (!turns) return [];
     const found = new Set();
     for (const turn of Object.values(turns)) {
@@ -289,7 +290,7 @@ export async function prepareMainImages(page) {
       }
     }
     return [...found];
-  });
+  }, turnsInput);
 
   const prefix = crypto.randomUUID().replaceAll('-', '');
   const records = new Array(urls.length);
@@ -318,10 +319,11 @@ export async function prepareMainImages(page) {
   await Promise.all(Array.from({ length: Math.min(4, Math.max(1, urls.length)) }, () => worker()));
   const tokenByUrl = Object.fromEntries(records.map(record => [record.url, record.token]));
 
-  const rewrite = await page.evaluate(tokenByUrl => {
-    const turns = window.__archiveCrawler?.state?.turns;
-    if (!turns) return { originals: [] };
+  const rewrite = await page.evaluate(({ turns, tokenByUrl }) => {
+    turns ||= window.__archiveCrawler?.state?.turns;
+    if (!turns) return { originals: [], updates: [] };
     const originals = [];
+    const updates = [];
     for (const turn of Object.values(turns)) {
       if (!turn?.id || !turn?.html) continue;
       const holder = document.createElement('div');
@@ -334,18 +336,29 @@ export async function prepareMainImages(page) {
         img.setAttribute('src', token);
         changed = true;
       }
-      if (changed) {
-        originals.push({ id: turn.id, html: turn.html });
-        turn.html = holder.innerHTML;
-      }
+      if (!changed) continue;
+      originals.push({ id: turn.id, html: turn.html });
+      updates.push({ id: turn.id, html: holder.innerHTML });
+      if (!turnsInputMarker(turns)) turn.html = holder.innerHTML;
     }
-    return { originals };
-  }, tokenByUrl);
+    return { originals, updates };
 
-  return { records, rewrite, totalBytes };
+    function turnsInputMarker(value) {
+      return Boolean(value && value !== window.__archiveCrawler?.state?.turns);
+    }
+  }, { turns: turnsInput, tokenByUrl });
+
+  if (archiveState?.turns) {
+    for (const update of rewrite.updates) {
+      if (archiveState.turns[update.id]) archiveState.turns[update.id].html = update.html;
+    }
+  }
+
+  return { records, rewrite, totalBytes, usingCopy: Boolean(archiveState) };
 }
 
 export async function restoreMainImages(page, prepared) {
+  if (prepared?.usingCopy) return;
   const originals = prepared?.rewrite?.originals || [];
   if (!originals.length) return;
   await page.evaluate(items => {

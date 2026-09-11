@@ -77,7 +77,8 @@ export async function waitForDisclosureHydration(page, result, shouldCancel) {
     }
     await page.waitForTimeout(DISCLOSURE_SAMPLE_INTERVAL_MS);
   }
-  return latest;
+  if (latest) return { ...latest, timedOut: true };
+  return { present: false, expanded: false, targetExists: false, turnId: result.turnId || '', signature: 'timeout', timedOut: true };
 }
 
 async function processExpansion(page, result, turnRevisionBefore, onProgress, shouldCancel) {
@@ -86,7 +87,15 @@ async function processExpansion(page, result, turnRevisionBefore, onProgress, sh
   if (result.kind === 'details') {
     await page.waitForTimeout(80);
   } else {
-    await waitForDisclosureHydration(page, result, shouldCancel);
+    const hydration = await waitForDisclosureHydration(page, result, shouldCancel);
+    if (hydration?.timedOut) {
+      await page.evaluate(value => window.__archiveCrawler.noteHydrationTimeout?.(value), {
+        turnId: result.turnId || hydration.turnId || '',
+        key: result.key || '',
+        kind: 'disclosure-hydration',
+        waitMs: DISCLOSURE_MAX_SETTLE_MS
+      });
+    }
     confirmed = await page.evaluate(key => {
       const crawler = window.__archiveCrawler;
       crawler.confirm(key);
@@ -150,6 +159,8 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
   let idleRounds = 0;
   let previousIdleSignature = '';
   let idleStartedAt = Date.now();
+  let exitReason = 'fixed-point';
+  let timedOut = false;
 
   while (processed < max) {
     if (shouldCancel?.()) throw new Error('Archive cancelled.');
@@ -163,7 +174,7 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
         activeTurnId = result.turnId || activeTurnId;
       }
 
-      const { confirmed, revisionAfter, retainedProgress } = await processExpansion(
+      const expansion = await processExpansion(
         page,
         result,
         turnRevisionBefore,
@@ -173,15 +184,12 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
 
       processed++;
       reportCounter++;
-      lastObservedTurnRevision = Math.max(lastObservedTurnRevision, revisionAfter);
+      lastObservedTurnRevision = Math.max(lastObservedTurnRevision, expansion.revisionAfter);
       idleRounds = 0;
       previousIdleSignature = '';
       idleStartedAt = Date.now();
 
-      // A confirmed activation or a richer retained generation is semantic work.
-      // No-progress confirmation also establishes the fixed point that makes a
-      // later same-revision remount ineligible.
-      if (confirmed || retainedProgress) lastSemanticProgressAt = Date.now();
+      if (expansion.confirmed || expansion.retainedProgress) lastSemanticProgressAt = Date.now();
 
       quietRounds = 0;
       previousTurnSignature = '';
@@ -203,8 +211,22 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
       const requiredRounds = sample.actionableCollapsed > 0
         ? IDLE_STALLED_ACTIONABLE_REQUIRED_ROUNDS
         : IDLE_DISCLOSURE_REQUIRED_ROUNDS;
-      const timedOut = Date.now() - idleStartedAt >= TURN_QUIESCENT_MAX_WAIT_MS;
-      if (idleRounds >= requiredRounds || timedOut) break;
+      const idleTimedOut = Date.now() - idleStartedAt >= TURN_QUIESCENT_MAX_WAIT_MS;
+      if (idleRounds >= requiredRounds) {
+        exitReason = sample.actionableCollapsed > 0 ? 'semantic-stall' : 'fixed-point';
+        break;
+      }
+      if (idleTimedOut) {
+        timedOut = true;
+        exitReason = 'mounted-quiescence-timeout';
+        await page.evaluate(value => window.__archiveCrawler.noteHydrationTimeout?.(value), {
+          turnId: '',
+          kind: 'mounted-quiescence',
+          waitMs: TURN_QUIESCENT_MAX_WAIT_MS,
+          actionableCollapsed: Number(sample.actionableCollapsed || 0)
+        });
+        break;
+      }
 
       await page.waitForTimeout(sample.actionableCollapsed > 0 ? 20 : IDLE_DISCLOSURE_ROUND_INTERVAL_MS);
       continue;
@@ -220,7 +242,6 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
     }
 
     const sample = await page.evaluate(turnId => window.__archiveCrawler.turnDisclosureSample(turnId), activeTurnId);
-
     if (!sample.mounted) {
       await markTurnQuiescence(page, activeTurnId, quietRounds, `missing:${activeTurnId}`, false, false);
       activeTurnId = '';
@@ -233,9 +254,9 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
     const signature = semanticTurnSignature(sample, revisionAfterCapture);
     quietRounds = signature === previousTurnSignature ? quietRounds + 1 : 1;
     previousTurnSignature = signature;
-    const timedOut = Date.now() - lastSemanticProgressAt >= TURN_QUIESCENT_MAX_WAIT_MS;
+    const turnTimedOut = Date.now() - lastSemanticProgressAt >= TURN_QUIESCENT_MAX_WAIT_MS;
     const converged = quietRounds >= TURN_QUIESCENT_REQUIRED_ROUNDS;
-    await markTurnQuiescence(page, activeTurnId, quietRounds, signature, converged, timedOut);
+    await markTurnQuiescence(page, activeTurnId, quietRounds, signature, converged, turnTimedOut);
 
     const stats = await page.evaluate(() => window.__archiveCrawler.stats());
     await onProgress?.({
@@ -244,12 +265,22 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
         ? sample.actionableCollapsed > 0
           ? `${activeTurnId} semantic stall · ${quietRounds}/${TURN_QUIESCENT_REQUIRED_ROUNDS} unchanged rounds with ${sample.actionableCollapsed} actionable; yielding`
           : `${activeTurnId} semantic disclosure fixed point · ${quietRounds}/${TURN_QUIESCENT_REQUIRED_ROUNDS} quiet rounds`
-        : timedOut
+        : turnTimedOut
           ? `${activeTurnId} semantic progress wait hit ${TURN_QUIESCENT_MAX_WAIT_MS / 1000}s safety limit`
           : `Waiting for semantic disclosure progress in ${activeTurnId} · ${quietRounds}/${TURN_QUIESCENT_REQUIRED_ROUNDS} quiet rounds · actionable ${sample.actionableCollapsed}`
     });
 
-    if (converged || timedOut) {
+    if (turnTimedOut) {
+      timedOut = true;
+      await page.evaluate(value => window.__archiveCrawler.noteHydrationTimeout?.(value), {
+        turnId: activeTurnId,
+        kind: 'turn-quiescence',
+        waitMs: TURN_QUIESCENT_MAX_WAIT_MS,
+        actionableCollapsed: Number(sample.actionableCollapsed || 0)
+      });
+    }
+
+    if (converged || turnTimedOut) {
       activeTurnId = '';
       quietRounds = 0;
       previousTurnSignature = '';
@@ -262,7 +293,25 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
     await page.waitForTimeout(sample.actionableCollapsed > 0 ? 20 : TURN_QUIESCENT_ROUND_INTERVAL_MS);
   }
 
+  const hitActionLimit = processed >= max;
+  if (hitActionLimit) {
+    exitReason = 'action-limit';
+    await page.evaluate(value => window.__archiveCrawler.noteExpansionLimit?.(value), {
+      processed,
+      limit: max,
+      scopeTurnId: activeTurnId || '',
+      reason: exitReason
+    });
+  }
+
   if (reportCounter) await report(page, onProgress);
+  return {
+    converged: !hitActionLimit && !timedOut,
+    processed,
+    limit: max,
+    reason: exitReason,
+    timedOut
+  };
 }
 
 export const __testing = {

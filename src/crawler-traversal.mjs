@@ -49,9 +49,6 @@ function traversalProgressSignature(metrics, stats, { normalizeTop = false } = {
 }
 
 export async function scan(page, direction, pass, onProgress, shouldCancel, maxSteps = SCAN_MAX_STEPS) {
-  // Keep renderer/activity protection alive without ever activating the native
-  // browser window. Navigation state is reset for each traversal phase so a
-  // previous direction cannot contaminate the next scan.
   await ensurePageForegroundProtection(page).catch(() => {});
   await page.evaluate(() => window.__archiveCrawler.resetNavigation());
 
@@ -64,9 +61,12 @@ export async function scan(page, direction, pass, onProgress, shouldCancel, maxS
 
   let stableChecks = 0;
   let previousSignature = '';
+  let steps = 0;
+  let converged = false;
 
   for (let step = 0; step < maxSteps; step++) {
     if (shouldCancel?.()) throw new Error('Archive cancelled.');
+    steps = step + 1;
     await expandMounted(page, 180, onProgress, shouldCancel);
     await page.evaluate(() => window.__archiveCrawler.capture());
 
@@ -95,17 +95,20 @@ export async function scan(page, direction, pass, onProgress, shouldCancel, maxS
       stage: 'traversal',
       phase: 'Scanning conversation',
       detail: 'Capturing mounted turns, timeline markers, disclosures, and asynchronously hydrated content as they appear.',
-      scanningStatus: `Pass ${pass}/3 ${arrow} · step ${step + 1}/${maxSteps} · ${positionPercent.toFixed(1)}% loaded range · mounted first ${stats.mountedFirst}${edgeStatus}`,
+      scanningStatus: `Pass ${pass}/3 ${arrow} · step ${steps}/${maxSteps} · ${positionPercent.toFixed(1)}% loaded range · mounted first ${stats.mountedFirst}${edgeStatus}`,
       scanComplete: false,
       pass,
       direction,
-      step: step + 1,
+      step: steps,
       scrollTop: metrics.top,
       scrollHeight: metrics.height,
       scrollClient: metrics.client
     });
 
-    if (atEnd && stableChecks >= SCAN_ENDPOINT_STABLE_CHECKS) break;
+    if (atEnd && stableChecks >= SCAN_ENDPOINT_STABLE_CHECKS) {
+      converged = true;
+      break;
+    }
     previousSignature = signature;
 
     const fraction = direction === 'up' ? 0.42 : 0.62;
@@ -117,6 +120,31 @@ export async function scan(page, direction, pass, onProgress, shouldCancel, maxS
     await page.evaluate(top => window.__archiveCrawler.navigateTop(top), nextTop);
     await page.waitForTimeout(direction === 'up' ? 260 : 200);
   }
+
+  const result = {
+    converged,
+    pass,
+    direction,
+    steps,
+    maxSteps,
+    stableChecks,
+    requiredStableChecks: SCAN_ENDPOINT_STABLE_CHECKS
+  };
+  await page.evaluate(value => window.__archiveCrawler.markScanResult?.(value), result);
+
+  if (!converged) {
+    await report(page, onProgress, {
+      stage: 'traversal',
+      phase: 'Traversal safety limit reached',
+      detail: `Pass ${pass} ${direction} did not prove endpoint convergence within ${maxSteps} steps. The retained content is preserved and final integrity reporting will flag the incomplete convergence.`,
+      scanningStatus: `Pass ${pass}/3 ${direction === 'up' ? '↑' : '↓'} · safety limit ${steps}/${maxSteps}`,
+      scanComplete: false,
+      pass,
+      direction,
+      step: steps
+    });
+  }
+  return result;
 }
 
 export async function verifyOldestMessages(page, onProgress, shouldCancel) {
@@ -271,7 +299,8 @@ export async function reconcileRetainedDisclosures(page, onProgress, shouldCance
       step: 0
     });
 
-    await scan(page, direction, 3, progress, shouldCancel);
+    const scanResult = await scan(page, direction, 3, progress, shouldCancel);
+    if (!scanResult.converged) stablePasses = 0;
     summary = await retainedDisclosureSummary(page);
     if (summary.fingerprint === previousFingerprint) stablePasses++;
     else stablePasses = 0;
@@ -317,15 +346,19 @@ export async function crawlAutomaticConversation(page, { onProgress, shouldCance
     previewPaused: false
   });
 
-  await scan(page, 'down', 1, onProgress, shouldCancel);
-  await scan(page, 'up', 2, onProgress, shouldCancel);
+  const scans = [];
+  scans.push(await scan(page, 'down', 1, onProgress, shouldCancel));
+  scans.push(await scan(page, 'up', 2, onProgress, shouldCancel));
   const oldest = await verifyOldestMessages(page, onProgress, shouldCancel);
-  await scan(page, 'down', 3, onProgress, shouldCancel);
+  scans.push(await scan(page, 'down', 3, onProgress, shouldCancel));
   const reconciliation = await reconcileRetainedDisclosures(page, onProgress, shouldCancel);
 
-  const traversalBase = oldest.converged
-    ? 'Complete — 3 passes + oldest-edge convergence'
-    : `Complete — 3 passes; oldest-edge safety limit (${oldest.quietChecks}/${oldest.requiredQuietChecks} stable)`;
+  const traversalConverged = scans.every(result => result.converged);
+  const traversalBase = traversalConverged
+    ? oldest.converged
+      ? 'Complete — 3 converged passes + oldest-edge convergence'
+      : `Traversal passes converged; oldest-edge safety limit (${oldest.quietChecks}/${oldest.requiredQuietChecks} stable)`
+    : `${scans.filter(result => !result.converged).length} traversal pass(es) reached their safety limit`;
   const traversalSummary = reconciliation.rounds > 0
     ? `${traversalBase}; retained reconciliation ${reconciliation.converged ? 'converged' : 'stopped'} after ${reconciliation.rounds} pass(es)`
     : traversalBase;
@@ -333,9 +366,7 @@ export async function crawlAutomaticConversation(page, { onProgress, shouldCance
   await onProgress?.({
     stage: 'finalization',
     phase: 'Final expansion sweep',
-    detail: oldest.converged
-      ? 'Traversal and retained-corpus reconciliation are complete; opening any disclosures still mounted before the final snapshot.'
-      : 'Traversal reached the oldest-edge safety limit; remaining mounted disclosures are being checked before the final snapshot.',
+    detail: 'Traversal and retained-corpus reconciliation are finished; opening any disclosures still mounted before the final snapshot.',
     scanningStatus: traversalSummary,
     scanComplete: true,
     pass: 0,
@@ -347,12 +378,12 @@ export async function crawlAutomaticConversation(page, { onProgress, shouldCance
     oldestChecks: oldest.checks
   });
 
-  await expandMounted(page, 500, onProgress, shouldCancel);
+  const finalExpansion = await expandMounted(page, 500, onProgress, shouldCancel);
   await page.evaluate(() => window.__archiveCrawler.capture());
   await report(page, onProgress, {
     stage: 'finalization',
     phase: 'Final expansion sweep',
-    detail: 'Expansion, hydration, and retained-disclosure reconciliation are complete; preparing the final static page.',
+    detail: 'Expansion, hydration, and retained-disclosure reconciliation are finished; preparing final integrity validation.',
     scanningStatus: traversalSummary,
     scanComplete: true,
     pass: 0,
@@ -363,6 +394,14 @@ export async function crawlAutomaticConversation(page, { onProgress, shouldCance
     oldestQuietChecks: oldest.quietChecks,
     oldestChecks: oldest.checks
   });
+
+  return {
+    scans,
+    oldest,
+    reconciliation,
+    finalExpansion,
+    traversalConverged
+  };
 }
 
 export const __testing = { traversalProgressSignature, NAVIGATION_STAGNATION_REASSERT };

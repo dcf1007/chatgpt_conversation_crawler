@@ -10,7 +10,19 @@ globalThis.scrollTo = () => {};
 globalThis.getComputedStyle = () => ({ overflowY: 'visible' });
 globalThis.location = { href: 'https://chatgpt.com/share/test' };
 
-const state = { textLength: 120, mediaCount: 0, htmlLength: 600, elementCount: 8 };
+const state = { textLength: 120, mediaCount: 0, htmlLength: 600, elementCount: 8, units: ['base'] };
+
+function contentUnit(text) {
+  return {
+    tagName: 'P',
+    innerText: text,
+    textContent: text,
+    outerHTML: `<p>${text}</p>`,
+    parentElement: null,
+    getAttribute() { return null; },
+    querySelectorAll() { return []; }
+  };
+}
 const section = {
   getAttribute(name) { return name === 'data-testid' ? 'conversation-turn-1' : null; },
   closest() { return this; },
@@ -27,7 +39,11 @@ const section = {
     const suffix = '</section>';
     return {
       outerHTML: prefix + 'x'.repeat(Math.max(0, state.htmlLength - prefix.length - suffix.length)) + suffix,
-      querySelectorAll() { return []; }
+      children: [],
+      querySelectorAll(selector) {
+        if (selector.includes('pre,blockquote,table,figure')) return state.units.map(contentUnit);
+        return [];
+      }
     };
   },
   get innerText() { return 't'.repeat(state.textLength); },
@@ -56,6 +72,7 @@ state.textLength = 110;
 state.mediaCount = 1;
 state.htmlLength = 550;
 state.elementCount = 9;
+state.units = ['base', 'embedded-media'];
 globalThis.__archiveCrawler.captureTurn('conversation-turn-1');
 const retained = globalThis.__archiveCrawler.state.turns['conversation-turn-1'];
 assert.equal(retained.mediaCount, 1);

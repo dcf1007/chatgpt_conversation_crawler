@@ -83,7 +83,8 @@ export async function installMountRetention(page, { settleMs = DEFAULT_SETTLE_MS
               continue;
             }
 
-            const owner = record.target?.closest?.(turnSelector);
+            const owner = record.target?.closest?.(turnSelector)
+              || record.target?.parentElement?.closest?.(turnSelector);
             if (owner) hydrated.add(owner);
             for (const node of record.addedNodes || []) collectTurnSections(node, mounted);
           }
@@ -100,7 +101,8 @@ export async function installMountRetention(page, { settleMs = DEFAULT_SETTLE_MS
       subtree: true,
       childList: true,
       attributes: true,
-      attributeFilter: ['data-testid']
+      attributeFilter: ['data-testid'],
+      characterData: true
     });
 
     for (const section of document.querySelectorAll(turnSelector)) {

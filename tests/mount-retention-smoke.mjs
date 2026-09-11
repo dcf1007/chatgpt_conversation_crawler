@@ -83,6 +83,13 @@ generations[turn47.id] = 3;
 observerInstance.callback([{ type: 'childList', target: child, addedNodes: [new MockElement()] }]);
 assert.equal(retained[turn47.id].generation, 3, 'descendant hydration must recapture owning turn immediately');
 
+// Text-node hydration can happen without adding/removing elements. characterData
+// mutations must therefore recapture the owning turn synchronously as well.
+const textNode = { parentElement: child };
+generations[turn47.id] = 4;
+observerInstance.callback([{ type: 'characterData', target: textNode, addedNodes: [] }]);
+assert.equal(retained[turn47.id].generation, 4, 'characterData hydration must recapture owning turn immediately');
+
 await new Promise(resolve => setTimeout(resolve, 35));
 const stats = globalThis.__archiveCrawler.stats();
 assert.equal(stats.seenMountedTurns, 2);
