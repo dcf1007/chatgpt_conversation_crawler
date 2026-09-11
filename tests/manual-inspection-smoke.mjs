@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { selectTargetsFromTurns } from '../src/manual-inspection.mjs';
+import { buildManualRemountDiagnosticState, selectTargetsFromTurns } from '../src/manual-inspection.mjs';
 import { analyzeTurnWindow, tightenTurnBracket } from '../src/crawler-navigation.mjs';
 
 // Regression: a generic image viewer with several aria-expanded=false controls
@@ -59,6 +59,22 @@ const firstPass = selectTargetsFromTurns(turns, { count: 2 }).map(target => targ
 const secondPass = selectTargetsFromTurns(turns, { count: 2 }).map(target => target.id);
 assert.deepEqual(firstPass, secondPass);
 
+// Regression: MHTML metadata must describe the target being remounted now, not
+// the target from the completed previous manual step. The live publisher uses
+// this descriptor before shared logical navigation begins.
+const remountDescriptor = buildManualRemountDiagnosticState(
+  { id: 'conversation-turn-14', reason: 'rich assistant reasoning/tool turn' },
+  { index: 2, count: 2 }
+);
+assert.equal(remountDescriptor.phase, 'remounting-target');
+assert.equal(remountDescriptor.active, false);
+assert.equal(remountDescriptor.stepIndex, 2);
+assert.equal(remountDescriptor.stepCount, 2);
+assert.equal(remountDescriptor.targetTurnId, 'conversation-turn-14');
+assert.equal(remountDescriptor.targetReason, 'rich assistant reasoning/tool turn');
+assert.equal(remountDescriptor.interactionCount, 0);
+assert.equal(remountDescriptor.finishRequested, false);
+
 // Sparse virtualizer regression: mounted first/last do not define a contiguous
 // interval. A missing target between mounted predecessor/successor is bracketed.
 const retained = Array.from({ length: 60 }, (_, index) => `conversation-turn-${index + 1}`);
@@ -98,4 +114,4 @@ assert.equal(best.afterId, 'conversation-turn-27');
 assert.equal(best.afterIndex, 26);
 assert.equal(Object.prototype.hasOwnProperty.call(best, 'scrollTop'), false);
 
-console.log('dynamic manual target selection + shared logical remount smoke test passed');
+console.log('dynamic manual target selection + truthful remount metadata + shared logical remount smoke test passed');
