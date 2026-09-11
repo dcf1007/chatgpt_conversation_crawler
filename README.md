@@ -82,7 +82,7 @@ The crawler intentionally does not wait for the entire virtualized viewport to b
 - Retains each observed virtualized `conversation-turn-*` section.
 - Synchronously re-captures richer remounts and descendant hydration generations, then performs a short delayed settle retry.
 - Separates the canonical real observed hydration generation from accumulated semantic evidence and any synthetic preservation union.
-- Preserves multiset-aware unique material from genuinely incomparable hydration generations and resolves the warning when a later generation covers all accumulated semantic evidence.
+- Preserves multiset-aware unique material from genuinely incomparable hydration generations and resolves the warning when a later real generation covers all accumulated semantic evidence.
 - Navigates retained targets by logical turn identity/order rather than storing historical page pixels as turn anchors.
 - Explicitly covers the complete current viewport extent of each retained turn; unusually tall turns receive overlapping live-geometry interior observations so viewport-triggered content in the middle can hydrate.
 - Expands conversation-scoped reasoning/tool disclosures, structural `aria-controls` disclosures, and native `<details>` within the active retained turn.
@@ -247,7 +247,7 @@ The crawler does **not**:
 - anonymous mode uses a disposable context;
 - authenticated mode uses only the local `./browser-profile`;
 - manual login occurs on the real ChatGPT site;
-- browser profile is ignored by Git and never embedded into archive output;
+- browser profile is ignored by Git and never embedded in archive output;
 - local server binds to loopback by default;
 - final archive contains no copied ChatGPT scripts or live app iframes;
 - app forms/event handlers are removed;
