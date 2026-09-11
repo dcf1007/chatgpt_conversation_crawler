@@ -8,7 +8,7 @@ It is designed for long conversations where ChatGPT lazily loads history, virtua
 
 ## Current release
 
-**v1.7.0-beta3-dev** is the current development diagnostic prerelease. It combines v1.7 archive-integrity/hydration reconciliation, retained-fidelity/runtime hardening, and diagnostic/launcher cleanup. See `V1_7_BETA1_DEV.md`, `V1_7_BETA2_DEV.md`, and `V1_7_BETA3_DEV.md` for the batch boundaries.
+**v1.7.1-beta-dev** is the current development diagnostic prerelease. It replaces stale-pixel target recovery with logical retained-turn navigation, processes retained turns one by one with whole-turn viewport coverage and scoped disclosure convergence, performs reverse/forward semantic verification with targeted reconciliation, and separates real observed hydration generations from synthetic preservation unions. See `V1_7_1_BETA_DEV.md` for the exact corrective scope and regression evidence.
 
 ## Architecture
 
@@ -59,16 +59,20 @@ Beta11 directly hardens the mechanisms implicated by that finding: remounts and 
 ### Automatic capture pipeline
 
 ```text
-Pass 1 down
-Pass 2 up
 Oldest-edge verification
-Pass 3 down
-Retained-disclosure reconciliation if required
-Final mounted disclosure/context flush
-Static archive assembly
+Capture-only discovery sweep ↓
+Process every retained turn by identity:
+  cover the complete current turn viewport extent
+  expand only that turn's disclosures to a fixed point
+  cover the turn again after expansion
+Capture-only verification sweep ↑
+Capture-only verification sweep ↓
+Target turns whose retained semantic revision changed
+Target retained turns that still report unresolved disclosures
+Final integrity evaluation and static archive assembly
 ```
 
-The crawler intentionally does not wait for the entire virtualized viewport to become byte-stable. Once a disclosure is activated, convergence is scoped to that turn only.
+The crawler intentionally does not wait for the entire virtualized viewport to become byte-stable. Convergence authority is retained semantic turn state. Physical scroll coordinates and unrelated mounted-turn churn are observations, not durable progress state.
 
 ## Main features
 
@@ -77,12 +81,17 @@ The crawler intentionally does not wait for the entire virtualized viewport to b
 - Uses ChatGPT's actual internal conversation scroller rather than assuming window scrolling.
 - Retains each observed virtualized `conversation-turn-*` section.
 - Synchronously re-captures richer remounts and descendant hydration generations, then performs a short delayed settle retry.
-- Reconciles competing retained turn generations by semantic content: strict supersets replace subsets, while incomparable generations retain the multiset union of non-duplicated observed content and remain flagged until a later generation resolves the ambiguity.
-- Expands conversation-scoped reasoning/tool disclosures, structural `aria-controls` disclosures, and native `<details>`.
+- Separates the canonical real observed hydration generation from accumulated semantic evidence and any synthetic preservation union.
+- Preserves multiset-aware unique material from genuinely incomparable hydration generations and resolves the warning when a later real generation covers all accumulated semantic evidence.
+- Navigates retained targets by logical turn identity/order rather than storing historical page pixels as turn anchors.
+- Explicitly covers the complete current viewport extent of each retained turn; unusually tall turns receive overlapping live-geometry interior observations so viewport-triggered content in the middle can hydrate.
+- Expands conversation-scoped reasoning/tool disclosures, structural `aria-controls` disclosures, and native `<details>` within the active retained turn.
 - Resets a disclosure retry budget after successful activation so a later collapsed remount is eligible again.
 - Uses turn-scoped nested-disclosure convergence; unrelated virtualizer churn does not reset the active turn.
+- Re-covers a turn after disclosure expansion because expansion can change both height and lazy-load eligibility.
 - Verifies the oldest edge with bounded stable-top observations.
-- Performs bounded retained-disclosure reconciliation when retained rich turns still report recognized collapsed disclosures.
+- Performs one reverse and one forward capture-only semantic verification sweep after turn-local processing.
+- Performs bounded targeted retained-disclosure reconciliation only on retained turns that still report recognized unresolved disclosures.
 - Retains visible timestamp/date separators and **Branched from** notices, including transient between-checkpoint marker generations.
 - Preserves exposed message IDs and timestamp labels.
 - Preserves formula source and renders formulas as native MathML with visible TeX fallback.
@@ -144,16 +153,19 @@ The standalone unmanaged login browser is intentionally unaffected.
 
 ## Retention model
 
-Two related guarantees are separate:
+Three related guarantees are separate:
 
 1. **Identity coverage:** every `conversation-turn-*` ID observed by the mount observer must have a retained candidate. A healthy completed crawl reports zero observed-but-unretained turns.
-2. **Generation reconciliation:** every remount and descendant-hydration mutation for an observed turn is synchronously offered to `captureTurn()`. Clearly more complete generations can replace older retained content; when generations are incomparable, the crawler compares their actual content units and retains the multiset union so unique observed content is not discarded.
+2. **Canonical observed generation:** each turn keeps one real DOM generation as the canonical observed state. A synthetic merge is never allowed to masquerade as an observed page generation.
+3. **Accumulated evidence/preservation:** semantic facts and exact preservation units from competing real generations are retained with multiset-aware overlap handling so unique observed material is not discarded.
 
-The crawler does not infer completeness from numerical turn IDs being contiguous.
+The crawler does not infer completeness from numerical turn IDs being contiguous, nor does it use a past page `scrollTop` as the durable location of a turn.
 
 ### Competing hydration generations
 
-A later single generation resolves a hydration conflict only when it covers the retained union. Repeated identical content within one real generation keeps its occurrence count; deduplication applies only to overlap between competing generations. If no single generation resolves the conflict before finalization, the merged non-duplicated content remains in the archive and the integrity report records the affected turn.
+Progressive enrichment is compared using semantic facts rather than requiring whole rendered containers to stay byte-identical. For example, unchanged prose that later gains a link can supersede the earlier observation without becoming a permanent conflict.
+
+When genuinely incomparable real generations expose unique material, the archive may contain a synthetic preservation merge while the canonical observed generation remains a real DOM state. A later real generation resolves the conflict only when that real generation covers all accumulated semantic evidence. Repeated identical semantic units keep their occurrence count. If no later real generation resolves the conflict before finalization, all observed non-duplicated material remains retained and the integrity report records the affected turn.
 
 ## Transient context retention
 
@@ -189,6 +201,8 @@ complete
 error
 cancelled
 ```
+
+Discovery and reverse/forward verification remain human-readable `phase` values within the existing `traversal` stage; they do not add new machine-readable status stages.
 
 Human-readable `phase` and `detail` strings are presentation text only. The frontend does not parse them to infer state.
 
@@ -241,20 +255,25 @@ The crawler does **not**:
 
 ## Release regression gates
 
-The GitHub release workflow installs Node dependencies, syntax-checks Node and inline browser JavaScript, then runs every `tests/*.mjs` test before packaging a release.
+The GitHub release workflow installs Node dependencies and Playwright Chromium, syntax-checks Node and inline browser JavaScript, then runs every `tests/*.mjs` test before packaging a release.
 
 Current gates include:
 
+- logical retained-turn navigation over sparse virtualizer mounts without persistent page-pixel anchors;
+- whole-turn viewport coverage, including lazy content that appears only when an interior region of a tall turn enters the viewport;
 - turn-scoped disclosure convergence under unrelated virtualizer churn;
 - successful disclosure retry reset;
 - richer turn remount disappearing before the delayed settle capture;
 - descendant hydration without section remount;
 - observed-turn coverage;
-- content-aware retained-turn reconciliation, including media/app/formula differences and multiset union of incomparable generations;
-- oldest-edge verification and retained-disclosure reconciliation;
+- canonical real hydration generations plus multiset-aware semantic evidence/preservation reconciliation;
+- progressive hydration enrichment such as unchanged prose gaining a link without a false permanent conflict;
+- genuine competing generations preserving all unique content and resolving when a later real generation covers the evidence;
+- oldest-edge verification, reverse/forward semantic verification, and targeted retained-disclosure reconciliation;
 - exact endpoint positioning versus assisted leading-edge virtualizer navigation, including zoom-bounded oldest-edge probes;
 - non-window-activating Chromium background protection and stale CDP-session recovery;
-- durable archive-integrity warnings for convergence limits, hydration ambiguity, and unresolved retained disclosures;
+- durable archive-integrity warnings for traversal/turn convergence limits, hydration ambiguity, and unresolved retained disclosures;
+- truthful detached integrity in development diagnostic snapshots;
 - archive fidelity metadata;
 - canonical archive `id` across server/main UI/preview;
 - explicit stage/progress-limit contract;
@@ -281,3 +300,4 @@ Current gates include:
 - `v1.7.0-beta1-dev` — archive-integrity convergence reporting and content-aware hydration reconciliation.
 - `v1.7.0-beta2-dev` — non-activating foreground-session recovery and retained image/app/transient fidelity hardening.
 - `v1.7.0-beta3-dev` — truthful/bounded diagnostics, shared navigation cleanup, readable maintained source, and Windows launcher parity.
+- `v1.7.1-beta-dev` — logical turn navigation, whole-turn viewport coverage, turn-first convergence, targeted reconciliation, and canonical observed hydration-generation reconciliation.
