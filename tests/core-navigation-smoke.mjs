@@ -130,8 +130,8 @@ try {
   );
   assert.match(
     traversalSource,
-    /if \(!scanConverged \|\| !sameFingerprint\) return 0/,
-    'a traversal that failed endpoint convergence must never count as a stable reconciliation pass'
+    /if \(!processingConverged \|\| !sameFingerprint\) return 0/,
+    'targeted turn processing that failed convergence must never count as a stable reconciliation pass'
   );
 
   client = 1000;
