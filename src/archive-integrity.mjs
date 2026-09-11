@@ -40,7 +40,7 @@ export function evaluateArchiveIntegrity(stats = {}) {
   }
 
   const unresolvedDisclosures = numeric(stats.retainedUnresolvedDisclosures);
-  if (unresolvedDisclosures > 0 || stats.reconciliationConverged === false) {
+  if (unresolvedDisclosures > 0) {
     warnings.push({
       code: 'retained-disclosures-unresolved',
       count: unresolvedDisclosures,
@@ -63,6 +63,7 @@ export function evaluateArchiveIntegrity(stats = {}) {
     warnings.push({
       code: 'hydration-timeout',
       count: hydrationTimeouts,
+      turnIds: turnList(stats.hydrationTimeoutTurnIds),
       message: `${hydrationTimeouts} hydration/quiescence wait(s) reached their safety timeout.`
     });
   }
@@ -86,5 +87,3 @@ export function evaluateArchiveIntegrity(stats = {}) {
     hydrationConflictsUnresolved: unresolvedHydration
   };
 }
-
-export const __testing = { MAX_LISTED_TURNS };

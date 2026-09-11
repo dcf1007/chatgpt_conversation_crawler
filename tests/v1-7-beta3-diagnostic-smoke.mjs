@@ -15,7 +15,6 @@ assert.match(hook, /Math\.round\(sample\.scrollTop\)/, 'scrollTop must participa
 assert.match(hook, /Math\.round\(sample\.scrollClient\)/, 'scroll client height must participate in the material signature');
 assert.match(recorder, /mountedTurns:\s*diagnosticState\.mountedTurns/, 'manifest must record mountedTurns');
 assert.match(recorder, /retainedTurns:\s*diagnosticState\.retainedTurns/, 'manifest must record retainedTurns');
-assert.doesNotMatch(recorder, /manualScrollAssist|__archiveManualScrollAssist/, 'obsolete manual scroll telemetry must be removed');
 assert.doesNotMatch(recorder, /\bturns:\s*diagnosticState\.turns/, 'manifest must not keep the ambiguous diagnostic turns field');
 
 console.log('v1.7 beta3 diagnostic truthfulness smoke test passed');

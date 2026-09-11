@@ -1,14 +1,14 @@
 // Page-side crawler primitives. Traversal policy lives in crawler-traversal.mjs.
-export async function installCrawler(page) {
+export async function installPageCrawler(page) {
   await page.evaluate(() => {
     if (window.__archiveCrawler) return;
 
     const turnSelector = 'section[data-testid^="conversation-turn-"]';
-    const contentUnitSelector = [
+    const semanticContentSelector = [
       'pre', 'blockquote', 'table', 'figure',
       'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-      'p', 'li', 'img', 'svg', 'canvas', 'video',
-      '[data-app-block-preview="true"]'
+      'p', 'li', 'a[href]', 'code', 'img', 'svg', 'canvas', 'video', 'math',
+      '[data-math-source]', '[data-app-block-preview="true"]'
     ].join(',');
 
     const state = {
@@ -32,35 +32,14 @@ export async function installCrawler(page) {
       turnGenerationFingerprints: Object.create(null),
       hydrationConflicts: Object.create(null),
       hydrationConflictsResolved: 0,
-      hydrationConflictDetections: 0,
       scanResults: [],
       expansionLimitEvents: [],
       hydrationTimeoutEvents: []
     };
 
     const turns = () => [...document.querySelectorAll(turnSelector)];
-    const turnId = element => element.closest(turnSelector)?.getAttribute('data-testid') || 'unknown-turn';
     const turnNumber = id => Number(/conversation-turn-(\d+)/.exec(id || '')?.[1] ?? Number.MAX_SAFE_INTEGER);
     const normalizeText = value => String(value || '').replace(/\s+/g, ' ').trim();
-    const label = element => normalizeText([
-      element.getAttribute('aria-label'),
-      element.textContent,
-      element.getAttribute('title')
-    ].filter(Boolean).join(' '));
-
-    function isDisclosure(element) {
-      if (!(element instanceof HTMLElement) || element.getAttribute('aria-expanded') !== 'false') return false;
-      if (element.matches('[aria-haspopup],[role="menuitem"]')) return false;
-      if (element.getAttribute('aria-controls')) return true;
-      return /^(worked for|thought(?: for)?|thinking(?: for)?|reasoning(?: for)?)\b/i.test(label(element));
-    }
-
-    const keyFor = element => [
-      turnId(element),
-      element.getAttribute('aria-controls') || '',
-      label(element).slice(0, 240)
-    ].join('|');
-
     function scrollRoot() {
       let element = document.querySelector('#thread') || document.querySelector('main#main') || document.querySelector('main');
       while (element && element !== document.documentElement) {
@@ -198,18 +177,24 @@ export async function installCrawler(page) {
     }
 
     function hashText(value) {
-      let hash = 2166136261;
       const text = String(value || '');
+      let fnv = 2166136261;
+      let djb = 5381;
       for (let index = 0; index < text.length; index++) {
-        hash ^= text.charCodeAt(index);
-        hash = Math.imul(hash, 16777619);
+        const code = text.charCodeAt(index);
+        fnv ^= code;
+        fnv = Math.imul(fnv, 16777619);
+        djb = Math.imul(djb, 33) ^ code;
       }
-      return (hash >>> 0).toString(36);
+      return `${text.length.toString(36)}-${(fnv >>> 0).toString(36)}-${(djb >>> 0).toString(36)}`;
     }
 
     function stableNodeFingerprint(node) {
       const tag = node.tagName?.toLowerCase?.() || 'text';
       const text = normalizeText(node.innerText || node.textContent || '');
+      const ownHref = tag === 'a'
+        ? node.href || node.getAttribute?.('href') || ''
+        : '';
       const links = [...(node.querySelectorAll?.('a[href]') || [])]
         .map(anchor => `${normalizeText(anchor.textContent)}@${anchor.href || anchor.getAttribute('href') || ''}`)
         .join('|');
@@ -219,26 +204,74 @@ export async function installCrawler(page) {
       const ownSource = tag === 'img'
         ? `${node.currentSrc || node.src || node.getAttribute('src') || ''}@${node.alt || ''}`
         : '';
-      const math = node.getAttribute?.('data-math-source') || node.getAttribute?.('aria-label') || '';
-      const structural = !text && !links && !images && !ownSource
+      const code = [node, ...(node.querySelectorAll?.('pre,code') || [])]
+        .filter(element => ['pre', 'code'].includes(element.tagName?.toLowerCase?.()))
+        .map(element => `${element.tagName.toLowerCase()}:${normalizeText(element.textContent || '')}`)
+        .join('|');
+      const math = [node, ...(node.querySelectorAll?.('[data-math-source],math') || [])]
+        .filter(element => element.matches?.('[data-math-source],math'))
+        .map(element => [
+          element.getAttribute?.('data-math-source') || '',
+          element.getAttribute?.('aria-label') || '',
+          normalizeText(element.textContent || '')
+        ].join('@'))
+        .filter(Boolean)
+        .join('|');
+      const visual = [node, ...(node.querySelectorAll?.('svg,canvas,video,[data-app-block-preview="true"]') || [])]
+        .filter(element => element.matches?.('svg,canvas,video,[data-app-block-preview="true"]'))
+        .map(element => normalizeText(element.outerHTML || ''))
+        .join('|');
+      const structural = !text && !links && !images && !ownSource && !ownHref && !code && !math && !visual
         ? normalizeText(node.outerHTML || '')
         : '';
-      return `${tag}:${hashText([text, links, images, ownSource, math, structural].join('\u0000'))}`;
+      return `${tag}:${hashText([text, ownHref, links, images, ownSource, code, math, visual, structural].join('\u0000'))}`;
     }
 
     function extractContentUnits(section) {
-      const selected = [...section.querySelectorAll(contentUnitSelector)].filter(node => {
-        const parent = node.parentElement?.closest?.(contentUnitSelector);
-        return !parent || !section.contains(parent);
-      });
+      const units = [];
+      const ignoredTags = new Set(['script', 'noscript', 'style', 'template']);
+      const escapeHtml = value => String(value).replace(/[&<>]/g, character => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;'
+      }[character]));
 
-      const children = section.children ? [...section.children] : [];
-      const nodes = selected.length ? selected : children.length ? children : [section];
+      const addElement = element => {
+        units.push({
+          fingerprint: stableNodeFingerprint(element),
+          html: element.outerHTML || ''
+        });
+      };
 
-      return nodes.map(node => ({
-        fingerprint: stableNodeFingerprint(node),
-        html: node.outerHTML || normalizeText(node.textContent || '')
-      }));
+      const visit = node => {
+        if (!node) return;
+        if (node.nodeType === 3) {
+          const text = normalizeText(node.textContent || '');
+          if (text) units.push({ fingerprint: `text:${hashText(text)}`, html: escapeHtml(text) });
+          return;
+        }
+        if (node.nodeType !== 1) return;
+
+        const tag = node.localName?.toLowerCase?.() || '';
+        if (ignoredTags.has(tag)) return;
+        if (node !== section && node.matches?.(semanticContentSelector)) {
+          addElement(node);
+          return;
+        }
+
+        const childElements = [...(node.children || [])];
+        if (node !== section && childElements.length === 0) {
+          const text = normalizeText(node.innerText || node.textContent || '');
+          if (text || node.attributes?.length) addElement(node);
+          return;
+        }
+
+        for (const child of node.childNodes || []) visit(child);
+      };
+
+      visit(section);
+      if (!units.length) addElement(section);
+      return units;
     }
 
     function unitCounts(units) {
@@ -333,7 +366,6 @@ export async function installCrawler(page) {
 
     function markConflict(id, previous, candidate, union) {
       const existing = state.hydrationConflicts[id];
-      if (!existing?.active) state.hydrationConflictDetections++;
       state.hydrationConflicts[id] = {
         active: true,
         firstDetectedRevision: existing?.firstDetectedRevision || Number(state.turnRevisions[id] || 0),
@@ -398,8 +430,7 @@ export async function installCrawler(page) {
         catch {}
       });
 
-      const remaining = [...section.querySelectorAll('[aria-expanded="false"]')].filter(isDisclosure).length
-        + section.querySelectorAll('details:not([open])').length;
+      const remaining = Number(window.__archiveCrawler?.countUnresolvedDisclosures?.(section) || 0);
       const html = clone.outerHTML;
       const contentUnits = extractContentUnits(clone);
       const candidate = {
@@ -489,102 +520,6 @@ export async function installCrawler(page) {
       };
     }
 
-    function expandOne(targetTurnId = '') {
-      const candidateTurns = targetTurnId
-        ? turns().filter(section => section.getAttribute('data-testid') === targetTurnId)
-        : turns();
-
-      for (const section of candidateTurns) {
-        const details = section.querySelector('details:not([open])');
-        if (!details) continue;
-        details.open = true;
-        state.successfulExpansions++;
-        state.lastExpansionTurn = turnId(details);
-        state.lastExpansion = `${state.lastExpansionTurn} — opened native <details>`;
-        return { kind: 'details', description: state.lastExpansion, turnId: state.lastExpansionTurn };
-      }
-
-      for (const section of candidateTurns) {
-        for (const element of section.querySelectorAll('[aria-expanded="false"]')) {
-          if (!isDisclosure(element)) continue;
-          const key = keyFor(element);
-          const attempts = state.attempts[key] || 0;
-          if (attempts >= 3) continue;
-          state.attempts[key] = attempts + 1;
-          const shortLabel = label(element).slice(0, 180) || element.getAttribute('aria-controls') || 'unlabelled disclosure';
-          state.lastExpansionTurn = turnId(element);
-          state.lastExpansion = `${state.lastExpansionTurn} — ${shortLabel}`;
-          const controls = element.getAttribute('aria-controls') || '';
-          try {
-            element.scrollIntoView({ block: 'center', inline: 'nearest' });
-            element.click();
-            state.clickCount++;
-          } catch (error) {
-            state.failures[key] = `${shortLabel}: ${error?.message || 'click failed'}`;
-          }
-          return { kind: 'click', key, controls, turnId: state.lastExpansionTurn, description: state.lastExpansion };
-        }
-      }
-      return null;
-    }
-
-    function findDisclosureByKey(key) {
-      for (const section of turns()) {
-        for (const element of section.querySelectorAll('[aria-expanded]')) {
-          if (keyFor(element) === key) return element;
-        }
-      }
-      return null;
-    }
-
-    function sampleNode(node) {
-      if (!node) return { textLength: 0, htmlLength: 0, preCount: 0, codeCount: 0, mediaCount: 0, childCount: 0 };
-      return {
-        textLength: (node.innerText || node.textContent || '').length,
-        htmlLength: (node.outerHTML || '').length,
-        preCount: node.querySelectorAll?.('pre').length || 0,
-        codeCount: node.querySelectorAll?.('code').length || 0,
-        mediaCount: node.querySelectorAll?.('img,svg,canvas,video').length || 0,
-        childCount: node.querySelectorAll?.('*').length || 0
-      };
-    }
-
-    function disclosureSample(key) {
-      const element = findDisclosureByKey(key);
-      if (!element) return { present: false, expanded: false, targetExists: false, turnId: '', signature: 'missing' };
-      const controls = element.getAttribute('aria-controls') || '';
-      const turn = element.closest(turnSelector);
-      const target = controls ? document.getElementById(controls) : turn;
-      const targetMetrics = sampleNode(target || turn);
-      const turnMetrics = sampleNode(turn);
-      return {
-        present: true,
-        expanded: element.getAttribute('aria-expanded') !== 'false',
-        targetExists: !controls || Boolean(target),
-        controls,
-        turnId: turn?.getAttribute('data-testid') || '',
-        signature: [
-          targetMetrics.textLength, targetMetrics.htmlLength, targetMetrics.preCount,
-          targetMetrics.codeCount, targetMetrics.mediaCount, targetMetrics.childCount,
-          turnMetrics.textLength, turnMetrics.htmlLength, turnMetrics.preCount,
-          turnMetrics.codeCount, turnMetrics.mediaCount, turnMetrics.childCount
-        ].join('|')
-      };
-    }
-
-    function confirm(key) {
-      if (!key) return;
-      const collapsed = turns().some(section => [...section.querySelectorAll('[aria-expanded="false"]')]
-        .some(element => isDisclosure(element) && keyFor(element) === key));
-      if (!collapsed) {
-        state.successfulExpansions++;
-        delete state.attempts[key];
-        delete state.failures[key];
-      } else if ((state.attempts[key] || 0) >= 3) {
-        state.failures[key] = `Could not expand after 3 attempts: ${key}`;
-      }
-    }
-
     function stats() {
       const values = Object.values(state.turns);
       const retained = retainedIds();
@@ -611,10 +546,14 @@ export async function installCrawler(page) {
         hydrationConflictsResolved: Number(state.hydrationConflictsResolved || 0),
         hydrationConflictsUnresolved: unresolvedHydrationIds.length,
         hydrationConflictTurnIds: unresolvedHydrationIds.slice(0, 20),
-        hydrationConflictDetections: Number(state.hydrationConflictDetections || 0),
         scanLimitEvents: state.scanResults.filter(result => result && result.converged === false).length,
         expansionLimitEvents: state.expansionLimitEvents.length,
-        hydrationTimeoutEvents: state.hydrationTimeoutEvents.length
+        hydrationTimeoutEvents: state.hydrationTimeoutEvents.length,
+        hydrationTimeoutTurnIds: [...new Set(state.hydrationTimeoutEvents
+          .map(event => String(event?.turnId || ''))
+          .filter(Boolean))]
+          .sort((left, right) => turnNumber(left) - turnNumber(right) || left.localeCompare(right))
+          .slice(0, 20)
       };
     }
 
@@ -640,9 +579,6 @@ export async function installCrawler(page) {
       captureTurn,
       captureTimelineMarkers,
       activity,
-      expandOne,
-      confirm,
-      disclosureSample,
       metrics,
       setTop,
       stats,
@@ -653,6 +589,5 @@ export async function installCrawler(page) {
       turnRevision: targetTurnId => Number(state.turnRevisions[targetTurnId] || 0),
       retainedRevision: () => Number(state.retainedRevision || 0)
     };
-    capture();
   });
 }

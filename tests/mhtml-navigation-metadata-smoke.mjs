@@ -9,7 +9,6 @@ for (const field of [
   'focusEmulation',
   'idleOverride',
   'lifecycleActive',
-  'pageActivated',
   'foregroundReassertions',
   'focusEventCount',
   'blurEventCount',
@@ -25,4 +24,4 @@ for (const field of [
 ]) {
   assert.ok(source.includes(field), `MHTML manifest instrumentation missing ${field}`);
 }
-console.log('beta14.2 MHTML core navigation/activity metadata smoke test passed');
+console.log('MHTML core navigation/activity metadata smoke test passed');

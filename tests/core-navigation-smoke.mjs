@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { installCrawlerNavigation } from '../src/crawler-navigation.mjs';
+
+const traversalSource = fs.readFileSync(new URL('../src/crawler-traversal.mjs', import.meta.url), 'utf8');
 
 const previousWindow = globalThis.window;
 const previousDocument = globalThis.document;
@@ -60,7 +63,7 @@ try {
   assert.equal(await installCrawlerNavigation(page), false, 'core navigation installer must be idempotent');
 
   // Exact positioning must remain exact and must not mutate assisted-navigation
-  // state. This is the endpoint contract beta14.2 accidentally broke.
+  // state. Endpoint positioning must remain exact.
   const initialResets = window.__archiveCrawlerNavigation.directionResets;
   crawler.setTop(1400);
   crawler.setTop(0);
@@ -115,10 +118,21 @@ try {
   top = 5000;
   crawler.setTop(0);
   assert.equal(applied.at(-1), 0, 'zoom-sized client changes must not amplify exact top positioning');
-  crawler.setTop(1520);
-  assert.equal(applied.at(-1), 1520, 'oldest-edge nudge must remain an exact coordinate at large client sizes');
+  crawler.setTop(520);
+  assert.equal(applied.at(-1), 520, 'capped oldest-edge probes must still use exact positioning');
   crawler.setTop(0);
   assert.equal(applied.at(-1), 0);
+
+  assert.match(
+    traversalSource,
+    /OLDEST_PROBE_MAX_NUDGE_PX\s*=\s*520/,
+    'oldest-edge remount probes must be capped when browser zoom inflates the CSS viewport'
+  );
+  assert.match(
+    traversalSource,
+    /if \(!scanConverged \|\| !sameFingerprint\) return 0/,
+    'a traversal that failed endpoint convergence must never count as a stable reconciliation pass'
+  );
 
   client = 1000;
   top = 2000;
@@ -147,4 +161,4 @@ try {
   else globalThis.innerHeight = previousInnerHeight;
 }
 
-console.log('beta14.3 exact/assisted virtualizer navigation contract smoke test passed');
+console.log('exact/assisted virtualizer navigation contract smoke test passed');

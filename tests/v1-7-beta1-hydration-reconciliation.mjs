@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
-import { installCrawler } from '../src/crawler-base.mjs';
+import { installCrawler } from '../src/crawler-core.mjs';
 
 const browser = await chromium.launch({ headless: true });
 try {
@@ -16,6 +16,12 @@ try {
       <section data-testid="conversation-turn-3" data-message-author-role="assistant">
         <button aria-expanded="false" aria-controls="reasoning">Thought for 1s</button>
         <div id="reasoning"><p>base</p></div>
+      </section>
+      <section data-testid="conversation-turn-4" data-message-author-role="assistant">
+        <p>shared</p><div>alpha</div>
+      </section>
+      <section data-testid="conversation-turn-5" data-message-author-role="assistant">
+        <p>text that will disappear</p>
       </section>
     </main>
   `);
@@ -51,6 +57,25 @@ try {
   });
   retained = await page.evaluate(() => window.__archiveCrawler.state.turns['conversation-turn-2']);
   assert.equal(retained.contentUnits.length, 3, 'duplicate occurrences inside a generation must not be collapsed');
+
+
+  await page.evaluate(() => {
+    const turn = document.querySelector('[data-testid="conversation-turn-4"]');
+    turn.innerHTML = '<p>shared</p><div>bravo</div>';
+    window.__archiveCrawler.captureTurn('conversation-turn-4');
+  });
+  retained = await page.evaluate(() => window.__archiveCrawler.state.turns['conversation-turn-4']);
+  assert.match(retained.html, />alpha</, 'generic non-semantic content from the earlier generation must be retained');
+  assert.match(retained.html, />bravo</, 'generic non-semantic content from the later generation must be retained');
+
+  await page.evaluate(() => {
+    const turn = document.querySelector('[data-testid="conversation-turn-5"]');
+    turn.innerHTML = '<img src="data:image/png;base64,iVBORw0KGgo=" alt="retained media">';
+    window.__archiveCrawler.captureTurn('conversation-turn-5');
+  });
+  retained = await page.evaluate(() => window.__archiveCrawler.state.turns['conversation-turn-5']);
+  assert.match(retained.html, /text that will disappear/, 'incomparable text content must survive a media-rich remount');
+  assert.match(retained.html, /retained media/, 'new media content must be retained alongside earlier text');
 
   const revisionBefore = await page.evaluate(() => window.__archiveCrawler.turnRevision('conversation-turn-3'));
   await page.evaluate(() => {

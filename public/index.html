@@ -303,15 +303,25 @@ button:disabled {
     <div id="sessionError" class="session-error"></div>
     <div class="mode-box">
       <div class="title">Archive browser mode</div>
-      <label class="mode-option"><input type="radio" name="sessionMode" value="authenticated" checked><span><strong>Authenticated</strong><small>Reuse the saved browser profile. Authenticated jobs serialize access to that profile.</small></span></label>
-      <label class="mode-option"><input type="radio" name="sessionMode" value="anonymous"><span><strong>Anonymous</strong><small>Use a clean disposable browser, matching what a public recipient can see without your session.</small></span></label>
+      <label class="mode-option">
+        <input type="radio" name="sessionMode" value="authenticated" checked>
+        <span><strong>Authenticated</strong><small>Reuse the saved browser profile. Authenticated jobs serialize access to that profile.</small></span>
+      </label>
+      <label class="mode-option">
+        <input type="radio" name="sessionMode" value="anonymous">
+        <span><strong>Anonymous</strong><small>Use a clean disposable browser, matching what a public recipient can see without your session.</small></span>
+      </label>
     </div>
   </section>
 
   <form id="form">
     <label class="label" for="url">Share URL</label>
     <input class="input" id="url" name="url" type="url" required autocomplete="off" placeholder="https://chatgpt.com/share/...">
-    <div class="actions"><button id="submit" type="submit">Start archive</button><button id="previewBtn" type="button" class="secondary" disabled>Open live preview</button><button id="cancelBtn" type="button" class="danger" disabled>Cancel</button></div>
+    <div class="actions">
+      <button id="submit" type="submit">Start archive</button>
+      <button id="previewBtn" type="button" class="secondary" disabled>Open live preview</button>
+      <button id="cancelBtn" type="button" class="danger" disabled>Cancel</button>
+    </div>
   </form>
 
   <section id="jobPanel" aria-live="polite">
@@ -400,32 +410,55 @@ const STAGE_PILLS = {
   error: 'Error',
   cancelled: 'Cancelled'
 };
-function age(ms){if(!ms)return'—';
-const s=Math.max(0,Math.floor((Date.now()-ms)/1000));
-if(s<2)return'just now';
-if(s<60)return`${s}s ago`;
-const m=Math.floor(s/60),r=s%60;
-return`${m}m ${r}s ago`}
-function selectedSessionMode(){return document.querySelector('input[name="sessionMode"]:checked')?.value||'authenticated'}
-function setSessionError(message=''){sessionError.textContent=message;
-sessionError.style.display=message?'block':'none'}
-function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-
-function renderSession(s){
-  lastSession=s;
-  let label='Saved profile';
-  if(s.verificationWindowOpen)label='Checking session';
-  else if(s.loginWindowOpen)label=s.authenticated===true?'Signed in · login open':'Login window open';
-  else if(!s.profileExists)label='No profile';
-  else if(s.authenticated===true)label='Authenticated';
-  else if(s.authenticated===false)label='Not authenticated';
-  else label='Saved · unchecked';
-  sessionPill.textContent=label;
-  const busy=s.busy?` Profile in use by ${s.owner}.`:'';
-  const checked=s.lastCheckedAt?` Last checked ${age(s.lastCheckedAt)}.`:'';
-  sessionDetail.textContent=`${s.detail||'—'}${checked}${busy}`;
-  loginBtn.disabled=s.busy;checkSessionBtn.disabled=s.busy;closeLoginBtn.disabled=!s.loginWindowOpen;forgetSessionBtn.disabled=s.busy;
+function age(ms) {
+  if (!ms) return '—';
+  const seconds = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (seconds < 2) return 'just now';
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${minutes}m ${remainder}s ago`;
 }
+
+function selectedSessionMode() {
+  return document.querySelector('input[name="sessionMode"]:checked')?.value || 'authenticated';
+}
+
+function setSessionError(message = '') {
+  sessionError.textContent = message;
+  sessionError.style.display = message ? 'block' : 'none';
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, character => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[character]));
+}
+
+function renderSession(session) {
+  lastSession = session;
+  let label = 'Saved profile';
+  if (session.verificationWindowOpen) label = 'Checking session';
+  else if (session.loginWindowOpen) label = session.authenticated === true ? 'Signed in · login open' : 'Login window open';
+  else if (!session.profileExists) label = 'No profile';
+  else if (session.authenticated === true) label = 'Authenticated';
+  else if (session.authenticated === false) label = 'Not authenticated';
+  else label = 'Saved · unchecked';
+
+  sessionPill.textContent = label;
+  const busy = session.busy ? ` Profile in use by ${session.owner}.` : '';
+  const checked = session.lastCheckedAt ? ` Last checked ${age(session.lastCheckedAt)}.` : '';
+  sessionDetail.textContent = `${session.detail || '—'}${checked}${busy}`;
+  loginBtn.disabled = session.busy;
+  checkSessionBtn.disabled = session.busy;
+  closeLoginBtn.disabled = !session.loginWindowOpen;
+  forgetSessionBtn.disabled = session.busy;
+}
+
 async function refreshSession() {
   if (sessionRefreshInFlight) return;
   sessionRefreshInFlight = true;
@@ -441,6 +474,7 @@ async function refreshSession() {
     sessionRefreshInFlight = false;
   }
 }
+
 async function sessionAction(url, { confirmText } = {}) {
   if (confirmText && !confirm(confirmText)) return;
   setSessionError('');
@@ -454,8 +488,17 @@ async function sessionAction(url, { confirmText } = {}) {
   }
 }
 
-function setProgress(percent,indeterminate=false){bar.classList.toggle('indeterminate',indeterminate);bar.style.transform='none';bar.style.width=indeterminate?'35%':`${Math.max(0,Math.min(100,percent))}%`}
-function positiveLimit(value){const number=Number(value);return Number.isFinite(number)&&number>0?number:null}
+function setProgress(percent, indeterminate = false) {
+  bar.classList.toggle('indeterminate', indeterminate);
+  bar.style.transform = 'none';
+  bar.style.width = indeterminate ? '35%' : `${Math.max(0, Math.min(100, percent))}%`;
+}
+
+function positiveLimit(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
 function renderProgress(job) {
   progressWrap.style.display = 'block';
   const limits = job.progressLimits || {};
@@ -499,7 +542,10 @@ function renderProgress(job) {
 
   if (job.stage === 'complete') {
     setProgress(100);
-    stageProgressText.textContent = 'Archive complete';
+    const warningCount = Number(job.integrityWarningCount || 0);
+    stageProgressText.textContent = warningCount
+      ? `Archive complete · ${warningCount} integrity warning${warningCount === 1 ? '' : 's'}`
+      : 'Archive complete';
     stageStepText.textContent = '';
     return;
   }
@@ -509,34 +555,73 @@ function renderProgress(job) {
   stageStepText.textContent = '';
 }
 
-function renderJob(job){
-  jobPanel.style.display='block';
-  stageName.textContent=STAGE_LABELS[job.stage]||job.phase||'Working';
-  statusPill.textContent=STAGE_PILLS[job.stage]||job.status||'Working';
-  currentAction.textContent=job.detail||job.scanningStatus||'Working…';
-  const observed=Number(job.seenMountedTurns||job.turns||0),missing=Number(job.seenMountedUnretainedTurns||0);
-  coverage.textContent=`${job.turns||0} retained / ${observed} observed · ${missing} missing`;
-  oldestRetained.textContent=job.oldestRetained||'none';
-  loadedPosition.textContent=job.scrollHeight?`${Number(job.positionInLoadedContent||0).toFixed(1)}% of currently loaded scroll range`:'—';
-  const disclosureText=String(job.expandingStatus||''),active=disclosureText&&!/no disclosure expansion/i.test(disclosureText);
-  disclosureRow.style.display=active?'grid':'none';disclosureActivity.textContent=active?disclosureText:'';
-  disclosureStat.textContent=`${job.expansions||0} confirmed${job.failures?` · ${job.failures} failed`:''}`;
-  richStat.textContent=`${job.preBlocks||0} pre · ${job.codeBlocks||0} code`;
-  structureStat.textContent=`${job.timelineMarkers||0} markers · ${job.appBlocks||0} apps`;
-  heartbeat.textContent=age(job.heartbeatAt);lastProgress.textContent=age(job.lastProgressAt);renderProgress(job);
+function renderJob(job) {
+  jobPanel.style.display = 'block';
+  const integrityWarningCount = Number(job.integrityWarningCount || 0);
+  stageName.textContent = job.stage === 'complete' && integrityWarningCount > 0
+    ? (job.phase || 'Complete with integrity warnings')
+    : STAGE_LABELS[job.stage] || job.phase || 'Working';
+  statusPill.textContent = STAGE_PILLS[job.stage] || job.status || 'Working';
+  currentAction.textContent = job.detail || job.scanningStatus || 'Working…';
 
-  const heartbeatAge=job.heartbeatAt?Date.now()-job.heartbeatAt:0,progressAge=job.lastProgressAt?Date.now()-job.lastProgressAt:0;
-  let warningText='';
-  if(missing>0){const ids=Array.isArray(job.seenMountedUnretainedTurnIds)?job.seenMountedUnretainedTurnIds.join(', '):'';warningText=`Integrity warning: ${missing} observed turn(s) are not retained${ids?` (${ids})`:''}.`}
-  else if(heartbeatAge>15000&&!['done','error','cancelled'].includes(job.status))warningText='The worker heartbeat has not updated recently. Chromium or the Node worker may be stalled.';
-  else if(progressAge>30000&&!['done','error','cancelled'].includes(job.status))warningText='No substantive archive progress has been recorded for more than 30 seconds. The crawler may still be verifying a stable boundary.';
-  warning.textContent=warningText;warning.style.display=warningText?'block':'none';
+  const observed = Number(job.seenMountedTurns || job.turns || 0);
+  const missing = Number(job.seenMountedUnretainedTurns || 0);
+  coverage.textContent = `${job.turns || 0} retained / ${observed} observed · ${missing} missing`;
+  oldestRetained.textContent = job.oldestRetained || 'none';
+  loadedPosition.textContent = job.scrollHeight
+    ? `${Number(job.positionInLoadedContent || 0).toFixed(1)}% of currently loaded scroll range`
+    : '—';
 
-  previewBtn.disabled=!currentArchiveId;cancelBtn.disabled=['done','error','cancelled'].includes(job.status);submit.disabled=!['done','error','cancelled'].includes(job.status)&&currentArchiveId!==null;
-  doneBox.style.display=['done','error','cancelled'].includes(job.status)?'block':'none';
-  if(job.status==='done')doneBox.innerHTML=`<strong>Archive ready.</strong><div class="actions"><a class="button-link" href="/api/archive/download/${encodeURIComponent(currentArchiveId)}">Download ${escapeHtml(job.downloadFilename||'HTML archive')}</a></div>`;
-  else if(job.status==='error')doneBox.innerHTML=`<strong class="error">Archive failed.</strong><div class="small">${escapeHtml(job.error||job.detail||'Unknown error.')}</div>`;
-  else if(job.status==='cancelled')doneBox.textContent='Archive cancelled.';
+  const disclosureText = String(job.expandingStatus || '');
+  const disclosureActive = disclosureText && !/no disclosure expansion/i.test(disclosureText);
+  disclosureRow.style.display = disclosureActive ? 'grid' : 'none';
+  disclosureActivity.textContent = disclosureActive ? disclosureText : '';
+  disclosureStat.textContent = `${job.expansions || 0} confirmed${job.failures ? ` · ${job.failures} failed` : ''}`;
+  richStat.textContent = `${job.preBlocks || 0} pre · ${job.codeBlocks || 0} code`;
+  structureStat.textContent = `${job.timelineMarkers || 0} markers · ${job.appBlocks || 0} apps`;
+  heartbeat.textContent = age(job.heartbeatAt);
+  lastProgress.textContent = age(job.lastProgressAt);
+  renderProgress(job);
+
+  const heartbeatAge = job.heartbeatAt ? Date.now() - job.heartbeatAt : 0;
+  const progressAge = job.lastProgressAt ? Date.now() - job.lastProgressAt : 0;
+  let warningText = '';
+  if (integrityWarningCount > 0) {
+    const messages = Array.isArray(job.integrityWarnings)
+      ? job.integrityWarnings.map(item => String(item?.message || '').trim()).filter(Boolean)
+      : [];
+    const fallback = 'The final crawler integrity checks did not fully converge.';
+    warningText = `Integrity warning${integrityWarningCount === 1 ? '' : 's'} (${integrityWarningCount}): ${messages.slice(0, 2).join(' ') || fallback}`;
+  } else if (missing > 0) {
+    const ids = Array.isArray(job.seenMountedUnretainedTurnIds)
+      ? job.seenMountedUnretainedTurnIds.join(', ')
+      : '';
+    warningText = `Integrity warning: ${missing} observed turn(s) are not retained${ids ? ` (${ids})` : ''}.`;
+  } else if (heartbeatAge > 15000 && !['done', 'error', 'cancelled'].includes(job.status)) {
+    warningText = 'The worker heartbeat has not updated recently. Chromium or the Node worker may be stalled.';
+  } else if (progressAge > 30000 && !['done', 'error', 'cancelled'].includes(job.status)) {
+    warningText = 'No substantive archive progress has been recorded for more than 30 seconds. The crawler may still be verifying a stable boundary.';
+  }
+  warning.textContent = warningText;
+  warning.style.display = warningText ? 'block' : 'none';
+
+  const terminal = ['done', 'error', 'cancelled'].includes(job.status);
+  previewBtn.disabled = !currentArchiveId;
+  cancelBtn.disabled = terminal;
+  submit.disabled = !terminal && currentArchiveId !== null;
+  doneBox.style.display = terminal ? 'block' : 'none';
+
+  if (job.status === 'done') {
+    const filename = escapeHtml(job.downloadFilename || 'HTML archive');
+    const id = encodeURIComponent(currentArchiveId);
+    doneBox.innerHTML = `<strong>Archive ready.</strong><div class="actions">` +
+      `<a class="button-link" href="/api/archive/download/${id}">Download ${filename}</a></div>`;
+  } else if (job.status === 'error') {
+    const message = escapeHtml(job.error || job.detail || 'Unknown error.');
+    doneBox.innerHTML = `<strong class="error">Archive failed.</strong><div class="small">${message}</div>`;
+  } else if (job.status === 'cancelled') {
+    doneBox.textContent = 'Archive cancelled.';
+  }
 }
 
 async function pollJob() {
@@ -606,12 +691,32 @@ form.addEventListener('submit', async event => {
   }
 });
 
-previewBtn.addEventListener('click',()=>{if(currentArchiveId)window.open(`/preview.html?id=${encodeURIComponent(currentArchiveId)}`,'chatgptArchivePreview')});
-cancelBtn.addEventListener('click',async()=>{if(!currentArchiveId)return;cancelBtn.disabled=true;await fetch(`/api/archive/cancel/${encodeURIComponent(currentArchiveId)}`,{method:'POST'}).catch(()=>{})});
-loginBtn.addEventListener('click',()=>sessionAction('/api/session/login'));
-closeLoginBtn.addEventListener('click',()=>sessionAction('/api/session/close-login'));
-checkSessionBtn.addEventListener('click',()=>sessionAction('/api/session/check'));
-forgetSessionBtn.addEventListener('click',()=>sessionAction('/api/session/forget',{confirmText:'Delete the saved browser-profile and its ChatGPT session data?'}));
-refreshSession();setInterval(()=>{if(lastSession&&(lastSession.busy||lastSession.loginWindowOpen||lastSession.verificationWindowOpen))void refreshSession();else if(lastSession)renderSession(lastSession)},1000);
+previewBtn.addEventListener('click', () => {
+  if (currentArchiveId) {
+    window.open(`/preview.html?id=${encodeURIComponent(currentArchiveId)}`, 'chatgptArchivePreview');
+  }
+});
+
+cancelBtn.addEventListener('click', async () => {
+  if (!currentArchiveId) return;
+  cancelBtn.disabled = true;
+  await fetch(`/api/archive/cancel/${encodeURIComponent(currentArchiveId)}`, { method: 'POST' }).catch(() => {});
+});
+
+loginBtn.addEventListener('click', () => sessionAction('/api/session/login'));
+closeLoginBtn.addEventListener('click', () => sessionAction('/api/session/close-login'));
+checkSessionBtn.addEventListener('click', () => sessionAction('/api/session/check'));
+forgetSessionBtn.addEventListener('click', () => sessionAction('/api/session/forget', {
+  confirmText: 'Delete the saved browser-profile and its ChatGPT session data?'
+}));
+
+refreshSession();
+setInterval(() => {
+  if (lastSession && (lastSession.busy || lastSession.loginWindowOpen || lastSession.verificationWindowOpen)) {
+    void refreshSession();
+  } else if (lastSession) {
+    renderSession(lastSession);
+  }
+}, 1000);
 </script>
 </body></html>

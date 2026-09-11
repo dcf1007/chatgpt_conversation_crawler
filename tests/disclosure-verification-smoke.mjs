@@ -95,4 +95,4 @@ assert.equal(state.disclosureCompletions[logicalKey], 2, 'only the no-progress v
 await expandMounted(page, 20);
 assert.equal(activations, 2, 'same-revision remount must remain suppressed after no-progress verification');
 
-console.log('beta14 disclosure fixed-point verification smoke test passed');
+console.log('disclosure fixed-point verification smoke test passed');

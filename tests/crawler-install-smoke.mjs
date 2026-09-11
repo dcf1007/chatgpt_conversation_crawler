@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { installCrawler, __testing } from '../src/crawler.mjs';
+import { installCrawler } from '../src/crawler.mjs';
+import { expandMounted } from '../src/crawler-expansion.mjs';
+import { scan } from '../src/crawler-traversal.mjs';
 
 class MockHTMLElement {}
 globalThis.HTMLElement = MockHTMLElement;
@@ -88,7 +90,7 @@ globalThis.__archiveCrawler.confirm(retryKey);
 assert.equal(globalThis.__archiveCrawler.state.attempts[retryKey], undefined);
 assert.equal(globalThis.__archiveCrawler.state.failures[retryKey], undefined);
 
-// Once beta8 activates a turn, page-side expansion must stay inside that turn
+// Once a turn is active, page-side expansion must stay inside that turn
 // until its nested tree converges. This prevents another mounted turn from
 // stealing the fixed-point loop while a late child is still materializing.
 class MockDisclosure extends MockHTMLElement {
@@ -139,9 +141,9 @@ assert.equal(scopedOne.disclosure.clicks, 0);
 assert.equal(scopedTwo.disclosure.clicks, 1);
 documentMock.querySelectorAll = originalDocumentQueryAll;
 
-// Runtime regression for beta7's freeze: nested content appears after the
+// Runtime regression: nested content appears after the
 // parent's immediate hydration, while an unrelated virtualized turn can churn.
-// beta8 must converge using conversation-turn-54 only and must never consult a
+// Turn-scoped convergence must use conversation-turn-54 only and must never consult a
 // whole-mounted-DOM signature.
 let phase = 'parent-ready';
 let exposeNestedAfterWait = false;
@@ -255,14 +257,14 @@ const runtimePage = {
   }
 };
 
-await __testing.expandMounted(runtimePage, 20);
+await expandMounted(runtimePage, 20);
 assert.deepEqual(processed, ['parent', 'nested']);
 assert.equal(expansionGeneration, 2);
 assert.equal(quiescence.converged, true);
 assert.equal(quiescence.rounds, 3);
 assert.equal(quiescence.scopeTurnId, 'conversation-turn-54');
 assert.ok(turnSamples >= 4, 'expected turn-scoped samples while nested content settled');
-assert.equal(mountedWholeDomSamples, 0, 'whole-mounted-DOM stability must not control beta8 disclosure convergence');
+assert.equal(mountedWholeDomSamples, 0, 'whole-mounted-DOM stability must not control turn-scoped disclosure convergence');
 
 // A viewport with no disclosure activity exits after two lightweight idle
 // samples even if unrelated mounted DOM would be oscillating.
@@ -278,10 +280,10 @@ globalThis.__archiveCrawler = {
   stats() { return {}; },
   metrics() { return { top: 0, height: 1000, client: 1000 }; }
 };
-await __testing.expandMounted(runtimePage, 20);
+await expandMounted(runtimePage, 20);
 assert.equal(idleSamples, 2);
 
-console.log('beta8 crawler install + retry reset + turn-scoped quiescence smoke test passed');
+console.log('crawler install + retry reset + turn-scoped quiescence smoke test passed');
 
 // Endpoint convergence must also ignore virtualizer membership churn. The
 // durable retained/capture state is unchanged, but mountedFirst alternates on
@@ -324,7 +326,7 @@ globalThis.__archiveCrawler = {
     };
   }
 };
-await __testing.scan(runtimePage, 'down', 1, undefined, undefined, 20);
+await scan(runtimePage, 'down', 1, undefined, undefined, 20);
 assert.ok(endpointIterations <= 7, `endpoint should converge despite mounted-turn churn; captures=${endpointIterations}`);
 
-console.log('beta8 endpoint stability ignores unrelated mounted-turn churn');
+console.log('endpoint stability ignores unrelated mounted-turn churn');

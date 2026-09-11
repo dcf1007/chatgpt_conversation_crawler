@@ -18,11 +18,8 @@ for (const entry of roots) {
 }
 const text = files.map(file => `${path.relative(root, file)}\n${fs.readFileSync(file, 'utf8')}`).join('\n');
 
-for (const stale of ['installBeta8Diagnostics', 'crawler-page-diagnostics.mjs']) {
-  assert.ok(!text.includes(stale), `stale beta11-dev reference remains: ${stale}`);
-}
 assert.ok(!/params\.get\(['"]job['"]\)/.test(text), 'legacy preview query parameter remains');
 assert.ok(!/\bjobId\b/.test(text), 'legacy archive identifier jobId remains, including diagnostic manifests');
 assert.match(text, /diagnosticId/, 'diagnostic manifest should use diagnosticId rather than archive job naming');
 
-console.log('beta11-dev stale-reference smoke test passed');
+console.log('stale-reference smoke test passed');

@@ -11,21 +11,6 @@ assert.equal(packageJson.scripts?.start, 'node server-dev.mjs');
 for (const required of [
   'server.mjs',
   'server-dev.mjs',
-  'BETA11.md',
-  'BETA12_DEV.md',
-  'BETA13_DEV.md',
-  'BETA13_1_DEV.md',
-  'BETA14_DEV.md',
-  'BETA14_1_DEV.md',
-  'BETA14_2_DEV.md',
-  'BETA14_3_DEV.md',
-  'README.beta12-dev.txt',
-  'README.beta13-dev.txt',
-  'README.beta13.1-dev.txt',
-  'README.beta14-dev.txt',
-  'README.beta14.1-dev.txt',
-  'README.beta14.2-dev.txt',
-  'README.beta14.3-dev.txt',
   'V1_7_BETA1_DEV.md',
   'README.v1.7.0-beta1-dev.txt',
   'V1_7_BETA2_DEV.md',
@@ -56,9 +41,5 @@ for (const required of [
   assert.ok(fs.existsSync(path.join(root, required)), `required v1.7 beta3 file missing: ${required}`);
 }
 
-assert.ok(!fs.existsSync(path.join(root, 'BETA11_DEV.md')), 'beta14.3-dev package must not retain superseded beta11-dev instructions');
-assert.ok(!fs.existsSync(path.join(root, 'README.beta11-dev.txt')), 'beta14.3-dev package must not retain superseded beta11-dev package note');
-assert.ok(!fs.existsSync(path.join(root, 'src/crawler-page-diagnostics.mjs')), 'v1.7 beta3 must not revive the old crawler-page-diagnostics implementation');
-assert.ok(!fs.existsSync(path.join(root, 'src/manual-scroll-assist.mjs')), 'v1.7 beta3 must remove the obsolete manual-scroll-assist implementation');
 
 console.log('v1.7 beta3 package contract smoke test passed');

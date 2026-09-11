@@ -8,7 +8,7 @@ assert.match(html, /if\s*\(sessionRefreshInFlight\)\s*return;[\s\S]*?sessionRefr
 assert.match(html, /finally\s*\{[\s\S]*?sessionRefreshInFlight\s*=\s*false/, 'refreshSession must always release its in-flight guard');
 assert.match(
   html,
-  /lastSession&&\(lastSession\.busy\|\|lastSession\.loginWindowOpen\|\|lastSession\.verificationWindowOpen\)\)void refreshSession\(\)/,
+  /lastSession\s*&&\s*\(lastSession\.busy\s*\|\|\s*lastSession\.loginWindowOpen\s*\|\|\s*lastSession\.verificationWindowOpen\)\)\s*\{?\s*void refreshSession\(\)/,
   'active session operations must poll fresh backend status'
 );
 assert.doesNotMatch(
@@ -16,6 +16,6 @@ assert.doesNotMatch(
   /setInterval\(\(\)=>\{if\(lastSession\)renderSession\(lastSession\)\},1000\)/,
   'session timer must not repaint cached state forever'
 );
-assert.match(html, /if\(s\.verificationWindowOpen\)label='Checking session'/, 'interactive check should be visible in the session pill');
+assert.match(html, /if\s*\(session\.verificationWindowOpen\)\s*label\s*=\s*'Checking session'/, 'interactive check should be visible in the session pill');
 
 console.log('session state refresh smoke test passed');

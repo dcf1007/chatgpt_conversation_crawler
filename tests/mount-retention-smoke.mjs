@@ -66,7 +66,7 @@ generations[turn47.id] = 1; mounted.push(turn47);
 observerInstance.callback([{ type: 'childList', target: documentMock.documentElement, addedNodes: [wrapper] }]);
 assert.equal(retained[turn47.id].generation, 1, 'wrapped turn mount must be retained');
 
-// Critical beta11 regression: a previously retained turn remounts richer and
+// Critical remount regression: a previously retained turn remounts richer and
 // disappears before the settle timer. The richer generation must already have
 // been synchronously retained.
 generations[turn15.id] = 2;
@@ -99,4 +99,4 @@ assert.ok(stats.mountObserverHydrationEvents >= 1);
 
 const summary = await globalThis.__archiveCrawler.flushMountRetention();
 assert.equal(summary.seenMountedUnretainedTurns, 0);
-console.log('beta11 mount/remount/hydration retention smoke test passed');
+console.log('mount/remount/hydration retention smoke test passed');

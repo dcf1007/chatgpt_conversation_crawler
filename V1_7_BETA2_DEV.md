@@ -6,5 +6,4 @@ This development release builds on beta1 with narrowly scoped robustness fixes f
 - Main-image finalization accounts retained bytes by unique content digest rather than charging duplicate URLs repeatedly.
 - App-block capture replaces an older generation when equal-richness metrics hide changed serialized content.
 - The permanent crawler is installed before transient-context observation begins, closing the crawler-less timeline-marker window.
-- Transient-context installation can recreate its page-side observer after a document replacement without exposing another Node binding.
 - All beta1 archive-integrity and hydration-reconciliation behavior remains unchanged.

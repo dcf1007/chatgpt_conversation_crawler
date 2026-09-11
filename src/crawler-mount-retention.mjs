@@ -7,8 +7,8 @@ const MAX_REPORTED_MISSING_TURNS = 20;
  * A turn can mount, remount richer, or hydrate descendants entirely between
  * traversal checkpoints. Every mutation batch therefore synchronously captures
  * each affected turn once, followed by one short debounced settle capture.
- * captureTurn() remains richness-aware, so redundant observations are cheap in
- * retained-state terms and inferior generations never replace better copies.
+ * captureTurn() remains content-aware, so redundant observations are cheap in
+ * retained-state terms while incomparable hydration generations are reconciled.
  */
 export async function installMountRetention(page, { settleMs = DEFAULT_SETTLE_MS } = {}) {
   await page.evaluate(({ settleMs, maxReportedMissingTurns }) => {
@@ -139,9 +139,6 @@ export async function installMountRetention(page, { settleMs = DEFAULT_SETTLE_MS
 
     const baseStats = crawler.stats.bind(crawler);
     crawler.stats = () => ({ ...baseStats(), ...summary() });
-    crawler.__mountRetentionObserver = observer;
     crawler.__mountRetentionInstalled = true;
   }, { settleMs, maxReportedMissingTurns: MAX_REPORTED_MISSING_TURNS });
 }
-
-export const __testing = { DEFAULT_SETTLE_MS, MAX_REPORTED_MISSING_TURNS };

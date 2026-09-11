@@ -13,6 +13,7 @@ const REMOUNT_SWEEP_MAX_STEPS = 700;
 const REMOUNT_SWEEP_INTERVAL_MS = 170;
 const REMOUNT_TARGET_SETTLE_MS = 500;
 const REMOUNT_BRACKET_PROBES = 18;
+const REMOUNT_REGRESSION_RECOVERY_LIMIT = 12;
 
 function turnNumber(turnId) {
   return Number(/conversation-turn-(\d+)/.exec(turnId || '')?.[1] ?? Number.MAX_SAFE_INTEGER);
@@ -106,9 +107,17 @@ export function selectTargetsFromTurns(turns, { count = TARGET_COUNT, excludeIds
   }));
 }
 
-/** Backward-compatible single-target helper used by regression tests. */
-export function selectTargetFromTurns(turns, options = {}) {
-  return selectTargetsFromTurns(turns, { ...options, count: 1 })[0] || null;
+/**
+ * Preserve the closest mounted predecessor observed while seeking a retained
+ * target. ChatGPT's virtualizer can snap backward after useful progress; a
+ * worse predecessor must never replace the best-known target anchor.
+ */
+export function bestRemountPredecessor(previous, analysis, scrollTop) {
+  const index = Number(analysis?.nearestBeforeIndex ?? -1);
+  const id = String(analysis?.nearestBeforeId || '');
+  if (index < 0 || !id) return previous || null;
+  if (previous && Number(previous.index) >= index) return previous;
+  return { id, index, scrollTop: Number(scrollTop || 0) };
 }
 
 /**
@@ -256,12 +265,14 @@ async function remountTarget(page, targetTurnId, retainedTurnIds, shouldCancel, 
   }
 
   let totalSteps = 0;
+  let bestPredecessor = null;
+  let regressionRecoveries = 0;
   for (let sweep = 0; sweep < REMOUNT_SWEEP_FRACTIONS.length; sweep++) {
     if (shouldCancel?.()) throw new Error('Archive cancelled.');
-    await page.evaluate(() => {
+    await page.evaluate(startTop => {
       window.__archiveCrawler.resetNavigation();
-      window.__archiveCrawler.setTop(0);
-    });
+      window.__archiveCrawler.setTop(startTop);
+    }, bestPredecessor?.scrollTop || 0);
     await page.waitForTimeout(350);
 
     for (let step = 0; step < REMOUNT_SWEEP_MAX_STEPS; step++) {
@@ -273,13 +284,33 @@ async function remountTarget(page, targetTurnId, retainedTurnIds, shouldCancel, 
       }
 
       const analysis = analyzeRemountWindow(retainedTurnIds, state.mountedIds, targetTurnId);
-      if (analysis.relation === 'bracketed') {
+      const previousBest = bestPredecessor;
+      bestPredecessor = bestRemountPredecessor(bestPredecessor, analysis, state.top);
+
+      // Once the virtualizer has exposed a closer predecessor, never silently
+      // accept a snap back to an older one. Restore the recorded scroll region
+      // and let the shared assisted navigation resume from that logical bound.
+      if (previousBest && analysis.nearestBeforeIndex >= 0 && analysis.nearestBeforeIndex < previousBest.index) {
+        regressionRecoveries++;
+        await page.evaluate(top => {
+          window.__archiveCrawler.resetNavigation();
+          window.__archiveCrawler.navigateTop(top);
+        }, previousBest.scrollTop);
+        await page.waitForTimeout(REMOUNT_SWEEP_INTERVAL_MS);
+        if (regressionRecoveries >= REMOUNT_REGRESSION_RECOVERY_LIMIT) break;
+        continue;
+      }
+      if (!previousBest || bestPredecessor?.index > previousBest.index) regressionRecoveries = 0;
+
+      // A direct predecessor (or an already bracketed target) is close enough
+      // for bounded local probing; do not restart a broad sweep from the top.
+      if (analysis.relation === 'bracketed' || analysis.nearestBeforeIndex === targetIndex - 1) {
         const bracket = await probeBracket(page, targetTurnId, retainedTurnIds, analysis, shouldCancel);
         totalSteps += bracket.probes;
         if (bracket.found) {
           return {
             found: true,
-            strategy: 'bracketed-predecessor-anchor',
+            strategy: 'best-predecessor-anchor',
             sweeps: sweep + 1,
             steps: totalSteps,
             nearestBeforeId: analysis.nearestBeforeId,
@@ -306,7 +337,6 @@ async function remountTarget(page, targetTurnId, retainedTurnIds, shouldCancel, 
           phase: 'Remounting diagnostic target',
           detail: `Locating ${targetTurnId} for manual validation.`,
           scanningStatus: `Target remount · sweep ${sweep + 1}/${REMOUNT_SWEEP_FRACTIONS.length} · step ${step + 1}`,
-          waitingForUser: false,
           scanComplete: true
         });
       }
@@ -322,7 +352,9 @@ async function remountTarget(page, targetTurnId, retainedTurnIds, shouldCancel, 
     steps: totalSteps,
     finalRelation: finalAnalysis.relation,
     nearestBeforeId: finalAnalysis.nearestBeforeId,
-    nearestAfterId: finalAnalysis.nearestAfterId
+    nearestAfterId: finalAnalysis.nearestAfterId,
+    bestPredecessorId: bestPredecessor?.id || '',
+    bestPredecessorIndex: bestPredecessor?.index ?? -1
   };
 }
 
@@ -365,10 +397,17 @@ async function installManualInspectionUi(page, target, step) {
     style.id = 'archive-manual-inspection-style';
     style.textContent = `
       [data-archive-manual-inspection-target="true"]{outline:4px solid #f59e0b!important;outline-offset:6px!important}
-      #archive-manual-inspection-panel{position:fixed;z-index:2147483647;right:18px;top:18px;width:min(460px,calc(100vw - 36px));padding:16px;border:2px solid #f59e0b;border-radius:12px;background:#111827;color:#f9fafb;font:14px/1.45 system-ui,sans-serif;box-shadow:0 18px 50px rgba(0,0,0,.35)}
+      #archive-manual-inspection-panel{
+        position:fixed;z-index:2147483647;right:18px;top:18px;width:min(460px,calc(100vw - 36px));
+        padding:16px;border:2px solid #f59e0b;border-radius:12px;background:#111827;color:#f9fafb;
+        font:14px/1.45 system-ui,sans-serif;box-shadow:0 18px 50px rgba(0,0,0,.35)
+      }
       #archive-manual-inspection-panel strong{display:block;font-size:16px;margin-bottom:6px}
       #archive-manual-inspection-panel code{color:#fde68a}
-      #archive-manual-inspection-panel button{margin-top:12px;width:100%;padding:10px 12px;border:0;border-radius:8px;background:#f59e0b;color:#111827;font:700 14px system-ui,sans-serif;cursor:pointer}
+      #archive-manual-inspection-panel button{
+        margin-top:12px;width:100%;padding:10px 12px;border:0;border-radius:8px;background:#f59e0b;
+        color:#111827;font:700 14px system-ui,sans-serif;cursor:pointer
+      }
     `;
     document.head.appendChild(style);
 
@@ -496,23 +535,19 @@ async function stopManualInspectionUi(page) {
 }
 
 async function assembleDiagnosticSnapshot(page, sourceUrl) {
-  const [{ buildSnapshot }, appBlocks, mainImages, { finalizeConversationFidelity }] = await Promise.all([
+  const [{ buildSnapshot, captureArchiveState }, appBlocks, mainImages, { finalizeConversationFidelity }] = await Promise.all([
     import('./snapshot.mjs'),
     import('./app-blocks.mjs'),
     import('./main-images.mjs'),
     import('./archive-fidelity.mjs')
   ]);
-  await mainImages.captureMountedMainImages(page, { settleMs: 800 }).catch(() => {});
-  await appBlocks.captureMountedAppBlocks(page).catch(() => {});
-  const preparedImages = await mainImages.prepareMainImages(page);
-  const preparedEmbeddedContent = await appBlocks.prepareEmbeddedContent(page, { embedSvgImages: true });
-  let snapshot;
-  try {
-    snapshot = await buildSnapshot(page, sourceUrl, { preview: false, embedImages: true });
-  } finally {
-    await appBlocks.restoreEmbeddedContent(page, preparedEmbeddedContent);
-    await mainImages.restoreMainImages(page, preparedImages);
-  }
+  const archiveState = await captureArchiveState(page);
+  const preparedImages = await mainImages.prepareMainImages(page, archiveState);
+  const preparedEmbeddedContent = await appBlocks.prepareEmbeddedContent(page, {
+    embedSvgImages: true,
+    archiveState
+  });
+  let snapshot = await buildSnapshot(page, sourceUrl, { preview: false, archiveState });
   snapshot = appBlocks.finalizeEmbeddedContent(snapshot, preparedEmbeddedContent);
   snapshot = mainImages.finalizeMainImages(snapshot, preparedImages);
   return finalizeConversationFidelity(snapshot);
@@ -562,9 +597,6 @@ async function captureManualStep({ page, target, step, retainedTurnIds, diagnost
     phase: `Manual inspection step ${step.index}/${step.count}`,
     detail: `Fully expand the highlighted ${target.id} through every nested reasoning/tool layer, wait for leaf content to load, then use the button in the ChatGPT overlay.`,
     scanningStatus: `${target.id} · ${target.reason}`,
-    diagnosticStep: step.index,
-    diagnosticSteps: step.count,
-    waitingForUser: true,
     scanComplete: true
   });
   await waitForManualFinish(page, shouldCancel);
@@ -578,9 +610,6 @@ async function captureManualStep({ page, target, step, retainedTurnIds, diagnost
     phase: `Reconciling manual step ${step.index}/${step.count}`,
     detail: `Manual work on ${target.id} is captured. Running the automatic turn-scoped disclosure convergence once more before continuing.`,
     scanningStatus: `${target.id} · ${manualResult.interactionCount} manual interaction(s) · reconverging`,
-    diagnosticStep: step.index,
-    diagnosticSteps: step.count,
-    waitingForUser: false,
     scanComplete: true
   });
   await convergeMounted?.();
@@ -602,8 +631,7 @@ export async function runManualInspection(page, { onProgress, shouldCancel, conv
   if (sessionMode !== 'authenticated') {
     await onProgress?.({
       phase: 'Manual diagnostic skipped',
-      detail: 'Manual validation is only enabled for the headed authenticated development run. The anonymous automatic crawler uses the same capture routines and continues without a human validation phase.',
-      waitingForUser: false
+      detail: 'Manual validation is only enabled for the headed authenticated development run. The anonymous automatic crawler uses the same capture routines and continues without a human validation phase.'
     });
     return;
   }
@@ -641,9 +669,6 @@ export async function runManualInspection(page, { onProgress, shouldCancel, conv
     phase: 'Saving automatic baseline',
     detail: `Automatic capture is complete. Saved the untouched baseline and selected ${targets.length} independent diagnostic target(s) from that baseline.`,
     scanningStatus: `Automatic capture complete · selected ${targets.map(target => target.id).join(', ')}`,
-    diagnosticStep: 0,
-    diagnosticSteps: targets.length,
-    waitingForUser: false,
     scanComplete: true
   });
 
@@ -675,9 +700,6 @@ export async function runManualInspection(page, { onProgress, shouldCancel, conv
     phase: 'Manual inspection complete',
     detail: `Saved the automatic baseline, ${summary.steps.length} manual validation snapshot(s), post-manual.html, and summary.json under ${path.relative(PROJECT_ROOT, diagnosticDirectory)}. Building the normal final archive next.`,
     scanningStatus: `Manual diagnostic complete · ${interactions} interaction(s) recorded`,
-    diagnosticStep: targets.length,
-    diagnosticSteps: targets.length,
-    waitingForUser: false,
     scanComplete: true
   });
 }

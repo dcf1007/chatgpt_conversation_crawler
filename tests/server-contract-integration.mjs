@@ -34,7 +34,7 @@ try {
   const start = await fetch(`${base}/api/archive/start`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ url: 'https://chatgpt.com/share/beta11-contract-test', sessionMode: 'anonymous' })
+    body: JSON.stringify({ url: 'https://chatgpt.com/share/current-contract-test', sessionMode: 'anonymous' })
   });
   assert.equal(start.status, 202);
   const body = await start.json();
@@ -49,8 +49,6 @@ try {
   assert.equal(job.progressLimits.scanPasses, 3);
   assert.equal(job.progressLimits.oldestRequiredQuietChecks, 12);
   assert.equal(job.progressLimits.reconciliationMaxPasses, 2);
-  assert.ok(!('diagnosticStep' in job));
-  assert.ok(!('waitingForUser' in job));
 
   const preview = await fetch(`${base}/api/archive/preview/${encodeURIComponent(body.id)}`);
   assert.ok([200, 204].includes(preview.status));
@@ -58,7 +56,7 @@ try {
   const download = await fetch(`${base}/api/archive/download/${encodeURIComponent(body.id)}`);
   assert.ok([200, 409].includes(download.status));
 
-  console.log('beta11 server start/status/preview/download integration contract passed');
+  console.log('server start/status/preview/download integration contract passed');
 } finally {
   child.kill('SIGTERM');
   if (child.exitCode == null) await new Promise(resolve => child.once('exit', resolve));

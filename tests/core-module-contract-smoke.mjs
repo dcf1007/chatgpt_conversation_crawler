@@ -26,4 +26,4 @@ assert.match(traversal, /reconcileRetainedDisclosures/);
 assert.match(traversal, /navigationStagnantSteps/);
 assert.match(traversal, /ensurePageForegroundProtection/);
 
-console.log('beta14.2 permanent core/runtime module contract smoke test passed');
+console.log('permanent core/runtime module contract smoke test passed');

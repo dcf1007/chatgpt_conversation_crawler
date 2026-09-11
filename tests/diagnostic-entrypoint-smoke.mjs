@@ -4,4 +4,4 @@ const pkg=JSON.parse(fs.readFileSync(new URL('../package.json',import.meta.url),
 assert.equal(pkg.scripts.start,'node server-dev.mjs');
 assert.ok(fs.existsSync(new URL('../server-dev.mjs',import.meta.url)));
 assert.ok(fs.existsSync(new URL('../server.mjs',import.meta.url)));
-console.log('beta11-dev diagnostic entrypoint smoke test passed');
+console.log('diagnostic entrypoint smoke test passed');

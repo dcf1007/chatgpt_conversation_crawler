@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from './src/runtime-browser.mjs';
 import { installCrawler, crawlConversation, CRAWLER_PROGRESS_LIMITS } from './src/crawler.mjs';
-import { buildSnapshot } from './src/snapshot.mjs';
+import { buildSnapshot, captureArchiveState } from './src/snapshot.mjs';
 import { evaluateArchiveIntegrity } from './src/archive-integrity.mjs';
 import {
   captureMountedAppBlocks,
@@ -128,6 +128,7 @@ function publicJob(job) {
     scanLimitEvents: job.scanLimitEvents || 0,
     expansionLimitEvents: job.expansionLimitEvents || 0,
     hydrationTimeoutEvents: job.hydrationTimeoutEvents || 0,
+    hydrationTimeoutTurnIds: Array.isArray(job.hydrationTimeoutTurnIds) ? job.hydrationTimeoutTurnIds : [],
     integrityStatus: job.integrityStatus || '',
     integrityWarningCount: job.integrityWarningCount || 0,
     integrityWarnings: Array.isArray(job.integrityWarnings) ? job.integrityWarnings : [],
@@ -217,17 +218,13 @@ function previewSignature(job) {
 }
 
 async function assembleSnapshot(page, sourceUrl, options = {}) {
-  const archiveState = await page.evaluate(() => {
-    const state = window.__archiveCrawler?.state;
-    if (!state) throw new Error('Archive state was not initialized.');
-    return structuredClone(state);
-  });
+  const archiveState = await captureArchiveState(page);
   const mainImages = options.embedImages === false ? null : await prepareMainImages(page, archiveState);
   const prepared = await prepareEmbeddedContent(page, {
     embedSvgImages: options.embedImages !== false,
     archiveState
   });
-  let snapshot = await buildSnapshot(page, sourceUrl, { ...options, archiveState });
+  let snapshot = await buildSnapshot(page, sourceUrl, { preview: Boolean(options.preview), archiveState });
   snapshot = finalizeEmbeddedContent(snapshot, prepared);
   if (mainImages) snapshot = finalizeMainImages(snapshot, mainImages);
   return finalizeConversationFidelity(snapshot);
@@ -363,7 +360,6 @@ async function runJob(job) {
 
     const finalStats = await job.page.evaluate(async () => {
       await window.__archiveCrawler.flushMountRetention?.();
-      window.__archiveCrawler.capture?.();
       return window.__archiveCrawler.stats?.() || {};
     });
     const integrity = evaluateArchiveIntegrity(finalStats);
@@ -376,12 +372,6 @@ async function runJob(job) {
     });
 
     await flushTransientContextRetention(job.page).catch(() => {});
-    await captureMountedMainImages(job.page, { settleMs: 1500 }).catch(() => {});
-    const finalAppState = await captureMountedAppBlocks(job.page).catch(() => null);
-    if (finalAppState) {
-      job.appBlocks = finalAppState.captured;
-      job.appBlockCaptureFailures = finalAppState.failures;
-    }
     update(job, {
       stage: 'finalization',
       phase: 'Building final static page',

@@ -57,7 +57,7 @@ async function expandOneWithRevision(page, turnId) {
   }, turnId);
 }
 
-export async function waitForDisclosureHydration(page, result, shouldCancel) {
+async function waitForDisclosureHydration(page, result, shouldCancel) {
   if (!result?.key) return null;
   const deadline = Date.now() + DISCLOSURE_MAX_SETTLE_MS;
   let previousSignature = '';
@@ -107,12 +107,9 @@ async function processExpansion(page, result, turnRevisionBefore, onProgress, sh
   const revisionAfter = await turnRevision(page, result.turnId || '');
   const retainedProgress = revisionAfter > Number(turnRevisionBefore || 0);
 
-  // Beta13.1 marked a logical disclosure complete immediately after a
-  // successful activation, even when that activation had just produced a richer
-  // retained turn. The real beta13.1 run proved that such disclosures can
-  // remount collapsed and expose one more richer generation (turns 6 and 14).
-  // Beta14 therefore records a fixed point only after a successful activation
-  // produces *no* newer retained generation. If it did improve the turn, leave
+  // A successful activation can produce a richer retained turn and then remount
+  // collapsed once more. Record semantic completion only when an activation
+  // produces no newer retained generation. If it improved the turn, leave
   // it eligible for one more verification at the new revision.
   if (confirmed && !retainedProgress && result.logicalKey && result.turnId) {
     await page.evaluate(value => window.__archiveCrawler.markDisclosureComplete?.(value), {
@@ -142,8 +139,8 @@ async function markTurnQuiescence(page, turnId, quietRounds, signature, converge
 /**
  * Expand mounted disclosures while semantic archive progress is being made.
  *
- * Beta14 retains beta13.1's page-side logical completion state and per-turn
- * revisions, but a successful activation that improves the retained turn is not
+ * Page-side logical completion state is revision-scoped, but a successful
+ * activation that improves the retained turn is not
  * yet considered a fixed point. The same logical disclosure may verify once at
  * the newer revision; only a confirmed no-progress activation suppresses its
  * subsequent virtualized remounts at that revision.
@@ -306,15 +303,10 @@ export async function expandMounted(page, max, onProgress, shouldCancel) {
 
   if (reportCounter) await report(page, onProgress);
   return {
-    converged: !hitActionLimit && !timedOut,
+    converged: exitReason === 'fixed-point' && !hitActionLimit && !timedOut,
     processed,
     limit: max,
     reason: exitReason,
     timedOut
   };
 }
-
-export const __testing = {
-  semanticTurnSignature,
-  semanticMountedSignature
-};

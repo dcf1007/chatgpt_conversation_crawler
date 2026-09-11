@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import {
   analyzeRemountWindow,
-  selectTargetFromTurns,
+  bestRemountPredecessor,
   selectTargetsFromTurns
 } from '../src/manual-inspection.mjs';
 
-// Regression for beta9's bad second-target selection: a generic image viewer
+// Regression: a generic image viewer
 // with several aria-expanded=false controls must not outrank a reasoning/tool
 // turn merely because those controls are collapsed.
 const turns = [
@@ -54,7 +54,7 @@ assert.equal(targets[1].id, 'conversation-turn-38', 'rich reasoning/tool turn sh
 assert.ok(!targets.some(target => target.id === 'conversation-turn-37'));
 assert.match(targets[1].reason, /reasoning\/tool|tool\/code/i);
 
-const single = selectTargetFromTurns(turns, { excludeIds: ['conversation-turn-60'] });
+const single = selectTargetsFromTurns(turns, { count: 1, excludeIds: ['conversation-turn-60'] })[0];
 assert.equal(single.id, 'conversation-turn-38');
 
 // Target choice must be based on the untouched automatic corpus. Selecting two
@@ -81,5 +81,20 @@ assert.equal(afterTarget.relation, 'after-target');
 const mounted = analyzeRemountWindow(retained, ['conversation-turn-37', 'conversation-turn-38', 'conversation-turn-39'], 'conversation-turn-38');
 assert.equal(mounted.relation, 'mounted');
 assert.equal(mounted.targetMounted, true);
+
+
+// beta14 regression: once target seeking reaches a close predecessor, a later
+// virtualizer snap backward must not replace that best-known logical anchor.
+let best = bestRemountPredecessor(null, {
+  nearestBeforeId: 'conversation-turn-13',
+  nearestBeforeIndex: 12
+}, 64000);
+best = bestRemountPredecessor(best, {
+  nearestBeforeId: 'conversation-turn-6',
+  nearestBeforeIndex: 5
+}, 22000);
+assert.equal(best.id, 'conversation-turn-13');
+assert.equal(best.index, 12);
+assert.equal(best.scrollTop, 64000);
 
 console.log('dynamic manual target selection + sparse remount regression smoke test passed');

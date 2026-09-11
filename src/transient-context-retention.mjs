@@ -10,7 +10,6 @@ function stateFor(page) {
       installed: false,
       running: null,
       requestedKinds: new Set(),
-      observerInstalled: false,
       captures: 0
     };
   }
@@ -39,19 +38,14 @@ async function drain(page) {
  */
 export async function installTransientContextRetention(page) {
   const state = stateFor(page);
-  if (!state.installed) {
-    state.installed = true;
-    await page.exposeBinding(BINDING, async (_source, kind) => {
-      if (kind === 'app' || kind === 'image') state.requestedKinds.add(kind);
-      await drain(page);
-    });
-  }
+  if (state.installed) return;
 
-  // Re-run the page-side installation check on every call. A document reload
-  // destroys the old MutationObserver even though the Node-side page object and
-  // exposed binding survive.
+  await page.exposeBinding(BINDING, async (_source, kind) => {
+    if (kind === 'app' || kind === 'image') state.requestedKinds.add(kind);
+    await drain(page);
+  });
+
   await page.evaluate(bindingName => {
-    if (window.__archiveTransientContextObserver) return;
     const turnSelector = 'section[data-testid^="conversation-turn-"]';
     const appSelector = '[data-app-block-preview="true"]';
 
@@ -96,12 +90,10 @@ export async function installTransientContextRetention(page) {
       attributes: true,
       attributeFilter: ['src', 'href', 'data-app-block-preview', 'aria-label']
     });
-    window.__archiveTransientContextObserver = observer;
-
     if (document.querySelector(appSelector)) notify('app');
     if (document.querySelector(`${turnSelector} img`)) notify('image');
   }, BINDING);
-  state.observerInstalled = true;
+  state.installed = true;
   await page.evaluate(() => window.__archiveCrawler?.captureTimelineMarkers?.()).catch(() => {});
 }
 

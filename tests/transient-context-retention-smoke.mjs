@@ -62,13 +62,4 @@ await new Promise(resolve => setTimeout(resolve, 0));
 assert.ok(calls.image >= 1, 'image mutation should request main-image retention');
 
 
-// Re-entering installation after a document replacement must recreate the
-// page-side observer without exposing a second Node binding.
-delete globalThis.__archiveTransientContextObserver;
-observer = null;
-await installTransientContextRetention(page);
-assert.ok(observer, 'observer must be recreated after document replacement');
-assert.equal(calls.bindings, 1, 'exposed binding must remain Node-side idempotent');
-assert.ok(calls.markers >= 2, 'reinstallation should immediately refresh retained timeline markers');
-
 console.log('v1.7 beta2 transient-context retention smoke test passed');

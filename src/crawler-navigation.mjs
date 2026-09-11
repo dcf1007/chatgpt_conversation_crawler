@@ -3,29 +3,6 @@ const MAX_AMPLIFICATION = 8;
 const MAX_VIEWPORT_JUMP = 3;
 const POSITION_PROGRESS_EPSILON_PX = 4;
 
-function clamp(value, minimum, maximum) {
-  return Math.max(minimum, Math.min(maximum, value));
-}
-
-export function turnNumber(turnId) {
-  const value = Number(/conversation-turn-(\d+)/.exec(String(turnId || ''))?.[1] ?? Number.NaN);
-  return Number.isFinite(value) ? value : Number.NaN;
-}
-
-export function assistedScrollTarget({ currentTop, requestedTop, maximumTop, client, stagnantSteps }) {
-  const current = Number(currentTop || 0);
-  const maximum = Math.max(0, Number(maximumTop || 0));
-  const requested = clamp(Number(requestedTop || 0), 0, maximum);
-  const delta = requested - current;
-  const stagnant = Math.max(0, Number(stagnantSteps || 0));
-  if (!delta || stagnant < STAGNANT_STEPS_BEFORE_AMPLIFY) return requested;
-
-  const multiplier = Math.min(MAX_AMPLIFICATION, 2 ** Math.min(3, stagnant - 1));
-  const viewportFloor = Math.max(1, Number(client || 0)) * Math.min(MAX_VIEWPORT_JUMP, stagnant * 0.75);
-  const displacement = Math.max(Math.abs(delta) * multiplier, viewportFloor);
-  return clamp(current + Math.sign(delta) * displacement, 0, maximum);
-}
-
 /**
  * Install core navigation telemetry and an explicit assisted-navigation API.
  * crawler.setTop() remains the exact positioning primitive. Adaptive recovery
@@ -221,7 +198,6 @@ export async function installCrawlerNavigation(page) {
       navigationDirectionResets: Number(state.directionResets || 0)
     });
     crawler.stats = () => ({ ...baseStats(), ...crawler.navigationSummary() });
-    crawler.__coreNavigationExactSetTop = exactSetTop;
     crawler.__coreNavigationInstalled = true;
     return true;
   }, {
@@ -231,10 +207,3 @@ export async function installCrawlerNavigation(page) {
     positionEpsilon: POSITION_PROGRESS_EPSILON_PX
   });
 }
-
-export const __testing = {
-  STAGNANT_STEPS_BEFORE_AMPLIFY,
-  MAX_AMPLIFICATION,
-  MAX_VIEWPORT_JUMP,
-  POSITION_PROGRESS_EPSILON_PX
-};

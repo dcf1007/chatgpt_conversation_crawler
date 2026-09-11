@@ -12,5 +12,7 @@ assert.doesNotMatch(index, /data\.jobId/);
 assert.match(index, /preview\.html\?id=/);
 assert.match(preview, /params\.get\(['"]id['"]\)/);
 assert.doesNotMatch(preview, /params\.get\(['"]job['"]\)/);
+assert.match(preview, /\/api\/archive\/status\/\$\{encodeURIComponent\(id\)\}\?preview=1/);
+assert.match(preview, /\/api\/archive\/preview\/\$\{encodeURIComponent\(id\)\}/);
 
-console.log('beta11 canonical identifier smoke test passed');
+console.log('canonical identifier smoke test passed');

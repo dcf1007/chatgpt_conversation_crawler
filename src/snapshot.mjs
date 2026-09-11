@@ -1,11 +1,16 @@
 import crypto from 'node:crypto';
 import katex from 'katex';
 
-const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
-const MAX_TOTAL_IMAGE_BYTES = 256 * 1024 * 1024;
-const IMAGE_CONCURRENCY = 4;
-
 const esc = v => String(v).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+
+export async function captureArchiveState(page) {
+  return page.evaluate(() => {
+    const state = window.__archiveCrawler?.state;
+    if (!state) throw new Error('Archive state was not initialized.');
+    return structuredClone(state);
+  });
+}
+
 
 function renderMath(snapshot) {
   const maths = snapshot.maths || [];
@@ -69,115 +74,16 @@ function renderMath(snapshot) {
   };
 }
 
-async function embedImages(page, snapshot) {
-  const images = snapshot.images || [];
-  if (!images.length) {
-    snapshot.html = snapshot.html
-      .replace('__ARCHIVE_IMAGE_SUMMARY__', 'No images captured')
-      .replace('__ARCHIVE_IMAGE_DIAGNOSTICS__', '');
-    return { ...snapshot, stats: { ...snapshot.stats, imagesTotal: 0, imagesEmbedded: 0, imageEmbeddingFailures: 0 } };
-  }
-
-  let next = 0;
-  let totalBytes = 0;
-  let embedded = 0;
-  const failures = [];
-  const replacements = new Map();
-
-  async function fetchHttp(url) {
-    const response = await page.context().request.get(url, { timeout: 20_000, failOnStatusCode: false });
-    if (!response.ok()) throw new Error(`HTTP ${response.status()}`);
-    const type = (response.headers()['content-type'] || '').split(';')[0].trim().toLowerCase();
-    if (!type.startsWith('image/')) throw new Error(`unexpected content type ${type || 'unknown'}`);
-    const body = await response.body();
-    return { type, size: body.length, dataUrl: `data:${type};base64,${body.toString('base64')}` };
-  }
-
-  async function fetchBlob(url) {
-    return page.evaluate(async ({ url, maxBytes }) => {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`blob fetch failed (${response.status})`);
-      const blob = await response.blob();
-      const type = String(blob.type || '').split(';')[0].trim().toLowerCase();
-      if (!type.startsWith('image/')) throw new Error(`unexpected blob content type ${type || 'unknown'}`);
-      if (blob.size > maxBytes) throw new Error(`image exceeds ${Math.round(maxBytes / 1024 / 1024)} MiB limit`);
-      const dataUrl = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ''));
-        reader.onerror = () => reject(reader.error || new Error('could not read blob image'));
-        reader.readAsDataURL(blob);
-      });
-      return { type, size: blob.size, dataUrl };
-    }, { url, maxBytes: MAX_IMAGE_BYTES });
-  }
-
-  async function worker() {
-    while (true) {
-      const i = next++;
-      if (i >= images.length) return;
-      const { token, url } = images[i];
-      let replacement = esc(url);
-      try {
-        let image;
-        if (/^https?:/i.test(url)) image = await fetchHttp(url);
-        else if (/^blob:/i.test(url)) image = await fetchBlob(url);
-        else throw new Error('unsupported image URL scheme');
-
-        if (image.size > MAX_IMAGE_BYTES) throw new Error(`image exceeds ${MAX_IMAGE_BYTES / 1024 / 1024} MiB limit`);
-        if (totalBytes + image.size > MAX_TOTAL_IMAGE_BYTES) throw new Error(`archive image budget exceeds ${MAX_TOTAL_IMAGE_BYTES / 1024 / 1024} MiB`);
-        totalBytes += image.size;
-        replacement = image.dataUrl;
-        embedded++;
-      } catch (error) {
-        failures.push(`${url} — ${error?.message || 'embedding failed'}`);
-      }
-      replacements.set(token, replacement);
-    }
-  }
-
-  await Promise.all(Array.from({ length: Math.min(IMAGE_CONCURRENCY, images.length) }, () => worker()));
-  for (const [token, replacement] of replacements) snapshot.html = snapshot.html.replaceAll(token, replacement);
-
-  const diagnostic = failures.length
-    ? `<details class="archive-diagnostics">` +
-      `<summary>${failures.length} image(s) could not be embedded and use their original URL instead</summary>` +
-      `<ul>${failures.slice(0, 30).map(x => `<li>${esc(x)}</li>`).join('')}</ul>` +
-      `${failures.length > 30 ? `<p>${failures.length - 30} additional failure(s) omitted.</p>` : ''}</details>`
-    : '';
-  snapshot.html = snapshot.html
-    .replace('__ARCHIVE_IMAGE_SUMMARY__', `${embedded}/${images.length} embedded (${Math.round(totalBytes / 1024)} KiB source bytes)`)
-    .replace('__ARCHIVE_IMAGE_DIAGNOSTICS__', diagnostic);
-
-  return {
-    ...snapshot,
-    stats: {
-      ...snapshot.stats,
-      imagesTotal: images.length,
-      imagesEmbedded: embedded,
-      imageEmbeddingFailures: failures.length
-    }
-  };
-}
-
-export async function buildSnapshot(page, sourceUrl, { preview = false, embedImages: shouldEmbed = !preview, archiveState = null } = {}) {
+export async function buildSnapshot(page, sourceUrl, { preview = false, archiveState } = {}) {
+  if (!archiveState?.turns) throw new TypeError('buildSnapshot requires a detached archiveState.');
   const tokenPrefix = crypto.randomUUID().replaceAll('-', '');
-  const snapshot = await page.evaluate(({ sourceUrl, archivedAt, preview, tokenizeImages, tokenPrefix, archiveOverride }) => {
-    const archive = archiveOverride || window.__archiveCrawler?.state;
-    if (!archive) throw new Error('Archive state was not initialized.');
+  const snapshot = await page.evaluate(({ sourceUrl, archivedAt, preview, tokenPrefix, archiveOverride }) => {
+    const archive = archiveOverride;
     const escLocal = v => String(v).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
     const number = id => Number(/conversation-turn-(\d+)/.exec(id || '')?.[1] ?? Number.MAX_SAFE_INTEGER);
-    const imageTokens = new Map();
-    const images = [];
     const mathTokens = new Map();
     const maths = [];
 
-    function imageToken(url) {
-      if (imageTokens.has(url)) return imageTokens.get(url);
-      const token = `__ARCHIVE_IMAGE_${tokenPrefix}_${String(images.length).padStart(5, '0')}__`;
-      imageTokens.set(url, token);
-      images.push({ token, url });
-      return token;
-    }
 
     function mathToken(source, displayMode) {
       const key = `${displayMode ? 'block' : 'inline'}\u0000${source}`;
@@ -236,8 +142,6 @@ export async function buildSnapshot(page, sourceUrl, { preview = false, embedIma
       for (const a of section.querySelectorAll('a[href]')) { a.target='_blank'; a.rel='noopener noreferrer'; }
       for (const img of section.querySelectorAll('img')) {
         img.loading='eager';
-        const src = img.getAttribute('src') || '';
-        if (tokenizeImages && /^(https?:|blob:)/i.test(src)) img.setAttribute('src', imageToken(src));
       }
       return section.outerHTML;
     }
@@ -288,14 +192,6 @@ export async function buildSnapshot(page, sourceUrl, { preview = false, embedIma
         `<summary>${failures.length} disclosure(s) could not be confirmed expanded</summary>` +
         `<ul>${failures.map(x => `<li>${escLocal(x)}</li>`).join('')}</ul></details>`
       : '';
-    const oldest = archive.oldestVerification || {};
-    const oldestDiagnostic = !preview && oldest.converged === false
-      ? `<details class="archive-diagnostics archive-warning" open>` +
-        `<summary>Oldest-message verification reached its safety limit</summary>` +
-        `<p>The crawler continued after ${Number(oldest.checks || 0)} checks with ` +
-        `${Number(oldest.quietChecks || 0)}/${Number(oldest.requiredQuietChecks || 12)} consecutive quiet top observations. ` +
-        `The archive may still be complete, but the oldest edge was not proven converged.</p></details>`
-      : '';
     const integrity = archive.integrity || {};
     const integrityWarnings = Array.isArray(integrity.warnings) ? integrity.warnings : [];
     const integrityDiagnostic = !preview && integrityWarnings.length
@@ -307,12 +203,18 @@ export async function buildSnapshot(page, sourceUrl, { preview = false, embedIma
       : '';
     const previewBanner = preview ? '<div class="archive-preview-banner">LIVE PREVIEW — capture is still running. Images remain external here; the final archive embeds retrievable images.</div>' : '';
     const imageSummary = preview ? 'External URLs in live preview' : '__ARCHIVE_IMAGE_SUMMARY__';
-    const imageDiagnostics = preview ? '' : '__ARCHIVE_IMAGE_DIAGNOSTICS__';
     const mathSummary = '__ARCHIVE_MATH_SUMMARY__';
     const mathDiagnostics = '__ARCHIVE_MATH_DIAGNOSTICS__';
 
     return {
-      html: `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="generator" content="ChatGPT Conversation Crawler"><title>${escLocal(document.title || 'ChatGPT shared conversation')}</title><style>
+      html: `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="generator" content="ChatGPT Conversation Crawler">
+<title>${escLocal(document.title || 'ChatGPT shared conversation')}</title>
+<style>
 :root {
   color-scheme:light dark
 }
@@ -510,11 +412,10 @@ ${previewBanner}
 <div><strong>Scope</strong>Content exposed by the shared page after progressive lazy loading and user-visible disclosure expansion. Timestamp labels and formula source are preserved when ChatGPT exposes them.</div>
 </div>
 ${rendered || '<p>No turns captured.</p>'}
-${diagnostics}${integrityDiagnostic}${oldestDiagnostic}${mathDiagnostics}${imageDiagnostics}
+${diagnostics}${integrityDiagnostic}${mathDiagnostics}
 </div>
 </body>
 </html>`,
-      images,
       maths,
       stats: {
         turns: turns.length,
@@ -530,9 +431,7 @@ ${diagnostics}${integrityDiagnostic}${oldestDiagnostic}${mathDiagnostics}${image
         hydrationConflictsUnresolved: Object.values(archive.hydrationConflicts || {}).filter(item => item?.active).length
       }
     };
-  }, { sourceUrl, archivedAt: new Date().toISOString(), preview, tokenizeImages: shouldEmbed, tokenPrefix, archiveOverride: archiveState });
+  }, { sourceUrl, archivedAt: new Date().toISOString(), preview, tokenPrefix, archiveOverride: archiveState });
 
-  const withMath = renderMath(snapshot);
-  if (!shouldEmbed) return withMath;
-  return embedImages(page, withMath);
+  return renderMath(snapshot);
 }

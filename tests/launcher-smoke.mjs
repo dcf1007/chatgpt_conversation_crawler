@@ -13,7 +13,7 @@ assert.ok(fs.existsSync(path.join(root, 'server-dev.mjs')), 'diagnostic package 
 for (const launcher of ['start-windows.bat', 'start-linux.sh', 'start-macos.sh']) {
   const source = fs.readFileSync(path.join(root, launcher), 'utf8');
   assert.match(source, /server-dev\.mjs/, `${launcher} must invoke the development diagnostic entrypoint`);
-  assert.doesNotMatch(source, /beta11-dev/i, `${launcher} must not present the current build as beta11-dev`);
+  assert.doesNotMatch(source, /\bbeta\d/i, `${launcher} must not present a development-version label`);
 }
 
 const windowsStart = fs.readFileSync(path.join(root, 'start-windows.bat'), 'utf8');

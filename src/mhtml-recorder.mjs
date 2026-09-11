@@ -78,7 +78,6 @@ async function pageExecutionState(page) {
       focusEmulation: Boolean(foreground.focusEmulation),
       idleOverride: Boolean(foreground.idleOverride),
       lifecycleActive: Boolean(foreground.lifecycleActive),
-      pageActivated: Boolean(foreground.pageActivated),
       foregroundProtectionInstalledAt: foreground.installedAt || '',
       foregroundReassertions: Number(foreground.reassertions || 0),
       foregroundLastReassertedAt: foreground.lastReassertedAt || '',

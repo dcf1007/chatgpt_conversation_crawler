@@ -1,5 +1,5 @@
 export const TURN_QUIESCENT_REQUIRED_ROUNDS = 3;
-export const MAX_UNRECOGNIZED_LABELS = 12;
+const MAX_UNRECOGNIZED_LABELS = 12;
 
 /** Install disclosure/quiescence state required by the automatic crawler. */
 export async function installDisclosureState(page) {
@@ -148,6 +148,53 @@ export async function installDisclosureState(page) {
       return { allCollapsedControls, recognizedCollapsed, actionableCollapsed, closedDetails, actionableLogicalKeys, unrecognizedCollapsedLabels };
     }
 
+    function findDisclosureByKey(key) {
+      for (const section of turns()) {
+        for (const element of section.querySelectorAll('[aria-expanded]')) {
+          if (keyFor(element) === key) return element;
+        }
+      }
+      return null;
+    }
+
+    function disclosureSample(key) {
+      const element = findDisclosureByKey(key);
+      if (!element) {
+        return { present: false, expanded: false, targetExists: false, turnId: '', signature: 'missing' };
+      }
+      const controls = element.getAttribute('aria-controls') || '';
+      const turn = element.closest(turnSelector);
+      const target = controls ? document.getElementById(controls) : turn;
+      const targetMetrics = sampleNode(target || turn);
+      const turnMetrics = sampleNode(turn);
+      return {
+        present: true,
+        expanded: element.getAttribute('aria-expanded') !== 'false',
+        targetExists: !controls || Boolean(target),
+        controls,
+        turnId: turn?.getAttribute('data-testid') || '',
+        signature: [
+          targetMetrics.textLength, targetMetrics.htmlLength, targetMetrics.preCount,
+          targetMetrics.codeCount, targetMetrics.mediaCount, targetMetrics.childCount,
+          turnMetrics.textLength, turnMetrics.htmlLength, turnMetrics.preCount,
+          turnMetrics.codeCount, turnMetrics.mediaCount, turnMetrics.childCount
+        ].join('|')
+      };
+    }
+
+    function confirm(key) {
+      if (!key) return;
+      const collapsed = turns().some(section => [...section.querySelectorAll('[aria-expanded="false"]')]
+        .some(element => isDisclosureControl(element) && keyFor(element) === key));
+      if (!collapsed) {
+        crawler.state.successfulExpansions++;
+        delete crawler.state.attempts[key];
+        delete crawler.state.failures[key];
+      } else if ((crawler.state.attempts[key] || 0) >= 3) {
+        crawler.state.failures[key] = `Could not expand after 3 attempts: ${key}`;
+      }
+    }
+
     function turnDisclosureSample(targetTurnId) {
       const section = turns().find(turn => turn.getAttribute('data-testid') === targetTurnId);
       if (!section) {
@@ -201,8 +248,14 @@ export async function installDisclosureState(page) {
         retainedUnresolvedDisclosures: unresolved.reduce((total, turn) => total + Number(turn.remaining || 0), 0),
         retainedUnresolvedTurnIds: unresolved.slice(0, maxLabels).map(turn => turn.id),
         fingerprint: unresolved.map(turn => [
-          turn.id, Number(turn.remaining || 0), Number(turn.preCount || 0), Number(turn.codeCount || 0),
-          Number(turn.mediaCount || 0), Number(turn.textLength || 0), Number(turn.htmlLength || turn.html?.length || 0)
+          turn.id,
+          turnRevision(turn.id),
+          Number(turn.remaining || 0),
+          Number(turn.preCount || 0),
+          Number(turn.codeCount || 0),
+          Number(turn.mediaCount || 0),
+          Number(turn.textLength || 0),
+          Number(turn.htmlLength || turn.html?.length || 0)
         ].join(':')).join('|')
       };
     }
@@ -212,6 +265,7 @@ export async function installDisclosureState(page) {
         .sort((left, right) => turnNumber(left.id) - turnNumber(right.id) || String(left.id).localeCompare(String(right.id)))
         .map(turn => [
           turn.id,
+          turnRevision(turn.id),
           Number(turn.remaining || 0),
           Number(turn.preCount || 0),
           Number(turn.codeCount || 0),
@@ -242,8 +296,17 @@ export async function installDisclosureState(page) {
       crawler.state.disclosureCompletions[logicalKey] = turnRevision(targetTurnId);
     };
 
-    // Override the beta11 page-side selector so persistent semantic completion
-    // is enforced before a virtualized control is clicked again.
+    crawler.countUnresolvedDisclosures = section => {
+      const disclosure = sectionState(section);
+      return disclosure.recognizedCollapsed + disclosure.closedDetails;
+    };
+
+    crawler.disclosureSample = disclosureSample;
+    crawler.confirm = confirm;
+
+    // This is the single authoritative disclosure expansion implementation.
+    // Persistent semantic completion is enforced before a virtualized control
+    // is clicked again.
     crawler.expandOne = (targetTurnId = '') => {
       const candidateTurns = targetTurnId
         ? turns().filter(section => section.getAttribute('data-testid') === targetTurnId)
@@ -328,5 +391,6 @@ export async function installDisclosureState(page) {
       };
     };
     crawler.__disclosureStateInstalled = true;
+    crawler.capture();
   }, { requiredRounds: TURN_QUIESCENT_REQUIRED_ROUNDS, maxLabels: MAX_UNRECOGNIZED_LABELS });
 }

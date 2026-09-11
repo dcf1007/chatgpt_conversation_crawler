@@ -11,8 +11,7 @@ async function applyForegroundState(session) {
   const result = {
     focusEmulation: false,
     idleOverride: false,
-    lifecycleActive: false,
-    pageActivated: false
+    lifecycleActive: false
   };
 
   try {
@@ -167,9 +166,4 @@ export async function ensurePageForegroundProtection(page) {
   return true;
 }
 
-export function pageForegroundProtectionInstalled(page) {
-  return Boolean(page && foregroundSessions.has(page));
-}
-
-export const __testing = { foregroundStateApplied };
 export { chromium };

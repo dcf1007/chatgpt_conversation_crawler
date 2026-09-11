@@ -422,7 +422,7 @@ export async function captureMountedAppBlocks(page) {
   };
 }
 
-export function getCapturedAppBlocks(page) {
+function getCapturedAppBlocks(page) {
   const state = appState(page);
   return {
     blocks: [...state.blocks.values()].map(block => ({ ...block })),
@@ -434,7 +434,8 @@ export function getCapturedAppBlocks(page) {
   };
 }
 
-export async function prepareEmbeddedContent(page, { embedSvgImages = true, archiveState = null } = {}) {
+export async function prepareEmbeddedContent(page, { embedSvgImages = true, archiveState } = {}) {
+  if (!archiveState?.turns) throw new TypeError('prepareEmbeddedContent requires a detached archiveState.');
   await captureMountedAppBlocks(page).catch(() => {});
   const retainedApps = getCapturedAppBlocks(page);
   const prefix = crypto.randomUUID().replaceAll('-', '');
@@ -447,12 +448,9 @@ export async function prepareEmbeddedContent(page, { embedSvgImages = true, arch
     else sourceFallback[block.sourceUrl] = '';
   });
 
-  const turnsInput = archiveState?.turns || null;
+  const turnsInput = archiveState.turns;
   const rewrite = await page.evaluate(({ blockTokens, sourceFallback, prefix, rootSelector, turnsInput }) => {
-    const turns = turnsInput || window.__archiveCrawler?.state?.turns;
-    const usingCopy = Boolean(turnsInput);
-    if (!turns) return { originals: [], updates: [], appUses: [], missingApps: [], svgs: [] };
-    const originals = [];
+    const turns = turnsInput;
     const updates = [];
     const appUses = [];
     const missingApps = [];
@@ -504,18 +502,14 @@ export async function prepareEmbeddedContent(page, { embedSvgImages = true, arch
       }
 
       if (changed) {
-        originals.push({ id: turn.id, html: turn.html });
         updates.push({ id: turn.id, html: holder.innerHTML });
-        if (!usingCopy) turn.html = holder.innerHTML;
       }
     }
-    return { originals, updates, appUses, missingApps, svgs };
+    return { updates, appUses, missingApps, svgs };
   }, { blockTokens, sourceFallback, prefix, rootSelector: APP_BLOCK_ROOT_SELECTOR, turnsInput });
 
-  if (archiveState?.turns) {
-    for (const update of rewrite.updates) {
-      if (archiveState.turns[update.id]) archiveState.turns[update.id].html = update.html;
-    }
+  for (const update of rewrite.updates) {
+    if (archiveState.turns[update.id]) archiveState.turns[update.id].html = update.html;
   }
 
   const state = appState(page);
@@ -577,18 +571,7 @@ export async function prepareEmbeddedContent(page, { embedSvgImages = true, arch
 
   const blockMap = new Map(retainedApps.blocks.map(block => [block.key, block]));
   const tokenToBlock = new Map(Object.entries(blockTokens).map(([key, token]) => [token, blockMap.get(key)]));
-  return { rewrite, retainedApps, tokenToBlock, svgRecords, usingCopy: Boolean(archiveState) };
-}
-
-export async function restoreEmbeddedContent(page, prepared) {
-  if (prepared?.usingCopy) return;
-  const originals = prepared?.rewrite?.originals || [];
-  if (!originals.length) return;
-  await page.evaluate(items => {
-    const turns = window.__archiveCrawler?.state?.turns;
-    if (!turns) return;
-    for (const item of items) if (turns[item.id]) turns[item.id].html = item.html;
-  }, originals).catch(() => {});
+  return { rewrite, retainedApps, tokenToBlock, svgRecords };
 }
 
 const APP_BLOCK_CSS = `
@@ -607,7 +590,14 @@ function injectCss(html) {
 
 function injectDiagnostics(html, messages) {
   if (!messages.length) return html;
-  const diagnostic = `<details class="archive-diagnostics"><summary>${messages.length} embedded-content issue(s)</summary><ul>${messages.slice(0, 30).map(message => `<li>${esc(message)}</li>`).join('')}</ul>${messages.length > 30 ? `<p>${messages.length - 30} additional issue(s) omitted.</p>` : ''}</details>`;
+  const items = messages.slice(0, 30).map(message => `<li>${esc(message)}</li>`).join('');
+  const omitted = messages.length > 30
+    ? `<p>${messages.length - 30} additional issue(s) omitted.</p>`
+    : '';
+  const diagnostic = [
+    `<details class="archive-diagnostics"><summary>${messages.length} embedded-content issue(s)</summary>`,
+    `<ul>${items}</ul>${omitted}</details>`
+  ].join('');
   return html.replace('</div></body></html>', `${diagnostic}</div></body></html>`);
 }
 
@@ -630,10 +620,15 @@ export function finalizeEmbeddedContent(snapshot, prepared) {
   const retainedApps = prepared?.retainedApps || { failures: [], assetFailures: [], embeddedAssets: 0, embeddedAssetBytes: 0 };
 
   snapshot.html = injectCss(snapshot.html);
-  snapshot.html = snapshot.html.replace(
-    '<div><strong>Expansion clicks</strong>',
-    `<div><strong>App blocks</strong>${usedBlocks.length} rendered (${uniqueBlocks.length} unique; ${frameCount} flattened frame${frameCount === 1 ? '' : 's'}; ${appSvgCount} SVG${appSvgCount === 1 ? '' : 's'}; ${appImageCount} raster/SVG-image reference${appImageCount === 1 ? '' : 's'})</div><div><strong>Main-chat SVG</strong>${prepared?.svgRecords?.length || 0} retained</div><div><strong>Expansion clicks</strong>`
-  );
+  const appSummary = [
+    `<div><strong>App blocks</strong>${usedBlocks.length} rendered `,
+    `(${uniqueBlocks.length} unique; ${frameCount} flattened frame${frameCount === 1 ? '' : 's'}; `,
+    `${appSvgCount} SVG${appSvgCount === 1 ? '' : 's'}; `,
+    `${appImageCount} raster/SVG-image reference${appImageCount === 1 ? '' : 's'})</div>`,
+    `<div><strong>Main-chat SVG</strong>${prepared?.svgRecords?.length || 0} retained</div>`,
+    '<div><strong>Expansion clicks</strong>'
+  ].join('');
+  snapshot.html = snapshot.html.replace('<div><strong>Expansion clicks</strong>', appSummary);
 
   const issues = [
     ...(prepared?.rewrite?.missingApps || []).map(item => `No retained app-block snapshot matched ${item.key || item.source || 'unknown app block'}.`),

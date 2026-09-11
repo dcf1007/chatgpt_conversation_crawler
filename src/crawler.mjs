@@ -1,9 +1,9 @@
 import {
   installCrawler,
-  crawlConversation as crawlAutomaticConversation,
-  CRAWLER_PROGRESS_LIMITS,
-  __testing as crawlerTesting
+  crawlAutomaticConversation,
+  CRAWLER_PROGRESS_LIMITS
 } from './crawler-core.mjs';
+import { expandMounted } from './crawler-expansion.mjs';
 
 const MANUAL_INSPECTION_ENV = 'CHATGPT_CRAWLER_MANUAL_INSPECTION';
 
@@ -79,7 +79,7 @@ export async function crawlConversation(page, options = {}) {
       convergeMounted: async () => {
         // Human interaction can mount another nested generation. Reuse the
         // permanent turn-scoped fixed point and retention authority.
-        await crawlerTesting.expandMounted(page, 500, forwardProgress, options.shouldCancel);
+        await expandMounted(page, 500, forwardProgress, options.shouldCancel);
         await page.evaluate(() => window.__archiveCrawler.capture());
       }
     });
@@ -105,5 +105,3 @@ export async function crawlConversation(page, options = {}) {
 
   return automaticResult;
 }
-
-export const __testing = { ...crawlerTesting };

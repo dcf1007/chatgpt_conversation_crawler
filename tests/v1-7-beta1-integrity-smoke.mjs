@@ -28,6 +28,7 @@ const warning = evaluateArchiveIntegrity({
   reconciliationConverged: false,
   expansionLimitEvents: 1,
   hydrationTimeoutEvents: 2,
+  hydrationTimeoutTurnIds: ['conversation-turn-18', 'conversation-turn-19'],
   hydrationConflictsResolved: 3,
   hydrationConflictsUnresolved: 1,
   hydrationConflictTurnIds: ['conversation-turn-47']
@@ -42,6 +43,17 @@ assert.deepEqual(
   ['conversation-turn-47']
 );
 assert.ok(warning.warnings.some(item => item.code === 'traversal-not-converged'));
-assert.ok(warning.warnings.some(item => item.code === 'hydration-timeout'));
+const timeoutWarning = warning.warnings.find(item => item.code === 'hydration-timeout');
+assert.ok(timeoutWarning);
+assert.deepEqual(timeoutWarning.turnIds, ['conversation-turn-18', 'conversation-turn-19']);
+
+
+const resolvedAfterFinalExpansion = evaluateArchiveIntegrity({
+  retainedUnresolvedTurns: 0,
+  retainedUnresolvedDisclosures: 0,
+  reconciliationConverged: false
+});
+assert.equal(resolvedAfterFinalExpansion.status, 'verified', 'final retained disclosure state is authoritative after the last expansion sweep');
+assert.ok(!resolvedAfterFinalExpansion.warnings.some(item => item.code === 'retained-disclosures-unresolved'));
 
 console.log('v1.7 beta1 archive integrity smoke test passed');

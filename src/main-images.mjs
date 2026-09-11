@@ -240,7 +240,7 @@ async function fetchRequestContext(page, url) {
   return storeBuffer(page, [url], body, response.headers()['content-type'] || '', 'final-request-fetch');
 }
 
-export async function resolveMainImage(page, url) {
+async function resolveMainImage(page, url) {
   installMainImageCapture(page);
   await flushPending(page);
   const state = stateFor(page);
@@ -282,14 +282,13 @@ function reserveUniqueImageBytes(budget, image, maxBytes = MAX_CACHE_BYTES) {
   return true;
 }
 
-export async function prepareMainImages(page, archiveState = null) {
+export async function prepareMainImages(page, archiveState) {
+  if (!archiveState?.turns) throw new TypeError('prepareMainImages requires a detached archiveState.');
   await captureMountedMainImages(page, { settleMs: 1200 }).catch(() => {});
   await flushPending(page);
 
-  const turnsInput = archiveState?.turns || null;
+  const turnsInput = archiveState.turns;
   const urls = await page.evaluate(turns => {
-    turns ||= window.__archiveCrawler?.state?.turns;
-    if (!turns) return [];
     const found = new Set();
     for (const turn of Object.values(turns)) {
       if (!turn?.html) continue;
@@ -330,9 +329,6 @@ export async function prepareMainImages(page, archiveState = null) {
   const tokenByUrl = Object.fromEntries(records.map(record => [record.url, record.token]));
 
   const rewrite = await page.evaluate(({ turns, tokenByUrl }) => {
-    turns ||= window.__archiveCrawler?.state?.turns;
-    if (!turns) return { originals: [], updates: [] };
-    const originals = [];
     const updates = [];
     for (const turn of Object.values(turns)) {
       if (!turn?.id || !turn?.html) continue;
@@ -347,35 +343,16 @@ export async function prepareMainImages(page, archiveState = null) {
         changed = true;
       }
       if (!changed) continue;
-      originals.push({ id: turn.id, html: turn.html });
       updates.push({ id: turn.id, html: holder.innerHTML });
-      if (!turnsInputMarker(turns)) turn.html = holder.innerHTML;
     }
-    return { originals, updates };
-
-    function turnsInputMarker(value) {
-      return Boolean(value && value !== window.__archiveCrawler?.state?.turns);
-    }
+    return { updates };
   }, { turns: turnsInput, tokenByUrl });
 
-  if (archiveState?.turns) {
-    for (const update of rewrite.updates) {
-      if (archiveState.turns[update.id]) archiveState.turns[update.id].html = update.html;
-    }
+  for (const update of rewrite.updates) {
+    if (archiveState.turns[update.id]) archiveState.turns[update.id].html = update.html;
   }
 
-  return { records, rewrite, totalBytes: budget.totalBytes, usingCopy: Boolean(archiveState) };
-}
-
-export async function restoreMainImages(page, prepared) {
-  if (prepared?.usingCopy) return;
-  const originals = prepared?.rewrite?.originals || [];
-  if (!originals.length) return;
-  await page.evaluate(items => {
-    const turns = window.__archiveCrawler?.state?.turns;
-    if (!turns) return;
-    for (const item of items) if (turns[item.id]) turns[item.id].html = item.html;
-  }, originals).catch(() => {});
+  return { records, rewrite, totalBytes: budget.totalBytes };
 }
 
 export function finalizeMainImages(snapshot, prepared) {
@@ -421,7 +398,15 @@ export function finalizeMainImages(snapshot, prepared) {
   snapshot.html = snapshot.html.replace(/<div><strong>Images<\/strong>[^<]*<\/div>/, `<div><strong>Images</strong>${summary}</div>`);
 
   if (failures.length) {
-    const diagnostic = `<details class="archive-diagnostics"><summary>${failures.length} main-chat image(s) could not be embedded and use their original URL instead</summary><ul>${failures.slice(0, 30).map(item => `<li>${esc(item)}</li>`).join('')}</ul>${failures.length > 30 ? `<p>${failures.length - 30} additional failure(s) omitted.</p>` : ''}</details>`;
+    const failureItems = failures.slice(0, 30).map(item => `<li>${esc(item)}</li>`).join('');
+    const omitted = failures.length > 30
+      ? `<p>${failures.length - 30} additional failure(s) omitted.</p>`
+      : '';
+    const diagnostic = [
+      `<details class="archive-diagnostics"><summary>${failures.length} main-chat image(s) `,
+      'could not be embedded and use their original URL instead</summary>',
+      `<ul>${failureItems}</ul>${omitted}</details>`
+    ].join('');
     snapshot.html = snapshot.html.replace('</div></body></html>', `${diagnostic}</div></body></html>`);
   }
 

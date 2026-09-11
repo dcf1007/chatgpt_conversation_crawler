@@ -13,7 +13,7 @@ assert.match(serverDev, /mhtml-dev-hook\.mjs/);
 assert.match(serverDev, /server\.mjs/);
 assert.doesNotMatch(server, /mhtml-dev-hook|manual-inspection|CHATGPT_CRAWLER_MANUAL_INSPECTION/, 'normal server must stay diagnostic-free');
 
-assert.match(crawlerFacade, /crawlConversation as crawlAutomaticConversation/);
+assert.match(crawlerFacade, /crawlAutomaticConversation/);
 assert.match(crawlerFacade, /CRAWLER_PROGRESS_LIMITS/);
 assert.match(crawlerFacade, /manual-inspection\.mjs/);
 assert.match(crawlerFacade, /stage: 'diagnostic_validation'/);
@@ -23,4 +23,4 @@ assert.doesNotMatch(crawlerCore, /manual-inspection|mhtml/i, 'automatic crawler 
 assert.match(recorder, /diagnosticId: diagnosticState\.id/);
 assert.doesNotMatch(recorder, /\bjobId\b/);
 
-console.log('beta12-dev wrapper isolation smoke test passed');
+console.log('development wrapper isolation smoke test passed');

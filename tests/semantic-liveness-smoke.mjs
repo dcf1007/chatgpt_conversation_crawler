@@ -108,8 +108,8 @@ function persistentCollapsedCrawler({ revisions = {}, disclosures = [] } = {}) {
   return { crawler, activations };
 }
 
-// Regression: beta7 could stay forever at 2/3 actionable 0 because unrelated
-// mounted DOM churn changed the old signature. Beta13.1 quietness ignores that
+// Regression: unrelated mounted DOM churn must not keep semantic quietness open
+// after the actionable disclosure state has stabilized.
 // volatile DOM signature and converges on the actionable logical worklist.
 {
   let calls = 0;
@@ -142,8 +142,8 @@ function persistentCollapsedCrawler({ revisions = {}, disclosures = [] } = {}) {
   assert.ok(calls < 12, `semantic quiet convergence took too many expansion probes: ${calls}`);
 }
 
-// Regression: beta13 remembered logical disclosures only inside one
-// expandMounted() call. Beta13.1 persists completion page-side, so a second
+// Regression: logical disclosure completion must survive virtualized remounts across
+// expandMounted() call. Completion persists page-side, so a second
 // traversal visit at the same turn revision must not reopen A/B/C.
 {
   const turnId = 'conversation-turn-62';
@@ -250,4 +250,4 @@ function persistentCollapsedCrawler({ revisions = {}, disclosures = [] } = {}) {
   assert.notEqual(retainedChange, first, 'current retained corpus change must count as traversal progress');
 }
 
-console.log('beta13.1 persistent semantic liveness smoke test passed');
+console.log('persistent semantic liveness smoke test passed');

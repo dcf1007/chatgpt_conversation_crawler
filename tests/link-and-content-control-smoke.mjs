@@ -10,4 +10,4 @@ assert.match(source, /archive-inline-label/, 'non-functional content controls mu
 assert.match(source, /preservedMedia = button\.querySelector\('img,video,audio,picture,object,embed'\)/, 'media-bearing controls must retain their media descendants');
 assert.doesNotMatch(source, /behavior-btn[^\n]*href/i, 'the crawler must not fabricate an href for behavior buttons whose target is not exposed by the DOM');
 
-console.log('beta12-dev link/content-control fidelity smoke test passed');
+console.log('link/content-control fidelity smoke test passed');

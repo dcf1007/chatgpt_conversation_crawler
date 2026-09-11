@@ -77,7 +77,7 @@ The crawler intentionally does not wait for the entire virtualized viewport to b
 - Uses ChatGPT's actual internal conversation scroller rather than assuming window scrolling.
 - Retains each observed virtualized `conversation-turn-*` section.
 - Synchronously re-captures richer remounts and descendant hydration generations, then performs a short delayed settle retry.
-- Replaces retained turns using a richness order that includes code, media, app blocks, disclosure state, DOM size and text.
+- Reconciles competing retained turn generations by semantic content: strict supersets replace subsets, while incomparable generations retain the multiset union of non-duplicated observed content and remain flagged until a later generation resolves the ambiguity.
 - Expands conversation-scoped reasoning/tool disclosures, structural `aria-controls` disclosures, and native `<details>`.
 - Resets a disclosure retry budget after successful activation so a later collapsed remount is eligible again.
 - Uses turn-scoped nested-disclosure convergence; unrelated virtualizer churn does not reset the active turn.
@@ -157,7 +157,7 @@ A later single generation resolves a hydration conflict only when it covers the 
 
 ## Transient context retention
 
-Some archival content is not safely represented by a turn clone alone. beta11 observes that context independently:
+Some archival content is not safely represented by a turn clone alone. The crawler observes that context independently:
 
 - timestamp/branch marker DOM is captured synchronously when it appears or changes;
 - app-preview mutations request immediate Node-side frame-tree capture;
@@ -250,8 +250,11 @@ Current gates include:
 - richer turn remount disappearing before the delayed settle capture;
 - descendant hydration without section remount;
 - observed-turn coverage;
-- media-aware retained-turn replacement;
+- content-aware retained-turn reconciliation, including media/app/formula differences and multiset union of incomparable generations;
 - oldest-edge verification and retained-disclosure reconciliation;
+- exact endpoint positioning versus assisted leading-edge virtualizer navigation, including zoom-bounded oldest-edge probes;
+- non-window-activating Chromium background protection and stale CDP-session recovery;
+- durable archive-integrity warnings for convergence limits, hydration ambiguity, and unresolved retained disclosures;
 - archive fidelity metadata;
 - canonical archive `id` across server/main UI/preview;
 - explicit stage/progress-limit contract;
@@ -268,6 +271,13 @@ Current gates include:
 - `v1.6.7-beta10.1` — corrected clean launchers.
 - `v1.6.7-beta10.2` — interim live-preview identifier compatibility hotfix.
 - `v1.6.7-beta11` — canonical contracts, richer remount/hydration retention, transient-context protection, clean state boundary and integration release gates.
+- `v1.6.7-beta12-dev` — uploaded-image/control preservation and final image-accounting fidelity corrections.
+- `v1.6.7-beta13-dev` — semantic disclosure liveness and bounded convergence under virtualizer churn.
+- `v1.6.7-beta13.1-dev` — persistent turn-scoped disclosure completion and per-turn retained revision isolation.
+- `v1.6.7-beta14-dev` — non-window focus emulation and progress-verified disclosure fixed points.
+- `v1.6.7-beta14.1-dev` — leading-edge/direction-scoped virtualizer progress correction in diagnostics.
+- `v1.6.7-beta14.2-dev` — leading-edge assisted navigation and activity protection moved into permanent crawler core.
+- `v1.6.7-beta14.3-dev` — exact versus assisted positioning split and removal of native window activation.
 - `v1.7.0-beta1-dev` — archive-integrity convergence reporting and content-aware hydration reconciliation.
 - `v1.7.0-beta2-dev` — non-activating foreground-session recovery and retained image/app/transient fidelity hardening.
 - `v1.7.0-beta3-dev` — truthful/bounded diagnostics, shared navigation cleanup, readable maintained source, and Windows launcher parity.

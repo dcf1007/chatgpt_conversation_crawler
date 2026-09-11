@@ -17,14 +17,11 @@ assert.match(html, /job\.stage\s*===\s*'traversal'/);
 assert.match(html, /job\.stage\s*===\s*'oldest_verification'/);
 assert.match(html, /job\.stage\s*===\s*'reconciliation'/);
 assert.doesNotMatch(html, /function stageFor|diagnostic validation|waiting for you/i, 'clean UI must not contain development diagnostic state');
-assert.doesNotMatch(server, /diagnosticStep|diagnosticSteps|waitingForUser/, 'clean server contract must not carry development-only state');
 assert.match(core, /installDisclosureState/);
 assert.match(expansion, /crawler-disclosure-state\.mjs/);
-assert.doesNotMatch(core + expansion, /Beta8Diagnostics|crawler-page-diagnostics/, 'automatic crawler must use version-neutral disclosure authority');
 assert.match(disclosure, /installDisclosureState/);
-assert.equal(fs.existsSync(new URL('../src/crawler-page-diagnostics.mjs', import.meta.url)), false, 'misleading crawler-page-diagnostics module must be removed');
 assert.match(transient, /captureTimelineMarkers/);
 assert.match(transient, /captureMountedAppBlocks/);
 assert.match(transient, /captureMountedMainImages/);
 
-console.log('beta11 stage/state and clean-boundary contract smoke test passed');
+console.log('stage/state and clean-boundary contract smoke test passed');

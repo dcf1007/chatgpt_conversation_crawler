@@ -116,4 +116,4 @@ assert.equal(sample.actionableCollapsed, 0);
 assert.deepEqual(sample.actionableLogicalKeys, []);
 assert.equal(crawler.state.disclosureCompletions[first.logicalKey], 1);
 
-console.log('beta13.1 page-side persistent disclosure completion smoke test passed');
+console.log('page-side persistent disclosure completion smoke test passed');
