@@ -10,6 +10,10 @@ export async function installPageCrawler(page) {
       'p', 'li', 'a[href]', 'code', 'img', 'svg', 'canvas', 'video', 'math',
       '[data-math-source]', '[data-app-block-preview="true"]'
     ].join(',');
+    const semanticTextBlockSelector = [
+      'p', 'li', 'blockquote', 'td', 'th',
+      'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'pre'
+    ].join(',');
 
     const state = {
       turns: Object.create(null),
@@ -34,7 +38,8 @@ export async function installPageCrawler(page) {
       hydrationConflictsResolved: 0,
       scanResults: [],
       expansionLimitEvents: [],
-      hydrationTimeoutEvents: []
+      hydrationTimeoutEvents: [],
+      turnProcessingResults: Object.create(null)
     };
 
     const turns = () => [...document.querySelectorAll(turnSelector)];
@@ -274,6 +279,60 @@ export async function installPageCrawler(page) {
       return units;
     }
 
+    function addFact(facts, kind, value) {
+      const normalized = normalizeText(value);
+      if (!normalized) return;
+      facts.push({ fingerprint: `${kind}:${hashText(normalized)}` });
+    }
+
+    /**
+     * Extract archival semantic facts independently from preservation units.
+     * Whole rendered containers are intentionally not the comparison authority:
+     * progressive hydration such as plain text gaining a link should be an
+     * enrichment, not a permanently competing generation.
+     */
+    function extractSemanticFacts(section) {
+      const facts = [];
+
+      for (const block of section.querySelectorAll(semanticTextBlockSelector)) {
+        if (block.querySelector(semanticTextBlockSelector)) continue;
+        addFact(facts, `text-${block.localName || 'block'}`, block.innerText || block.textContent || '');
+      }
+
+      for (const element of section.querySelectorAll('*')) {
+        if (element.children?.length) continue;
+        if (element.closest(semanticTextBlockSelector)) continue;
+        if (element.closest('button,[role="button"],[role="menu"],[role="menuitem"],[aria-haspopup]')) continue;
+        if (element.matches('a,img,svg,canvas,video,math,[data-math-source],[data-app-block-preview="true"]')) continue;
+        addFact(facts, 'leaf-text', element.innerText || element.textContent || '');
+      }
+
+      for (const anchor of section.querySelectorAll('a[href]')) {
+        addFact(facts, 'link', `${normalizeText(anchor.textContent)}@${anchor.href || anchor.getAttribute('href') || ''}`);
+      }
+      for (const code of section.querySelectorAll('pre,code')) {
+        addFact(facts, `code-${code.localName || 'code'}`, code.textContent || '');
+      }
+      for (const image of section.querySelectorAll('img')) {
+        addFact(facts, 'image', `${image.currentSrc || image.src || image.getAttribute('src') || ''}@${image.alt || ''}`);
+      }
+      for (const math of section.querySelectorAll('[data-math-source],math')) {
+        if (math.matches('math') && math.closest('[data-math-source]')) continue;
+        addFact(facts, 'math', [
+          math.getAttribute('data-math-source') || '',
+          math.getAttribute('aria-label') || '',
+          normalizeText(math.textContent || '')
+        ].join('@'));
+      }
+      for (const visual of section.querySelectorAll('svg,canvas,video,[data-app-block-preview="true"]')) {
+        addFact(facts, `visual-${visual.localName || 'app'}`, normalizeText(visual.outerHTML || ''));
+      }
+
+      // A truly textless/assetless turn still needs a stable semantic identity.
+      if (!facts.length) addFact(facts, 'turn-text', section.innerText || section.textContent || section.outerHTML || '');
+      return facts;
+    }
+
     function unitCounts(units) {
       const counts = new Map();
       for (const unit of units || []) counts.set(unit.fingerprint, (counts.get(unit.fingerprint) || 0) + 1);
@@ -304,7 +363,7 @@ export async function installPageCrawler(page) {
     }
 
     function generationFingerprint(candidate) {
-      const counts = [...unitCounts(candidate.contentUnits).entries()]
+      const counts = [...unitCounts(candidate.semanticFacts).entries()]
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([fingerprint, count]) => `${fingerprint}:${count}`)
         .join('|');
@@ -354,33 +413,53 @@ export async function installPageCrawler(page) {
         .sort((left, right) => turnNumber(left) - turnNumber(right) || left.localeCompare(right));
     }
 
-    function resolveConflictIfNeeded(id, previous, next) {
+    function canonicalObserved(turn) {
+      return turn?.canonicalObserved || turn;
+    }
+
+    function closeHydrationConflict(id, next) {
       const conflict = state.hydrationConflicts[id];
       if (!conflict?.active) return;
-      if (!coversUnits(next.contentUnits, previous.contentUnits)) return;
       conflict.active = false;
       conflict.resolvedAtRevision = Number(state.turnRevisions[id] || 0);
       state.hydrationConflictsResolved++;
       next.hydrationConflictActive = false;
     }
 
-    function markConflict(id, previous, candidate, union) {
+    function retainedObservedTurn(identity, candidate) {
+      return {
+        ...identity,
+        ...candidate,
+        canonicalObserved: { ...candidate },
+        evidenceFacts: [...candidate.semanticFacts],
+        hydrationConflictActive: false
+      };
+    }
+
+    function markConflict(id, identity, previous, candidate, evidenceFacts) {
       const existing = state.hydrationConflicts[id];
+      const previousCanonical = canonicalObserved(previous);
+      const canonical = isMetricRicher(candidate, previousCanonical) ? candidate : previousCanonical;
+      const union = unionUnits(previous.contentUnits || previousCanonical.contentUnits || [], candidate.contentUnits);
       state.hydrationConflicts[id] = {
         active: true,
         firstDetectedRevision: existing?.firstDetectedRevision || Number(state.turnRevisions[id] || 0),
         lastUpdatedRevision: Number(state.turnRevisions[id] || 0),
         observedGenerations: Object.keys(state.turnGenerationFingerprints[id] || {}).length,
-        retainedUnits: union.length
+        retainedUnits: union.length,
+        retainedSemanticFacts: evidenceFacts.length
       };
 
-      const base = isMetricRicher(candidate, previous) ? candidate : previous;
-      const mergedHtml = mergeTurnHtml(base, union);
+      const mergedHtml = mergeTurnHtml(canonical, union);
       return {
-        ...base,
+        ...identity,
+        ...canonical,
         html: mergedHtml,
         htmlLength: mergedHtml.length,
         contentUnits: union,
+        semanticFacts: canonical.semanticFacts,
+        evidenceFacts,
+        canonicalObserved: { ...canonical },
         remaining: Math.min(Number(previous.remaining || 0), Number(candidate.remaining || 0)),
         preCount: Math.max(Number(previous.preCount || 0), Number(candidate.preCount || 0)),
         codeCount: Math.max(Number(previous.codeCount || 0), Number(candidate.codeCount || 0)),
@@ -433,6 +512,7 @@ export async function installPageCrawler(page) {
       const remaining = Number(window.__archiveCrawler?.countUnresolvedDisclosures?.(section) || 0);
       const html = clone.outerHTML;
       const contentUnits = extractContentUnits(clone);
+      const semanticFacts = extractSemanticFacts(clone);
       const candidate = {
         remaining,
         preCount: section.querySelectorAll('pre').length,
@@ -444,10 +524,11 @@ export async function installPageCrawler(page) {
         htmlLength: html.length,
         html,
         contentUnits,
+        semanticFacts,
         hydrationConflictActive: false
       };
       candidate.generationFingerprint = generationFingerprint(candidate);
-      noteGeneration(id, candidate.generationFingerprint);
+      const generationIsNew = noteGeneration(id, candidate.generationFingerprint);
 
       const previous = state.turns[id];
       const message = section.querySelector('[data-message-id]');
@@ -462,29 +543,40 @@ export async function installPageCrawler(page) {
       };
 
       if (!previous) {
-        state.turns[id] = { ...identity, ...candidate };
+        state.turns[id] = retainedObservedTurn(identity, candidate);
         return true;
       }
 
-      const candidateCoversPrevious = coversUnits(candidate.contentUnits, previous.contentUnits || []);
-      const previousCoversCandidate = coversUnits(previous.contentUnits || [], candidate.contentUnits);
+      const previousCanonical = canonicalObserved(previous);
+      const canonicalFacts = previousCanonical.semanticFacts || [];
+      const previousEvidence = previous.evidenceFacts || canonicalFacts;
+      const candidateCoversCanonical = coversUnits(candidate.semanticFacts, canonicalFacts);
+      const canonicalCoversCandidate = coversUnits(canonicalFacts, candidate.semanticFacts);
+      const evidenceWithCandidate = unionUnits(previousEvidence, candidate.semanticFacts);
+      const candidateCoversEvidence = coversUnits(candidate.semanticFacts, evidenceWithCandidate);
+      const conflictActive = Boolean(state.hydrationConflicts[id]?.active);
+
+      if (conflictActive) {
+        if (candidateCoversEvidence) {
+          const next = retainedObservedTurn(identity, candidate);
+          closeHydrationConflict(id, next);
+          state.turns[id] = next;
+          return true;
+        }
+        if (!generationIsNew) return false;
+        state.turns[id] = markConflict(id, identity, previous, candidate, evidenceWithCandidate);
+        return true;
+      }
 
       let next = previous;
-      if (candidateCoversPrevious && !previousCoversCandidate) {
-        next = { ...identity, ...candidate };
-        resolveConflictIfNeeded(id, previous, next);
-      } else if (candidateCoversPrevious && previousCoversCandidate) {
-        const candidatePreferred = Boolean(state.hydrationConflicts[id]?.active)
-          || Number(candidate.remaining || 0) < Number(previous.remaining || 0)
-          || (Number(candidate.remaining || 0) === Number(previous.remaining || 0) && isMetricRicher(candidate, previous));
-        if (candidatePreferred) {
-          next = { ...identity, ...candidate };
-          resolveConflictIfNeeded(id, previous, next);
-        }
-      } else if (!candidateCoversPrevious && !previousCoversCandidate) {
-        const union = unionUnits(previous.contentUnits || [], candidate.contentUnits);
-        const merged = markConflict(id, previous, candidate, union);
-        next = { ...identity, ...merged };
+      if (candidateCoversCanonical && !canonicalCoversCandidate) {
+        next = retainedObservedTurn(identity, candidate);
+      } else if (candidateCoversCanonical && canonicalCoversCandidate) {
+        const candidatePreferred = Number(candidate.remaining || 0) < Number(previous.remaining || 0)
+          || (Number(candidate.remaining || 0) === Number(previous.remaining || 0) && isMetricRicher(candidate, previousCanonical));
+        if (candidatePreferred) next = retainedObservedTurn(identity, candidate);
+      } else if (!candidateCoversCanonical && !canonicalCoversCandidate) {
+        next = markConflict(id, identity, previous, candidate, evidenceWithCandidate);
       }
 
       if (next === previous) return false;
@@ -525,6 +617,10 @@ export async function installPageCrawler(page) {
       const retained = retainedIds();
       const mounted = mountedIds();
       const unresolvedHydrationIds = hydrationConflictIds();
+      const turnProcessingFailureIds = Object.entries(state.turnProcessingResults)
+        .filter(([, result]) => result?.converged === false)
+        .map(([id]) => id)
+        .sort((left, right) => turnNumber(left) - turnNumber(right) || left.localeCompare(right));
       return {
         turns: values.length,
         expanded: state.successfulExpansions,
@@ -546,6 +642,8 @@ export async function installPageCrawler(page) {
         hydrationConflictsResolved: Number(state.hydrationConflictsResolved || 0),
         hydrationConflictsUnresolved: unresolvedHydrationIds.length,
         hydrationConflictTurnIds: unresolvedHydrationIds.slice(0, 20),
+        turnProcessingFailures: turnProcessingFailureIds.length,
+        turnProcessingFailureTurnIds: turnProcessingFailureIds.slice(0, 20),
         scanLimitEvents: state.scanResults.filter(result => result && result.converged === false).length,
         expansionLimitEvents: state.expansionLimitEvents.length,
         hydrationTimeoutEvents: state.hydrationTimeoutEvents.length,
@@ -573,6 +671,12 @@ export async function installPageCrawler(page) {
       state.hydrationTimeoutEvents.push({ ...result });
     }
 
+    function markTurnProcessingResult(result) {
+      const turnIdValue = String(result?.turnId || '');
+      if (!turnIdValue) return;
+      state.turnProcessingResults[turnIdValue] = { ...result };
+    }
+
     window.__archiveCrawler = {
       state,
       capture,
@@ -586,6 +690,7 @@ export async function installPageCrawler(page) {
       markScanResult,
       noteExpansionLimit,
       noteHydrationTimeout,
+      markTurnProcessingResult,
       turnRevision: targetTurnId => Number(state.turnRevisions[targetTurnId] || 0),
       retainedRevision: () => Number(state.retainedRevision || 0)
     };
