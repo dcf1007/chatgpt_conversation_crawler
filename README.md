@@ -8,7 +8,7 @@ It is designed for long conversations where ChatGPT lazily loads history, virtua
 
 ## Current release
 
-**v1.7.1-beta-dev** is the current development diagnostic prerelease. It replaces stale-pixel target recovery with logical retained-turn navigation, processes retained turns one by one with whole-turn viewport coverage and scoped disclosure convergence, performs reverse/forward semantic verification with targeted reconciliation, and separates real observed hydration generations from synthetic preservation unions. See `V1_7_1_BETA_DEV.md` for the exact corrective scope and regression evidence.
+**v1.7.1-beta2-dev** is the current development diagnostic prerelease. It retains the `v1.7.1-beta-dev` turn-first/logical-navigation and hydration-generation corrections, and fixes MHTML manual-remount metadata so the recorder identifies the upcoming target from the beginning of remounting instead of reporting a blank or stale previous target. See `V1_7_1_BETA2_DEV.md` for the exact corrective scope and regression evidence.
 
 ## Architecture
 
@@ -274,6 +274,7 @@ Current gates include:
 - non-window-activating Chromium background protection and stale CDP-session recovery;
 - durable archive-integrity warnings for traversal/turn convergence limits, hydration ambiguity, and unresolved retained disclosures;
 - truthful detached integrity in development diagnostic snapshots;
+- truthful upcoming manual target ID/step metadata during development diagnostic remounting;
 - archive fidelity metadata;
 - canonical archive `id` across server/main UI/preview;
 - explicit stage/progress-limit contract;
@@ -301,3 +302,4 @@ Current gates include:
 - `v1.7.0-beta2-dev` — non-activating foreground-session recovery and retained image/app/transient fidelity hardening.
 - `v1.7.0-beta3-dev` — truthful/bounded diagnostics, shared navigation cleanup, readable maintained source, and Windows launcher parity.
 - `v1.7.1-beta-dev` — logical turn navigation, whole-turn viewport coverage, turn-first convergence, targeted reconciliation, and canonical observed hydration-generation reconciliation.
+- `v1.7.1-beta2-dev` — truthful upcoming manual-target metadata during diagnostic remounting; crawler/archive behavior otherwise unchanged from v1.7.1-beta-dev.
