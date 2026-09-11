@@ -25,4 +25,24 @@ assert.match(windowsStart, /http:\/\/localhost:%PORT%/);
 assert.match(windowsSetup, /NODE_MAJOR/);
 assert.match(windowsSetup, /LSS 20/);
 
-console.log('v1.7 beta3 launcher parity smoke test passed');
+// A quoted executable path such as C:\Program Files\nodejs\node.exe must not be
+// placed inside FOR /F command substitution. cmd.exe reparses that nested command
+// and can treat C:\Program as the executable. The setup script must invoke the
+// resolved Node executable directly and read the result without a nested command.
+assert.doesNotMatch(
+  windowsSetup,
+  /for\s+\/f[^\r\n]*NODE_EXE/i,
+  'setup-windows.bat must not execute the resolved Node path through FOR /F command substitution'
+);
+assert.match(
+  windowsSetup,
+  /"%NODE_EXE%"\s+-p\s+"Number\(process\.versions\.node\.split\('\.'\)\[0\]\)"\s*>\s*"%NODE_MAJOR_FILE%"/i,
+  'setup-windows.bat must query Node major version through a directly quoted executable invocation'
+);
+assert.match(
+  windowsSetup,
+  /set\s+\/p\s+"NODE_MAJOR="<"%NODE_MAJOR_FILE%"/i,
+  'setup-windows.bat must read the Node major version without invoking cmd.exe command substitution'
+);
+
+console.log('v1.7 beta3 launcher parity + Windows spaced-Node-path smoke test passed');
