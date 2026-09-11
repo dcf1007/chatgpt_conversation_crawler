@@ -8,7 +8,7 @@ It is designed for long conversations where ChatGPT lazily loads history, virtua
 
 ## Current release
 
-**v1.7.1-beta2-dev** is the current development diagnostic prerelease. It retains the `v1.7.1-beta-dev` turn-first/logical-navigation and hydration-generation corrections, and fixes MHTML manual-remount metadata so the recorder identifies the upcoming target from the beginning of remounting instead of reporting a blank or stale previous target. See `V1_7_1_BETA2_DEV.md` for the exact corrective scope and regression evidence.
+**v1.7.1-beta2.1-dev** is the current development diagnostic prerelease. It retains all `v1.7.1-beta2-dev` crawler/diagnostic behavior and corrects Windows setup when the resolved Node executable is under a path containing spaces such as `C:\Program Files\nodejs\node.exe`. See `V1_7_1_BETA2_1_DEV.md` for the exact corrective scope and regression evidence.
 
 ## Architecture
 
@@ -82,7 +82,7 @@ The crawler intentionally does not wait for the entire virtualized viewport to b
 - Retains each observed virtualized `conversation-turn-*` section.
 - Synchronously re-captures richer remounts and descendant hydration generations, then performs a short delayed settle retry.
 - Separates the canonical real observed hydration generation from accumulated semantic evidence and any synthetic preservation union.
-- Preserves multiset-aware unique material from genuinely incomparable hydration generations and resolves the warning when a later real generation covers all accumulated semantic evidence.
+- Preserves multiset-aware unique material from genuinely incomparable hydration generations and resolves the warning when a later generation covers all accumulated semantic evidence.
 - Navigates retained targets by logical turn identity/order rather than storing historical page pixels as turn anchors.
 - Explicitly covers the complete current viewport extent of each retained turn; unusually tall turns receive overlapping live-geometry interior observations so viewport-triggered content in the middle can hydrate.
 - Expands conversation-scoped reasoning/tool disclosures, structural `aria-controls` disclosures, and native `<details>` within the active retained turn.
@@ -247,7 +247,7 @@ The crawler does **not**:
 - anonymous mode uses a disposable context;
 - authenticated mode uses only the local `./browser-profile`;
 - manual login occurs on the real ChatGPT site;
-- browser profile is ignored by Git and never embedded in archive output;
+- browser profile is ignored by Git and never embedded into archive output;
 - local server binds to loopback by default;
 - final archive contains no copied ChatGPT scripts or live app iframes;
 - app forms/event handlers are removed;
@@ -275,6 +275,7 @@ Current gates include:
 - durable archive-integrity warnings for traversal/turn convergence limits, hydration ambiguity, and unresolved retained disclosures;
 - truthful detached integrity in development diagnostic snapshots;
 - truthful upcoming manual target ID/step metadata during development diagnostic remounting;
+- Windows setup with a resolved Node executable under a spaced path without nested `FOR /F` command execution;
 - archive fidelity metadata;
 - canonical archive `id` across server/main UI/preview;
 - explicit stage/progress-limit contract;
@@ -303,3 +304,4 @@ Current gates include:
 - `v1.7.0-beta3-dev` — truthful/bounded diagnostics, shared navigation cleanup, readable maintained source, and Windows launcher parity.
 - `v1.7.1-beta-dev` — logical turn navigation, whole-turn viewport coverage, turn-first convergence, targeted reconciliation, and canonical observed hydration-generation reconciliation.
 - `v1.7.1-beta2-dev` — truthful upcoming manual-target metadata during diagnostic remounting; crawler/archive behavior otherwise unchanged from v1.7.1-beta-dev.
+- `v1.7.1-beta2.1-dev` — Windows setup correctly handles resolved Node executable paths containing spaces; crawler/archive behavior unchanged from v1.7.1-beta2-dev.
