@@ -222,7 +222,7 @@ async function captureSweep(page, direction, pass, phase, onProgress, shouldCanc
     const arrow = direction === 'up' ? '↑' : '↓';
     await onProgress?.({
       ...stats,
-      stage: pass === 1 ? 'discovery' : 'verification',
+      stage: 'traversal',
       phase,
       detail: pass === 1
         ? 'Recording retained turn identities/order and every mounted generation encountered before turn-local processing.'
