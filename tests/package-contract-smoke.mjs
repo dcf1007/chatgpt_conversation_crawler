@@ -11,10 +11,6 @@ assert.equal(packageJson.scripts?.start, 'node server-dev.mjs');
 for (const required of [
   'server.mjs',
   'server-dev.mjs',
-  'V1_7_BETA1_DEV.md',
-  'README.v1.7.0-beta1-dev.txt',
-  'V1_7_BETA2_DEV.md',
-  'README.v1.7.0-beta2-dev.txt',
   'V1_7_BETA3_DEV.md',
   'README.v1.7.0-beta3-dev.txt',
   'src/archive-integrity.mjs',
