@@ -28,6 +28,10 @@ jobs:
         shell: bash
         run: npm install --ignore-scripts --no-audit --no-fund
 
+      - name: Install Chromium for browser-backed runtime tests
+        shell: bash
+        run: npx playwright install --with-deps chromium
+
       - name: Syntax-check source
         shell: bash
         run: |
