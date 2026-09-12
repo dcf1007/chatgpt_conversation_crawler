@@ -37,10 +37,6 @@ async function stopChild() {
     new Promise(resolve => setTimeout(() => resolve(false), 1500))
   ]);
   if (exited || child.exitCode != null) return;
-  // The contract test deliberately starts an archive job before shutdown. Its
-  // browser/session cleanup can keep the event loop alive after the HTTP
-  // assertions have already passed. Bound test teardown rather than allowing a
-  // successful integration test to occupy CI indefinitely.
   child.kill('SIGKILL');
   if (child.exitCode == null) await new Promise(resolve => child.once('exit', resolve));
 }
@@ -62,9 +58,13 @@ try {
   const job = await status.json();
   assert.equal(job.id, body.id);
   assert.equal(typeof job.stage, 'string');
-  assert.equal(job.progressLimits.scanPasses, 3);
+  assert.equal(job.progressLimits.scanMaxSteps, 2000);
+  assert.equal(job.progressLimits.scanEndpointStableChecks, 6);
   assert.equal(job.progressLimits.oldestRequiredQuietChecks, 12);
   assert.equal(job.progressLimits.reconciliationMaxPasses, 2);
+  assert.equal(job.progressLimits.turnWorkQueueMaxItems, 10000);
+  assert.equal(Object.prototype.hasOwnProperty.call(job.progressLimits, 'scanPasses'), false,
+    'beta3 progress limits must not preserve the obsolete fixed three-pass model');
 
   const preview = await fetch(`${base}/api/archive/preview/${encodeURIComponent(body.id)}`);
   assert.ok([200, 204].includes(preview.status));
@@ -72,7 +72,7 @@ try {
   const download = await fetch(`${base}/api/archive/download/${encodeURIComponent(body.id)}`);
   assert.ok([200, 409].includes(download.status));
 
-  console.log('server start/status/preview/download integration contract passed');
+  console.log('server beta3 start/status/preview/download integration contract passed');
 } finally {
   await stopChild();
 }
