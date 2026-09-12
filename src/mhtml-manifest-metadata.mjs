@@ -4,8 +4,21 @@ function normalizeString(value) {
   return String(value ?? '');
 }
 
+function turnNumber(value) {
+  return Number(/conversation-turn-(\d+)/.exec(String(value || ''))?.[1] ?? Number.MAX_SAFE_INTEGER);
+}
+
+function diagnosticValueCompare(left, right) {
+  const leftTurn = turnNumber(left);
+  const rightTurn = turnNumber(right);
+  if (leftTurn !== Number.MAX_SAFE_INTEGER || rightTurn !== Number.MAX_SAFE_INTEGER) {
+    if (leftTurn !== rightTurn) return leftTurn - rightTurn;
+  }
+  return String(left).localeCompare(String(right));
+}
+
 function uniqueSorted(values) {
-  return [...new Set((values || []).map(normalizeString).filter(Boolean))].sort();
+  return [...new Set((values || []).map(normalizeString).filter(Boolean))].sort(diagnosticValueCompare);
 }
 
 function stableJson(value) {
@@ -37,7 +50,7 @@ function changedRevisionIds(previousMap = {}, currentMap = {}) {
   const ids = new Set([...Object.keys(previousMap), ...Object.keys(currentMap)]);
   return [...ids]
     .filter(id => mapValue(previousMap, id) !== mapValue(currentMap, id))
-    .sort((left, right) => left.localeCompare(right));
+    .sort(diagnosticValueCompare);
 }
 
 function setDifference(left, right) {
@@ -69,16 +82,60 @@ function semanticSignatureParts(sample) {
   ];
 }
 
+/**
+ * Material-change signature for deciding when the development hook requests an
+ * event-driven MHTML. Keep every beta3 raw-DOM/presentation field here so dev2
+ * enriches diagnostics without reducing or otherwise changing capture
+ * sensitivity. The semantic/retention fields are additive.
+ */
 export function diagnosticSampleSignature(sample = {}) {
   return diagnosticHash({
-    stage: sample.stage || '',
+    mountedTurns: Number(sample.mountedTurns || 0),
+    retainedTurns: Number(sample.retainedTurns || 0),
+    oldestRetained: sample.oldestRetained || 'none',
+    newestRetained: sample.newestRetained || 'none',
     phase: sample.phase || '',
     pass: Number(sample.pass || 0),
     direction: sample.direction || '',
     step: Number(sample.step || 0),
+    stage: sample.stage || '',
     scrollTop: Math.round(Number(sample.scrollTop || 0)),
-    scrollHeight: Math.round(Number(sample.scrollHeight || 0)),
     scrollClient: Math.round(Number(sample.scrollClient || 0)),
+    mountedFirst: sample.mountedFirst || 'none',
+    mountedLast: sample.mountedLast || 'none',
+    scrollHeight: Math.round(Number(sample.scrollHeight || 0)),
+    textLength: Number(sample.textLength || 0),
+    preBlocks: Number(sample.preBlocks || 0),
+    codeBlocks: Number(sample.codeBlocks || 0),
+    images: Number(sample.images || 0),
+    svgs: Number(sample.svgs || 0),
+    iframes: Number(sample.iframes || 0),
+    appBlocks: Number(sample.appBlocks || 0),
+    collapsed: Number(sample.collapsed || 0),
+    expanded: Number(sample.expanded || 0),
+    allCollapsedControls: Number(sample.allCollapsedControls || 0),
+    recognizedCollapsed: Number(sample.recognizedCollapsed || 0),
+    actionableCollapsed: Number(sample.actionableCollapsed || 0),
+    closedDetails: Number(sample.closedDetails || 0),
+    expansionGeneration: Number(sample.expansionGeneration || 0),
+    quiescentRounds: Number(sample.quiescentRounds || 0),
+    retainedUnresolvedTurns: Number(sample.retainedUnresolvedTurns || 0),
+    retainedUnresolvedDisclosures: Number(sample.retainedUnresolvedDisclosures || 0),
+    retainedUnresolvedTurnIds: sample.retainedUnresolvedTurnIds || [],
+    reconciliationRounds: Number(sample.reconciliationRounds || 0),
+    reconciliationStablePasses: Number(sample.reconciliationStablePasses || 0),
+    reconciliationConverged: sample.reconciliationConverged,
+    manualPhase: sample.manualPhase || '',
+    manualStepIndex: Number(sample.manualStepIndex || 0),
+    manualStepCount: Number(sample.manualStepCount || 0),
+    manualStepLabel: sample.manualStepLabel || '',
+    manualTargetTurnId: sample.manualTargetTurnId || '',
+    manualInteractionCount: Number(sample.manualInteractionCount || 0),
+    manualFinishRequested: Boolean(sample.manualFinishRequested),
+    manualEventCount: Number(sample.manualEventCount || 0),
+
+    // dev2 additions: semantic/archive state that can change without altering
+    // the coarse physical counts above.
     retainedRevision: Number(sample.retainedRevision || 0),
     retainedCorpusFingerprint: sample.retainedCorpusFingerprint || '',
     mountedTurnIds: sample.mountedTurnIds || [],
@@ -89,10 +146,7 @@ export function diagnosticSampleSignature(sample = {}) {
     hydrationTimeoutTurnIdsFull: sample.hydrationTimeoutTurnIdsFull || [],
     retainedUnresolvedTurnIdsFull: sample.retainedUnresolvedTurnIdsFull || [],
     actionableLogicalKeys: sample.actionableLogicalKeys || [],
-    reconciliationConverged: sample.reconciliationConverged,
-    manualPhase: sample.manualPhase || '',
-    manualStepIndex: Number(sample.manualStepIndex || 0),
-    manualInteractionCount: Number(sample.manualInteractionCount || 0)
+    disclosureByTurn: sample.disclosureByTurn || []
   });
 }
 
