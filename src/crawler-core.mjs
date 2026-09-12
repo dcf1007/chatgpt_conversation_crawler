@@ -12,6 +12,12 @@ export async function installCrawler(page) {
   await ensurePageForegroundProtection(page).catch(() => {});
   await installPageCrawler(page);
   await installDisclosureState(page);
+  // The lightweight install smoke uses a Node-side page.evaluate shim; real
+  // Chromium already exposes CSS.escape. Keep that compatibility shim explicit
+  // rather than making beta4 state depend on a browser-only global at install.
+  await page.evaluate(() => {
+    if (!globalThis.CSS) globalThis.CSS = { escape: value => String(value) };
+  }).catch(() => {});
   await installBeta4State(page);
   await installMountRetention(page);
   await installCrawlerNavigation(page);
