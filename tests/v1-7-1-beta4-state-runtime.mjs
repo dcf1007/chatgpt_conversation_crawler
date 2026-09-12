@@ -58,8 +58,11 @@ try {
   assert.equal(conflict.stats.hydrationConflictsUnresolved, 1);
   assert.equal(conflict.stats.hydrationConflictDiagnosticTurns, 1);
   assert.ok(conflict.diagnostic, 'active conflict should have bounded fact diagnostics');
-  assert.ok(conflict.diagnostic.currentOnlyByKind['text-p'] >= 1, 'fact diagnostics should identify the differing semantic kind');
-  assert.ok(conflict.diagnostic.currentOnlySamples.length <= 16);
+  // "gamma" is richer than "beta" by beta3's metric ordering, so it becomes
+  // the real canonical generation. The displaced "beta" fact must therefore
+  // remain in evidenceExtra rather than currentOnly.
+  assert.ok(conflict.diagnostic.evidenceExtraByKind['text-p'] >= 1, 'fact diagnostics should identify the competing semantic fact kind regardless of canonical direction');
+  assert.ok(conflict.diagnostic.evidenceExtraSamples.length <= 16);
 
   console.log('v1.7.1 beta4 state runtime test passed');
 } finally {
