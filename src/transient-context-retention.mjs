@@ -3,14 +3,18 @@ import { captureMountedMainImages } from './main-images.mjs';
 
 const STORE = Symbol.for('chatgpt-conversation-crawler.transient-context-retention');
 const BINDING = '__archiveTransientContextCapture';
+const APP_TRAILING_CAPTURE_MS = 1650;
 
 function stateFor(page) {
   if (!page[STORE]) {
     page[STORE] = {
       installed: false,
+      sealed: false,
       running: null,
       requestedKinds: new Set(),
-      captures: 0
+      captures: 0,
+      appTrailingTimer: null,
+      lastAppEventAt: 0
     };
   }
   return page[STORE];
@@ -18,6 +22,7 @@ function stateFor(page) {
 
 async function drain(page) {
   const state = stateFor(page);
+  if (state.sealed && !state.requestedKinds.size) return;
   if (state.running) return state.running;
   state.running = (async () => {
     while (state.requestedKinds.size) {
@@ -31,17 +36,47 @@ async function drain(page) {
   return state.running;
 }
 
+function cancelTrailingAppCapture(state) {
+  if (!state.appTrailingTimer) return;
+  clearTimeout(state.appTrailingTimer);
+  state.appTrailingTimer = null;
+}
+
+function scheduleTrailingAppCapture(page) {
+  const state = stateFor(page);
+  if (state.sealed) return;
+  state.lastAppEventAt = Date.now();
+  cancelTrailingAppCapture(state);
+  state.appTrailingTimer = setTimeout(() => {
+    state.appTrailingTimer = null;
+    if (state.sealed) return;
+    state.requestedKinds.add('app');
+    void drain(page);
+  }, APP_TRAILING_CAPTURE_MS);
+  state.appTrailingTimer.unref?.();
+}
+
 /**
  * Retain context that lives outside a conversation-turn clone or requires Node
  * access while it is still mounted: timeline/branch markers, app-preview frame
  * trees, and transient blob/image DOM.
+ *
+ * App mutations receive an immediate capture plus one trailing capture after the
+ * app-block throttle window. Repeated mutations coalesce into one trailing pass;
+ * no periodic polling is introduced.
  */
 export async function installTransientContextRetention(page) {
   const state = stateFor(page);
   if (state.installed) return;
 
   await page.exposeBinding(BINDING, async (_source, kind) => {
-    if (kind === 'app' || kind === 'image') state.requestedKinds.add(kind);
+    if (state.sealed) return;
+    if (kind === 'app') {
+      state.requestedKinds.add('app');
+      scheduleTrailingAppCapture(page);
+    } else if (kind === 'image') {
+      state.requestedKinds.add('image');
+    }
     await drain(page);
   });
 
@@ -77,6 +112,10 @@ export async function installTransientContextRetention(page) {
             || matchesOrContains(node, 'p a[href*="/c/"]')
           ) timelineChanged = true;
         }
+
+        for (const node of record.removedNodes || []) {
+          if (matchesOrContains(node, appSelector)) appChanged = true;
+        }
       }
 
       if (timelineChanged) window.__archiveCrawler?.captureTimelineMarkers?.();
@@ -90,6 +129,7 @@ export async function installTransientContextRetention(page) {
       attributes: true,
       attributeFilter: ['src', 'href', 'data-app-block-preview', 'aria-label']
     });
+    window.__archiveTransientContextObserver = observer;
     if (document.querySelector(appSelector)) notify('app');
     if (document.querySelector(`${turnSelector} img`)) notify('image');
   }, BINDING);
@@ -99,9 +139,34 @@ export async function installTransientContextRetention(page) {
 
 export async function flushTransientContextRetention(page) {
   const state = stateFor(page);
+  if (!state.installed || state.sealed) return { captures: state.captures, installed: state.installed, sealed: state.sealed };
   state.requestedKinds.add('app');
   state.requestedKinds.add('image');
   await drain(page);
   await page.evaluate(() => window.__archiveCrawler?.captureTimelineMarkers?.()).catch(() => {});
-  return { captures: state.captures };
+  return { captures: state.captures, installed: true, sealed: false };
+}
+
+/** Final beta4 passive-retention barrier. */
+export async function sealTransientContextRetention(page) {
+  const state = stateFor(page);
+  if (!state.installed) return { captures: state.captures, installed: false, sealed: false };
+  if (state.sealed) return { captures: state.captures, installed: true, sealed: true };
+
+  const age = Date.now() - Number(state.lastAppEventAt || 0);
+  const remaining = state.lastAppEventAt ? Math.max(0, APP_TRAILING_CAPTURE_MS - age) : 0;
+  cancelTrailingAppCapture(state);
+  if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining));
+
+  state.requestedKinds.add('app');
+  state.requestedKinds.add('image');
+  await drain(page);
+  await page.evaluate(() => {
+    window.__archiveCrawler?.captureTimelineMarkers?.();
+    window.__archiveTransientContextObserver?.disconnect?.();
+    window.__archiveTransientContextObserver = null;
+  }).catch(() => {});
+  state.sealed = true;
+  state.requestedKinds.clear();
+  return { captures: state.captures, installed: true, sealed: true };
 }

@@ -84,7 +84,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
-          if [[ "$VERSION" != *-dev ]]; then
+          if [[ "$VERSION" != *-dev* ]]; then
             echo "Refusing to build PR diagnostic artifact for non-dev version: $VERSION" >&2
             exit 1
           fi
@@ -126,22 +126,7 @@ jobs:
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           if [[ "$VERSION" == *-* ]]; then echo "prerelease=true" >> "$GITHUB_OUTPUT"; else echo "prerelease=false" >> "$GITHUB_OUTPUT"; fi
 
-      - name: Check whether release already exists
-        id: existing
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-        shell: bash
-        run: |
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Release $TAG already exists; leaving it unchanged."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build downloadable ZIP
-        if: steps.existing.outputs.exists != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         shell: bash
@@ -151,9 +136,24 @@ jobs:
           PREFIX="chatgpt-conversation-crawler-v${VERSION}/"
           git archive --format=zip --prefix="$PREFIX" --output="$ARCHIVE" "$GITHUB_SHA"
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+          sha256sum "$ARCHIVE"
+
+      - name: Replace existing release if necessary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Replacing existing mutable release $TAG."
+            gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          elif git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Removing stale local/remote tag $TAG before release recreation."
+            git push origin ":refs/tags/$TAG" || true
+          fi
 
       - name: Create GitHub Release
-        if: steps.existing.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
@@ -175,13 +175,10 @@ jobs:
         shell: bash
         env:
           TAG: ${{ steps.version.outputs.tag }}
-          EXISTS: ${{ steps.existing.outputs.exists }}
           PRERELEASE: ${{ steps.version.outputs.prerelease }}
         run: |
-          if [[ "$EXISTS" == "true" ]]; then
-            echo "Release $TAG already existed, so no release was modified." >> "$GITHUB_STEP_SUMMARY"
-          elif [[ "$PRERELEASE" == "true" ]]; then
-            echo "Created prerelease $TAG with a downloadable cross-platform source ZIP." >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$PRERELEASE" == "true" ]]; then
+            echo "Created/replaced prerelease $TAG at $GITHUB_SHA with a downloadable cross-platform source ZIP." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "Created release $TAG with a downloadable cross-platform source ZIP." >> "$GITHUB_STEP_SUMMARY"
+            echo "Created/replaced release $TAG at $GITHUB_SHA with a downloadable cross-platform source ZIP." >> "$GITHUB_STEP_SUMMARY"
           fi
