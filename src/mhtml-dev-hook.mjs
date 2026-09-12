@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { createMhtmlRecorder } from './mhtml-recorder.mjs';
 import { createAsyncStartGate } from './mhtml-start-gate.mjs';
+import { diagnosticSampleSignature } from './mhtml-manifest-metadata.mjs';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SAMPLE_INTERVAL_MS = 1000;
@@ -36,14 +37,21 @@ function createDiagnosticId(mode) {
 
 /**
  * Sample raw browser state alongside crawler and manual-inspection diagnostics.
- * Raw collapsed controls are intentionally kept separate from the crawler's
- * recognized controls so a classifier miss is visible in the manifest.
+ * The recorder compacts the large arrays/maps into hashes+deltas when it writes
+ * an actual manifest row, so one-second sampling can remain forensic without
+ * making manifest.jsonl itself another archive of the entire page state.
  */
 async function samplePage(page) {
   return page.evaluate(() => {
     const turnSelector = 'section[data-testid^="conversation-turn-"]';
     const sections = [...document.querySelectorAll(turnSelector)];
-    const mountedIds = sections.map(section => section.getAttribute('data-testid')).filter(Boolean);
+    const turnNumber = id => Number(/conversation-turn-(\d+)/.exec(id || '')?.[1] ?? Number.MAX_SAFE_INTEGER);
+    const sortTurnIds = ids => [...new Set(ids.filter(Boolean))]
+      .sort((left, right) => turnNumber(left) - turnNumber(right) || left.localeCompare(right));
+    const crawler = window.__archiveCrawler;
+    const crawlerState = crawler?.state || {};
+    const mountedIds = sortTurnIds(sections.map(section => section.getAttribute('data-testid')));
+    const retainedTurnIds = sortTurnIds(Object.keys(crawlerState.turns || {}));
     const scrollRoot = document.querySelector('#thread') ||
       document.querySelector('main#main') ||
       document.querySelector('main') ||
@@ -51,15 +59,16 @@ async function samplePage(page) {
       document.documentElement;
 
     const crawlerStats = (() => {
-      try {
-        return window.__archiveCrawler?.stats?.() || {};
-      } catch {
-        return {};
-      }
+      try { return crawler?.stats?.() || {}; }
+      catch { return {}; }
+    })();
+    const retainedDisclosure = (() => {
+      try { return crawler?.retainedDisclosureSummary?.() || {}; }
+      catch { return {}; }
     })();
 
     const manualState = window.__archiveManualInspection || {};
-    const crawlerMetrics = window.__archiveCrawler?.metrics?.() || {};
+    const crawlerMetrics = crawler?.metrics?.() || {};
     const progressState = window.__archiveDiagnosticProgress || {};
     const rawCollapsedControls = document.querySelectorAll(`${turnSelector} [aria-expanded="false"]`).length;
     const rawClosedDetails = document.querySelectorAll(`${turnSelector} details:not([open])`).length;
@@ -69,9 +78,80 @@ async function samplePage(page) {
         ? false
         : null;
 
+    const turnRevisionMap = Object.fromEntries(retainedTurnIds.map(id => [
+      id,
+      Number(crawler?.turnRevision?.(id) || crawlerState.turnRevisions?.[id] || 0)
+    ]));
+    const hydrationConflictTurnIdsFull = sortTurnIds(Object.entries(crawlerState.hydrationConflicts || {})
+      .filter(([, conflict]) => conflict?.active)
+      .map(([id]) => id));
+    const turnProcessingFailureTurnIdsFull = sortTurnIds(Object.entries(crawlerState.turnProcessingResults || {})
+      .filter(([, result]) => result?.converged === false)
+      .map(([id]) => id));
+    const hydrationTimeoutTurnIdsFull = sortTurnIds((crawlerState.hydrationTimeoutEvents || [])
+      .map(event => String(event?.turnId || '')));
+    const retainedUnresolvedTurnIdsFull = sortTurnIds(
+      Array.isArray(retainedDisclosure.retainedUnresolvedTurnIdsFull)
+        ? retainedDisclosure.retainedUnresolvedTurnIdsFull
+        : crawlerStats.retainedUnresolvedTurnIds || []
+    );
+
+    const actionableLogicalKeys = [];
+    for (const id of retainedTurnIds) {
+      const revision = Number(turnRevisionMap[id] || 0);
+      for (const logicalKey of crawlerState.disclosureKnownKeysByTurn?.[id] || []) {
+        const completed = Object.prototype.hasOwnProperty.call(crawlerState.disclosureCompletions || {}, logicalKey)
+          ? Number(crawlerState.disclosureCompletions[logicalKey] || 0)
+          : null;
+        if (completed === null || completed < revision) actionableLogicalKeys.push(String(logicalKey));
+      }
+    }
+    actionableLogicalKeys.sort();
+
+    const disclosureByTurn = [];
+    for (const id of mountedIds) {
+      let disclosure = {};
+      try { disclosure = crawler?.turnDisclosureSample?.(id) || {}; }
+      catch {}
+      if (!Number(disclosure.recognizedCollapsed || 0) && !Number(disclosure.actionableCollapsed || 0)
+          && !Number(disclosure.closedDetails || 0)) continue;
+      disclosureByTurn.push({
+        turnId: id,
+        turnRevision: Number(disclosure.turnRevision || turnRevisionMap[id] || 0),
+        recognizedCollapsed: Number(disclosure.recognizedCollapsed || 0),
+        actionableCollapsed: Number(disclosure.actionableCollapsed || 0),
+        closedDetails: Number(disclosure.closedDetails || 0),
+        recognizedLogicalKeys: Array.isArray(disclosure.recognizedLogicalKeys) ? disclosure.recognizedLogicalKeys : [],
+        actionableLogicalKeys: Array.isArray(disclosure.actionableLogicalKeys) ? disclosure.actionableLogicalKeys : [],
+        closedDetailLogicalKeys: Array.isArray(disclosure.closedDetailLogicalKeys) ? disclosure.closedDetailLogicalKeys : []
+      });
+    }
+
+    const maximumTop = Math.max(0,
+      Number(crawlerMetrics.height ?? scrollRoot?.scrollHeight ?? 0) -
+      Number(crawlerMetrics.client ?? scrollRoot?.clientHeight ?? window.innerHeight ?? 0)
+    );
+    const currentTop = Number(crawlerMetrics.top ?? scrollRoot?.scrollTop ?? window.scrollY ?? 0);
+    const activeTurnId = String(
+      progressState.targetTurnId ||
+      manualState.targetTurnId ||
+      crawlerStats.quiescenceScopeTurn ||
+      crawlerState.lastExpansionTurn ||
+      ''
+    );
+    let targetDisclosure = {};
+    if (activeTurnId) {
+      try { targetDisclosure = crawler?.turnDisclosureSample?.(activeTurnId) || {}; }
+      catch {}
+    }
+
     return {
       mountedTurns: sections.length,
       retainedTurns: Number(crawlerStats.turns || 0),
+      retainedRevision: Number(crawlerStats.retainedRevision || crawlerStats.semanticRetainedRevision || 0),
+      semanticRetainedRevision: Number(crawlerStats.semanticRetainedRevision || crawlerStats.retainedRevision || 0),
+      retainedCorpusFingerprint: String(crawlerStats.retainedCorpusFingerprint || crawler?.retainedCorpusFingerprint?.() || ''),
+      timelineMarkers: Number(crawlerStats.timelineMarkers || Object.keys(crawlerState.timelineMarkers || {}).length || 0),
       oldestRetained: String(crawlerStats.oldestRetained || 'none'),
       newestRetained: String(crawlerStats.newestRetained || 'none'),
       phase: String(progressState.phase || ''),
@@ -79,11 +159,18 @@ async function samplePage(page) {
       direction: String(progressState.direction || ''),
       step: Number(progressState.step || 0),
       stage: String(progressState.stage || ''),
-      scrollTop: Number(crawlerMetrics.top ?? scrollRoot?.scrollTop ?? window.scrollY ?? 0),
+      progressDetail: String(progressState.detail || ''),
+      scanningStatus: String(progressState.scanningStatus || ''),
+      scanComplete: Boolean(progressState.scanComplete),
+      previewPaused: Boolean(progressState.previewPaused),
+      scrollTop: currentTop,
       scrollClient: Number(crawlerMetrics.client ?? scrollRoot?.clientHeight ?? window.innerHeight ?? 0),
       mountedFirst: mountedIds[0] || 'none',
       mountedLast: mountedIds[mountedIds.length - 1] || 'none',
       scrollHeight: Number(scrollRoot?.scrollHeight || document.documentElement?.scrollHeight || 0),
+      physicalMaximumTop: maximumTop,
+      atPhysicalTop: currentTop <= 4,
+      atPhysicalBottom: currentTop >= maximumTop - 4,
       textLength: (document.body?.innerText || document.body?.textContent || '').length,
       preBlocks: document.querySelectorAll(`${turnSelector} pre`).length,
       codeBlocks: document.querySelectorAll(`${turnSelector} code`).length,
@@ -98,20 +185,49 @@ async function samplePage(page) {
       actionableCollapsed: Number(crawlerStats.actionableCollapsed || 0),
       closedDetails: Number(crawlerStats.closedDetails ?? rawClosedDetails),
       expansionGeneration: Number(crawlerStats.expansionGeneration || 0),
+      lastExpansionTurn: String(crawlerState.lastExpansionTurn || ''),
+      lastExpansionStatus: String(crawlerState.lastExpansion || ''),
       quiescentRounds: Number(crawlerStats.quiescentRounds || 0),
       requiredQuiescentRounds: Number(crawlerStats.requiredQuiescentRounds || 0),
       quiescenceConverged: Boolean(crawlerStats.quiescenceConverged),
+      quiescenceScopeTurn: String(crawlerStats.quiescenceScopeTurn || ''),
+      quiescenceTimedOut: Boolean(crawlerStats.quiescenceTimedOut),
       unrecognizedCollapsedLabels: Array.isArray(crawlerStats.unrecognizedCollapsedLabels)
-        ? crawlerStats.unrecognizedCollapsedLabels.slice(0, 12)
+        ? crawlerStats.unrecognizedCollapsedLabels.slice(0, 20)
         : [],
       retainedUnresolvedTurns: Number(crawlerStats.retainedUnresolvedTurns || 0),
       retainedUnresolvedDisclosures: Number(crawlerStats.retainedUnresolvedDisclosures || 0),
       retainedUnresolvedTurnIds: Array.isArray(crawlerStats.retainedUnresolvedTurnIds)
-        ? crawlerStats.retainedUnresolvedTurnIds.slice(0, 12)
+        ? crawlerStats.retainedUnresolvedTurnIds.slice(0, 20)
         : [],
+      hydrationConflictsResolved: Number(crawlerStats.hydrationConflictsResolved || 0),
+      hydrationConflictsUnresolved: Number(crawlerStats.hydrationConflictsUnresolved || 0),
+      turnProcessingFailures: Number(crawlerStats.turnProcessingFailures || 0),
+      scanLimitEvents: Number(crawlerStats.scanLimitEvents || 0),
+      expansionLimitEvents: Number(crawlerStats.expansionLimitEvents || 0),
+      hydrationTimeoutEvents: Number(crawlerStats.hydrationTimeoutEvents || 0),
+      oldestConverged: crawlerStats.oldestConverged ?? null,
+      oldestQuietChecks: Number(crawlerStats.oldestQuietChecks || 0),
+      oldestChecks: Number(crawlerStats.oldestChecks || 0),
       reconciliationRounds: Number(crawlerStats.reconciliationRounds || 0),
       reconciliationStablePasses: Number(crawlerStats.reconciliationStablePasses || 0),
       reconciliationConverged,
+      seenMountedTurns: Number(crawlerStats.seenMountedTurns || 0),
+      seenMountedUnretainedTurns: Number(crawlerStats.seenMountedUnretainedTurns || 0),
+      seenMountedUnretainedTurnIds: Array.isArray(crawlerStats.seenMountedUnretainedTurnIds)
+        ? crawlerStats.seenMountedUnretainedTurnIds.slice(0, 20)
+        : [],
+      mountObserverImmediateCaptures: Number(crawlerStats.mountObserverImmediateCaptures || 0),
+      mountObserverSettledCaptures: Number(crawlerStats.mountObserverSettledCaptures || 0),
+      mountObserverEvents: Number(crawlerStats.mountObserverEvents || 0),
+      mountObserverHydrationEvents: Number(crawlerStats.mountObserverHydrationEvents || 0),
+      mountObserverFlushCaptures: Number(crawlerStats.mountObserverFlushCaptures || 0),
+      mountRetentionSealed: Boolean(crawlerStats.mountRetentionSealed),
+      activeTurnId,
+      activeTurnRevision: Number(turnRevisionMap[activeTurnId] || 0),
+      activeTurnRecognizedCollapsed: Number(targetDisclosure.recognizedCollapsed || 0),
+      activeTurnActionableCollapsed: Number(targetDisclosure.actionableCollapsed || 0),
+      activeTurnClosedDetails: Number(targetDisclosure.closedDetails || 0),
       manualPhase: String(manualState.phase || ''),
       manualStepIndex: Number(manualState.stepIndex || 0),
       manualStepCount: Number(manualState.stepCount || 0),
@@ -120,57 +236,21 @@ async function samplePage(page) {
       manualTargetReason: String(manualState.targetReason || ''),
       manualInteractionCount: Number(manualState.interactionCount || 0),
       manualFinishRequested: Boolean(manualState.finishRequested),
-      manualEventCount: Array.isArray(manualState.events) ? manualState.events.length : 0
+      manualEventCount: Array.isArray(manualState.events) ? manualState.events.length : 0,
+
+      // Rich state below is compacted to hashes+deltas by the recorder. It is
+      // intentionally not copied wholesale into every JSONL line.
+      mountedTurnIds: mountedIds,
+      retainedTurnIds,
+      turnRevisionMap,
+      hydrationConflictTurnIdsFull,
+      turnProcessingFailureTurnIdsFull,
+      hydrationTimeoutTurnIdsFull,
+      retainedUnresolvedTurnIdsFull,
+      actionableLogicalKeys,
+      disclosureByTurn
     };
   });
-}
-
-function sampleSignature(sample) {
-  return [
-    sample.mountedTurns,
-    sample.retainedTurns,
-    sample.oldestRetained,
-    sample.newestRetained,
-    sample.phase,
-    sample.pass,
-    sample.direction,
-    sample.step,
-    sample.stage,
-    Math.round(sample.scrollTop),
-    Math.round(sample.scrollClient),
-    sample.mountedFirst,
-    sample.mountedLast,
-    sample.scrollHeight,
-    sample.textLength,
-    sample.preBlocks,
-    sample.codeBlocks,
-    sample.images,
-    sample.svgs,
-    sample.iframes,
-    sample.appBlocks,
-    sample.collapsed,
-    sample.expanded,
-    sample.allCollapsedControls,
-    sample.recognizedCollapsed,
-    sample.actionableCollapsed,
-    sample.closedDetails,
-    sample.expansionGeneration,
-    sample.quiescentRounds,
-    sample.retainedUnresolvedTurns,
-    sample.retainedUnresolvedDisclosures,
-    sample.retainedUnresolvedTurnIds.join(','),
-    sample.reconciliationRounds,
-    sample.reconciliationStablePasses,
-    String(sample.reconciliationConverged),
-    sample.manualPhase,
-    sample.manualStepIndex,
-    sample.manualStepCount,
-    sample.manualStepLabel,
-    sample.manualTargetTurnId,
-    sample.manualInteractionCount,
-    sample.manualFinishRequested,
-    sample.manualEventCount
-  ].join('|');
 }
 
 function manualStateChanged(previousSample, currentSample) {
@@ -195,8 +275,6 @@ async function startRecorder(page, mode) {
   if (pageState.has(page) || !isShareUrl(page.url())) return;
 
   return runRecorderStart(page, async () => {
-    // DOMContentLoaded and load can fire close together. Check again after the
-    // asynchronous start gate is acquired so only one recorder can win.
     if (pageState.has(page) || !isShareUrl(page.url())) return;
 
     const owningContext = contextState.get(page.context());
@@ -228,6 +306,7 @@ async function startRecorder(page, mode) {
     if (!recorder) return;
 
     const state = {
+      page,
       recorder,
       diagnosticState,
       sampleTimer: null,
@@ -268,14 +347,14 @@ async function startRecorder(page, mode) {
           appBlocks: sample.appBlocks
         });
       }
-      await recorder.capture(reason, sample || {}).catch(() => {});
+      await recorder.capture(reason, sample ? { __diagnosticSample: sample } : {}).catch(() => {});
     };
 
     await page.waitForTimeout(300).catch(() => {});
     const initialSample = await samplePage(page).catch(() => null);
     if (initialSample) {
       state.previousSample = initialSample;
-      state.lastSignature = sampleSignature(initialSample);
+      state.lastSignature = diagnosticSampleSignature(initialSample);
       state.lastMaterialCaptureAt = Date.now();
     }
     await capture('initial-loaded', initialSample);
@@ -286,7 +365,7 @@ async function startRecorder(page, mode) {
       const currentSample = await samplePage(page).catch(() => null);
       if (!currentSample) return;
 
-      const signature = sampleSignature(currentSample);
+      const signature = diagnosticSampleSignature(currentSample);
       if (signature !== state.lastSignature) {
         const previousSample = state.previousSample;
         state.lastSignature = signature;
@@ -334,7 +413,32 @@ async function stopRecorder(state, reason = 'context-closing') {
   if (state.resourceTimer) clearTimeout(state.resourceTimer);
 
   try {
-    await state.recorder.capture(reason).catch(() => {});
+    const finalSample = state.page && !state.page.isClosed()
+      ? await samplePage(state.page).catch(() => state.previousSample)
+      : state.previousSample;
+    if (finalSample) {
+      Object.assign(state.diagnosticState, {
+        url: state.page?.url?.() || state.diagnosticState.url,
+        phase: finalSample.phase || state.diagnosticState.phase,
+        pass: finalSample.pass,
+        direction: finalSample.direction,
+        step: finalSample.step,
+        stage: finalSample.stage,
+        mountedTurns: finalSample.mountedTurns,
+        retainedTurns: finalSample.retainedTurns,
+        oldestRetained: finalSample.oldestRetained,
+        newestRetained: finalSample.newestRetained,
+        scrollTop: finalSample.scrollTop,
+        scrollClient: finalSample.scrollClient,
+        mountedFirst: finalSample.mountedFirst,
+        mountedLast: finalSample.mountedLast,
+        scrollHeight: finalSample.scrollHeight,
+        preBlocks: finalSample.preBlocks,
+        codeBlocks: finalSample.codeBlocks,
+        appBlocks: finalSample.appBlocks
+      });
+    }
+    await state.recorder.capture(reason, finalSample ? { __diagnosticSample: finalSample } : {}).catch(() => {});
   } finally {
     state.closing = true;
     await state.recorder.close().catch(() => {});
