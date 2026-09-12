@@ -31,8 +31,13 @@ export async function installPageCrawler(page) {
         requiredQuietChecks: 12,
         maxChecks: 180
       },
+      // retainedRevision/turnRevisions are semantic-evidence revisions. They do
+      // not advance for a new physical DOM presentation, a poorer subset, or a
+      // collapsed/open disclosure presentation whose retained evidence is the
+      // same. Observed DOM generations are tracked separately below.
       retainedRevision: 0,
       turnRevisions: Object.create(null),
+      turnSemanticFingerprints: Object.create(null),
       turnGenerationFingerprints: Object.create(null),
       hydrationConflicts: Object.create(null),
       hydrationConflictsResolved: 0,
@@ -164,7 +169,6 @@ export async function installPageCrawler(page) {
         Number(turn.codeCount || 0),
         Number(turn.mediaCount || 0),
         Number(turn.appBlockCount || 0),
-        -Number(turn.remaining || 0),
         Number(turn.htmlLength || turn.html?.length || 0),
         Number(turn.textLength || 0),
         Number(turn.elementCount || 0)
@@ -207,7 +211,7 @@ export async function installPageCrawler(page) {
         .map(image => `${image.currentSrc || image.src || image.getAttribute('src') || ''}@${image.alt || ''}`)
         .join('|');
       const ownSource = tag === 'img'
-        ? `${node.currentSrc || node.src || node.getAttribute('src') || ''}@${node.alt || ''}`
+        ? `${node.currentSrc || node.src || node.getAttribute?.('src') || ''}@${node.alt || ''}`
         : '';
       const code = [node, ...(node.querySelectorAll?.('pre,code') || [])]
         .filter(element => ['pre', 'code'].includes(element.tagName?.toLowerCase?.()))
@@ -362,18 +366,31 @@ export async function installPageCrawler(page) {
       return result;
     }
 
-    function generationFingerprint(candidate) {
-      const counts = [...unitCounts(candidate.semanticFacts).entries()]
+    function unitsFingerprint(units) {
+      const counts = [...unitCounts(units).entries()]
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([fingerprint, count]) => `${fingerprint}:${count}`)
         .join('|');
-      return hashText(`${counts}\u0000remaining:${Number(candidate.remaining || 0)}`);
+      return hashText(counts);
     }
 
-    function noteGeneration(turnIdValue, fingerprint) {
+    function observedGenerationFingerprint(candidate) {
+      // This is diagnostic/retention evidence only. It intentionally includes
+      // presentation state, unlike the semantic evidence revision.
+      const content = unitsFingerprint(candidate.contentUnits);
+      return hashText(`${content}\u0000remaining:${Number(candidate.remaining || 0)}\u0000html:${Number(candidate.htmlLength || 0)}`);
+    }
+
+    function noteObservedGeneration(turnIdValue, fingerprint) {
       const seen = state.turnGenerationFingerprints[turnIdValue] || (state.turnGenerationFingerprints[turnIdValue] = Object.create(null));
       if (seen[fingerprint]) return false;
       seen[fingerprint] = true;
+      return true;
+    }
+
+    function advanceEvidenceRevision(turnIdValue, evidenceFingerprint) {
+      if (state.turnSemanticFingerprints[turnIdValue] === evidenceFingerprint) return false;
+      state.turnSemanticFingerprints[turnIdValue] = evidenceFingerprint;
       state.retainedRevision++;
       state.turnRevisions[turnIdValue] = Number(state.turnRevisions[turnIdValue] || 0) + 1;
       return true;
@@ -426,12 +443,13 @@ export async function installPageCrawler(page) {
       next.hydrationConflictActive = false;
     }
 
-    function retainedObservedTurn(identity, candidate) {
+    function retainedObservedTurn(identity, candidate, evidenceFacts = candidate.semanticFacts) {
       return {
         ...identity,
         ...candidate,
         canonicalObserved: { ...candidate },
-        evidenceFacts: [...candidate.semanticFacts],
+        evidenceFacts: [...evidenceFacts],
+        evidenceFingerprint: unitsFingerprint(evidenceFacts),
         hydrationConflictActive: false
       };
     }
@@ -459,8 +477,11 @@ export async function installPageCrawler(page) {
         contentUnits: union,
         semanticFacts: canonical.semanticFacts,
         evidenceFacts,
+        evidenceFingerprint: unitsFingerprint(evidenceFacts),
         canonicalObserved: { ...canonical },
-        remaining: Math.min(Number(previous.remaining || 0), Number(candidate.remaining || 0)),
+        // Presentation-only telemetry follows the chosen real canonical DOM.
+        // It is never used as semantic revision or unresolved-work authority.
+        remaining: Number(canonical.remaining || 0),
         preCount: Math.max(Number(previous.preCount || 0), Number(candidate.preCount || 0)),
         codeCount: Math.max(Number(previous.codeCount || 0), Number(candidate.codeCount || 0)),
         mediaCount: Math.max(Number(previous.mediaCount || 0), Number(candidate.mediaCount || 0)),
@@ -475,8 +496,11 @@ export async function installPageCrawler(page) {
       const id = section?.getAttribute?.('data-testid');
       if (!id) return false;
 
-      for (const details of section.querySelectorAll('details')) details.open = true;
+      // Capture must be observational. Open native details only on the detached
+      // clone used for the static archive; live disclosure activation is owned
+      // exclusively by crawler-disclosure-state/crawler-expansion.
       const clone = section.cloneNode(true);
+      for (const details of clone.querySelectorAll('details')) details.open = true;
 
       const originalImages = [...section.querySelectorAll('img')];
       [...clone.querySelectorAll('img')].forEach((image, index) => {
@@ -527,8 +551,8 @@ export async function installPageCrawler(page) {
         semanticFacts,
         hydrationConflictActive: false
       };
-      candidate.generationFingerprint = generationFingerprint(candidate);
-      const generationIsNew = noteGeneration(id, candidate.generationFingerprint);
+      candidate.generationFingerprint = observedGenerationFingerprint(candidate);
+      const generationIsNew = noteObservedGeneration(id, candidate.generationFingerprint);
 
       const previous = state.turns[id];
       const message = section.querySelector('[data-message-id]');
@@ -538,12 +562,14 @@ export async function installPageCrawler(page) {
       const identity = {
         id,
         messageId: message?.getAttribute('data-message-id') || previous?.messageId || '',
-        role: section.querySelector('[data-message-author-role]')?.getAttribute('data-message-author-role') || previous?.role || '',
+        role: section.getAttribute('data-message-author-role') || section.querySelector('[data-message-author-role]')?.getAttribute('data-message-author-role') || previous?.role || '',
         timestampLabel: timestamp?.text || previous?.timestampLabel || ''
       };
 
       if (!previous) {
-        state.turns[id] = retainedObservedTurn(identity, candidate);
+        const next = retainedObservedTurn(identity, candidate);
+        advanceEvidenceRevision(id, next.evidenceFingerprint);
+        state.turns[id] = next;
         return true;
       }
 
@@ -553,32 +579,43 @@ export async function installPageCrawler(page) {
       const candidateCoversCanonical = coversUnits(candidate.semanticFacts, canonicalFacts);
       const canonicalCoversCandidate = coversUnits(canonicalFacts, candidate.semanticFacts);
       const evidenceWithCandidate = unionUnits(previousEvidence, candidate.semanticFacts);
+      const evidenceFingerprint = unitsFingerprint(evidenceWithCandidate);
+      const previousEvidenceFingerprint = previous.evidenceFingerprint || unitsFingerprint(previousEvidence);
+      const evidenceAdvanced = evidenceFingerprint !== previousEvidenceFingerprint;
+      if (evidenceAdvanced) advanceEvidenceRevision(id, evidenceFingerprint);
       const candidateCoversEvidence = coversUnits(candidate.semanticFacts, evidenceWithCandidate);
       const conflictActive = Boolean(state.hydrationConflicts[id]?.active);
 
       if (conflictActive) {
         if (candidateCoversEvidence) {
-          const next = retainedObservedTurn(identity, candidate);
+          const next = retainedObservedTurn(identity, candidate, evidenceWithCandidate);
           closeHydrationConflict(id, next);
           state.turns[id] = next;
           return true;
         }
-        if (!generationIsNew) return false;
+        if (!generationIsNew && !evidenceAdvanced) return false;
         state.turns[id] = markConflict(id, identity, previous, candidate, evidenceWithCandidate);
         return true;
       }
 
       let next = previous;
       if (candidateCoversCanonical && !canonicalCoversCandidate) {
-        next = retainedObservedTurn(identity, candidate);
+        next = retainedObservedTurn(identity, candidate, evidenceWithCandidate);
       } else if (candidateCoversCanonical && canonicalCoversCandidate) {
-        const candidatePreferred = Number(candidate.remaining || 0) < Number(previous.remaining || 0)
-          || (Number(candidate.remaining || 0) === Number(previous.remaining || 0) && isMetricRicher(candidate, previousCanonical));
-        if (candidatePreferred) next = retainedObservedTurn(identity, candidate);
+        if (isMetricRicher(candidate, previousCanonical)) next = retainedObservedTurn(identity, candidate, evidenceWithCandidate);
       } else if (!candidateCoversCanonical && !canonicalCoversCandidate) {
         next = markConflict(id, identity, previous, candidate, evidenceWithCandidate);
       }
 
+      // Even when the chosen canonical/preservation HTML does not change, a
+      // newly discovered semantic fact union is authoritative retained progress.
+      if (next === previous && evidenceAdvanced) {
+        next = {
+          ...previous,
+          evidenceFacts: evidenceWithCandidate,
+          evidenceFingerprint
+        };
+      }
       if (next === previous) return false;
       state.turns[id] = next;
       return true;
@@ -587,6 +624,11 @@ export async function installPageCrawler(page) {
     function captureTurn(targetTurnId) {
       const section = turns().find(turn => turn.getAttribute('data-testid') === targetTurnId);
       if (section) captureSection(section);
+      return activity();
+    }
+
+    function captureSectionNode(section) {
+      if (section?.getAttribute?.('data-testid')) captureSection(section);
       return activity();
     }
 
@@ -639,6 +681,7 @@ export async function installPageCrawler(page) {
         oldestQuietChecks: state.oldestVerification.quietChecks,
         oldestChecks: state.oldestVerification.checks,
         retainedRevision: Number(state.retainedRevision || 0),
+        semanticRetainedRevision: Number(state.retainedRevision || 0),
         hydrationConflictsResolved: Number(state.hydrationConflictsResolved || 0),
         hydrationConflictsUnresolved: unresolvedHydrationIds.length,
         hydrationConflictTurnIds: unresolvedHydrationIds.slice(0, 20),
@@ -681,6 +724,7 @@ export async function installPageCrawler(page) {
       state,
       capture,
       captureTurn,
+      captureSectionNode,
       captureTimelineMarkers,
       activity,
       metrics,

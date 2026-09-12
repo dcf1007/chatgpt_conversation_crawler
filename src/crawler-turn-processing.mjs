@@ -5,6 +5,9 @@ const TURN_COVERAGE_MAX_ROUNDS = 4;
 const TURN_COVERAGE_SETTLE_MS = 180;
 const TURN_COVERAGE_QUIET_SAMPLES = 3;
 const TURN_COVERAGE_BAND_FRACTION = 0.72;
+const TURN_COVERAGE_GUARD_FRACTION = 0.08;
+const TURN_COVERAGE_MIN_GUARD_PX = 24;
+const TURN_COVERAGE_MAX_GUARD_PX = 120;
 const TURN_PROCESS_MAX_ROUNDS = 6;
 const TURN_EXPANSION_ACTION_LIMIT = 500;
 
@@ -22,12 +25,11 @@ async function sampleTurn(page, turnId) {
     const crawler = window.__archiveCrawler;
     const metrics = crawler.metrics();
     const section = document.querySelector(`section[data-testid="${id}"]`);
-    const retained = crawler.state?.turns?.[id];
     if (!section) {
       return {
         mounted: false,
         revision: Number(crawler.turnRevision?.(id) || 0),
-        remaining: Number(retained?.remaining || 0),
+        actionable: 0,
         top: Number(metrics.top || 0),
         height: Number(metrics.height || 0),
         client: Number(metrics.client || 0),
@@ -41,10 +43,11 @@ async function sampleTurn(page, turnId) {
       .map(turn => turn.getAttribute('data-testid'))
       .filter(Boolean);
     const rect = section.getBoundingClientRect();
+    const disclosure = crawler.turnDisclosureSample?.(id) || {};
     return {
       mounted: true,
       revision: Number(crawler.turnRevision?.(id) || 0),
-      remaining: Number(retained?.remaining || 0),
+      actionable: Number(disclosure.actionableCollapsed || 0),
       top: Number(metrics.top || 0),
       height: Number(metrics.height || 0),
       client: Number(metrics.client || 0),
@@ -56,18 +59,16 @@ async function sampleTurn(page, turnId) {
   }, turnId);
 }
 
-async function positionTurnBoundary(page, turnId, block) {
-  return page.evaluate(({ id, blockValue }) => {
-    const section = document.querySelector(`section[data-testid="${id}"]`);
-    if (!section) return false;
-    section.scrollIntoView({ block: blockValue, inline: 'nearest' });
-    window.__archiveCrawler?.resetNavigation?.();
-    return true;
-  }, { id: turnId, blockValue: block });
+function coverageGeometryOptions() {
+  return {
+    guardFraction: TURN_COVERAGE_GUARD_FRACTION,
+    minGuardPx: TURN_COVERAGE_MIN_GUARD_PX,
+    maxGuardPx: TURN_COVERAGE_MAX_GUARD_PX
+  };
 }
 
-async function positionTurnBand(page, turnId, offsetPx) {
-  return page.evaluate(({ id, requestedOffset }) => {
+async function positionTurnBoundary(page, turnId, boundary) {
+  return page.evaluate(({ id, edge, guardFraction, minGuardPx, maxGuardPx }) => {
     const crawler = window.__archiveCrawler;
     const section = document.querySelector(`section[data-testid="${id}"]`);
     if (!section) return { mounted: false };
@@ -84,16 +85,63 @@ async function positionTurnBand(page, turnId, offsetPx) {
 
     const root = scrollRoot();
     const documentRoot = root === document.scrollingElement || root === document.documentElement || root === document.body;
-    const rootRect = documentRoot
-      ? { top: 0 }
-      : root.getBoundingClientRect();
+    const rootRect = documentRoot ? { top: 0 } : root.getBoundingClientRect();
     const metrics = crawler.metrics();
     const rect = section.getBoundingClientRect();
-    const maximumTop = Math.max(0, Number(metrics.height || 0) - Number(metrics.client || 0));
+    const client = Number(metrics.client || 0);
+    const maximumTop = Math.max(0, Number(metrics.height || 0) - client);
     const turnTopInScroll = Number(metrics.top || 0) + Number(rect.top || 0) - Number(rootRect.top || 0);
-    const maximumTurnOffset = Math.max(0, Number(rect.height || 0) - Number(metrics.client || 0));
+    const guard = Math.max(minGuardPx, Math.min(maxGuardPx, Math.floor(client * guardFraction)));
+    const shortTurn = Number(rect.height || 0) <= Math.max(0, client - guard * 2);
+    let targetTop;
+    if (shortTurn) {
+      targetTop = turnTopInScroll - Math.max(guard, (client - Number(rect.height || 0)) / 2);
+    } else if (edge === 'end') {
+      targetTop = turnTopInScroll + Number(rect.height || 0) - client + guard;
+    } else {
+      targetTop = turnTopInScroll - guard;
+    }
+    targetTop = Math.max(0, Math.min(maximumTop, targetTop));
+    crawler.setTop(targetTop);
+    return {
+      mounted: true,
+      targetTop,
+      guard,
+      shortTurn,
+      turnHeight: Number(rect.height || 0),
+      client
+    };
+  }, { id: turnId, edge: boundary, ...coverageGeometryOptions() });
+}
+
+async function positionTurnBand(page, turnId, offsetPx) {
+  return page.evaluate(({ id, requestedOffset, guardFraction, minGuardPx, maxGuardPx }) => {
+    const crawler = window.__archiveCrawler;
+    const section = document.querySelector(`section[data-testid="${id}"]`);
+    if (!section) return { mounted: false };
+
+    function scrollRoot() {
+      let element = document.querySelector('#thread') || document.querySelector('main#main') || document.querySelector('main');
+      while (element && element !== document.documentElement) {
+        const style = getComputedStyle(element);
+        if (/(auto|scroll)/.test(style.overflowY) && element.scrollHeight > element.clientHeight + 32) return element;
+        element = element.parentElement;
+      }
+      return document.scrollingElement || document.documentElement;
+    }
+
+    const root = scrollRoot();
+    const documentRoot = root === document.scrollingElement || root === document.documentElement || root === document.body;
+    const rootRect = documentRoot ? { top: 0 } : root.getBoundingClientRect();
+    const metrics = crawler.metrics();
+    const rect = section.getBoundingClientRect();
+    const client = Number(metrics.client || 0);
+    const maximumTop = Math.max(0, Number(metrics.height || 0) - client);
+    const turnTopInScroll = Number(metrics.top || 0) + Number(rect.top || 0) - Number(rootRect.top || 0);
+    const guard = Math.max(minGuardPx, Math.min(maxGuardPx, Math.floor(client * guardFraction)));
+    const maximumTurnOffset = Math.max(0, Number(rect.height || 0) - client);
     const offset = Math.max(0, Math.min(maximumTurnOffset, Number(requestedOffset || 0)));
-    const targetTop = Math.max(0, Math.min(maximumTop, turnTopInScroll + offset));
+    const targetTop = Math.max(0, Math.min(maximumTop, turnTopInScroll + offset - guard));
     crawler.setTop(targetTop);
     return {
       mounted: true,
@@ -101,9 +149,10 @@ async function positionTurnBand(page, turnId, offsetPx) {
       offset,
       maximumTurnOffset,
       turnHeight: Number(rect.height || 0),
-      client: Number(metrics.client || 0)
+      client,
+      guard
     };
-  }, { id: turnId, requestedOffset: offsetPx });
+  }, { id: turnId, requestedOffset: offsetPx, ...coverageGeometryOptions() });
 }
 
 async function captureCoveragePosition(page, turnId, settleMs = TURN_COVERAGE_SETTLE_MS) {
@@ -116,11 +165,10 @@ async function captureCoveragePosition(page, turnId, settleMs = TURN_COVERAGE_SE
 }
 
 /**
- * Expose the complete CURRENT geometry of one mounted turn. Short turns get
- * start/end observations; tall turns are covered by overlapping viewport bands.
- * Every band position is recomputed from live DOM geometry and discarded after
- * use, so turn growth during hydration cannot make a historical page pixel an
- * authority. Neighbor mount changes are captured but do not block convergence.
+ * Expose the complete CURRENT geometry of one mounted turn. Short turns are
+ * placed wholly inside a guarded viewport once; tall turns use guarded start,
+ * overlapping interior bands, and guarded end. All target pixels are derived
+ * from current geometry and discarded immediately after use.
  */
 export async function stabilizeTurnCoverage(page, turnId, { shouldCancel, onProgress } = {}) {
   let lastNeighborhood = '';
@@ -135,7 +183,8 @@ export async function stabilizeTurnCoverage(page, turnId, { shouldCancel, onProg
     }
     const revisionBefore = startSample.revision;
 
-    if (!await positionTurnBoundary(page, turnId, 'start')) {
+    const startPosition = await positionTurnBoundary(page, turnId, 'start');
+    if (!startPosition.mounted) {
       return { converged: false, reason: 'turn-unmounted', rounds: round - 1, positionsVisited, neighborhoodChanges };
     }
     let sample = await captureCoveragePosition(page, turnId);
@@ -146,28 +195,31 @@ export async function stabilizeTurnCoverage(page, turnId, { shouldCancel, onProg
     if (lastNeighborhood && neighborhood !== lastNeighborhood) neighborhoodChanges++;
     lastNeighborhood = neighborhood;
 
-    let offset = Math.max(160, Math.floor(Number(sample.client || 0) * TURN_COVERAGE_BAND_FRACTION));
-    while (sample.mounted && Number(sample.turnHeight || 0) > Number(sample.client || 0) + 4) {
-      if (shouldCancel?.()) throw new Error('Archive cancelled.');
-      const maximumOffset = Math.max(0, Number(sample.turnHeight || 0) - Number(sample.client || 0));
-      if (offset >= maximumOffset - 4) break;
-      const positioned = await positionTurnBand(page, turnId, offset);
-      if (!positioned.mounted) return { converged: false, reason: 'turn-unmounted', rounds: round, positionsVisited, neighborhoodChanges };
+    if (!startPosition.shortTurn) {
+      let offset = Math.max(160, Math.floor(Number(sample.client || 0) * TURN_COVERAGE_BAND_FRACTION));
+      while (sample.mounted && Number(sample.turnHeight || 0) > Number(sample.client || 0) + 4) {
+        if (shouldCancel?.()) throw new Error('Archive cancelled.');
+        const maximumOffset = Math.max(0, Number(sample.turnHeight || 0) - Number(sample.client || 0));
+        if (offset >= maximumOffset - 4) break;
+        const positioned = await positionTurnBand(page, turnId, offset);
+        if (!positioned.mounted) return { converged: false, reason: 'turn-unmounted', rounds: round, positionsVisited, neighborhoodChanges };
+        sample = await captureCoveragePosition(page, turnId);
+        positionsVisited++;
+        if (!sample.mounted) return { converged: false, reason: 'turn-unmounted', rounds: round, positionsVisited, neighborhoodChanges };
+        const currentNeighborhood = sample.mountedIds.join('|');
+        if (lastNeighborhood && currentNeighborhood !== lastNeighborhood) neighborhoodChanges++;
+        lastNeighborhood = currentNeighborhood;
+        offset += Math.max(160, Math.floor(Number(sample.client || 0) * TURN_COVERAGE_BAND_FRACTION));
+      }
+
+      const endPosition = await positionTurnBoundary(page, turnId, 'end');
+      if (!endPosition.mounted) {
+        return { converged: false, reason: 'turn-unmounted', rounds: round, positionsVisited, neighborhoodChanges };
+      }
       sample = await captureCoveragePosition(page, turnId);
       positionsVisited++;
       if (!sample.mounted) return { converged: false, reason: 'turn-unmounted', rounds: round, positionsVisited, neighborhoodChanges };
-      const currentNeighborhood = sample.mountedIds.join('|');
-      if (lastNeighborhood && currentNeighborhood !== lastNeighborhood) neighborhoodChanges++;
-      lastNeighborhood = currentNeighborhood;
-      offset += Math.max(160, Math.floor(Number(sample.client || 0) * TURN_COVERAGE_BAND_FRACTION));
     }
-
-    if (!await positionTurnBoundary(page, turnId, 'end')) {
-      return { converged: false, reason: 'turn-unmounted', rounds: round, positionsVisited, neighborhoodChanges };
-    }
-    sample = await captureCoveragePosition(page, turnId);
-    positionsVisited++;
-    if (!sample.mounted) return { converged: false, reason: 'turn-unmounted', rounds: round, positionsVisited, neighborhoodChanges };
 
     let quietSamples = 1;
     let previousRevision = sample.revision;
@@ -184,7 +236,7 @@ export async function stabilizeTurnCoverage(page, turnId, { shouldCancel, onProg
     const revisionAfter = sample.revision;
     await onProgress?.({
       phase: 'Stabilizing retained turn',
-      detail: `Covered the current viewport extent of ${turnId} and waited for retained semantic hydration.`,
+      detail: `Covered the current guarded viewport extent of ${turnId} and waited for retained semantic hydration.`,
       scanningStatus: `${turnId} · coverage round ${round}/${TURN_COVERAGE_MAX_ROUNDS} · revision ${revisionBefore}→${revisionAfter} · positions ${positionsVisited}`,
       scanComplete: false
     });
@@ -197,7 +249,7 @@ export async function stabilizeTurnCoverage(page, turnId, { shouldCancel, onProg
         positionsVisited,
         neighborhoodChanges,
         revision: revisionAfter,
-        remaining: sample.remaining,
+        actionable: sample.actionable,
         turnHeight: sample.turnHeight
       };
     }
@@ -216,15 +268,11 @@ export async function stabilizeTurnCoverage(page, turnId, { shouldCancel, onProg
     positionsVisited,
     neighborhoodChanges,
     revision: finalSample.revision,
-    remaining: finalSample.remaining
+    actionable: finalSample.actionable
   };
 }
 
-/**
- * Process one retained turn to a semantic fixed point: mount by identity,
- * cover the complete live turn, expand only disclosures owned by that turn,
- * then cover it again because expansion can change both height and lazy content.
- */
+/** Process one retained turn to its semantic viewport/disclosure fixed point. */
 export async function processTurnToFixedPoint(
   page,
   turnId,
@@ -237,7 +285,8 @@ export async function processTurnToFixedPoint(
 
   for (let round = 1; round <= maxRounds; round++) {
     if (shouldCancel?.()) throw new Error('Archive cancelled.');
-    const navigation = await navigateToRetainedTurn(page, turnId, retainedIds, { shouldCancel, onProgress });
+    const currentIds = await retainedTurnIds(page);
+    const navigation = await navigateToRetainedTurn(page, turnId, currentIds.length ? currentIds : retainedIds, { shouldCancel, onProgress });
     if (!navigation.found) {
       return { converged: false, reason: 'turn-navigation-failed', rounds: round - 1, navigation, totalExpansionActions, totalCoveragePositions };
     }
@@ -249,9 +298,8 @@ export async function processTurnToFixedPoint(
     const expansion = await expandTurn(page, turnId, TURN_EXPANSION_ACTION_LIMIT, onProgress, shouldCancel);
     totalExpansionActions += Number(expansion.processed || 0);
 
-    // Expansion can substantially change the turn's geometry. Re-resolve the
-    // same identity before covering the new height; do not assume it stayed put.
-    const remount = await navigateToRetainedTurn(page, turnId, retainedIds, { shouldCancel, onProgress });
+    const remountIds = await retainedTurnIds(page);
+    const remount = await navigateToRetainedTurn(page, turnId, remountIds, { shouldCancel, onProgress });
     if (!remount.found) {
       return { converged: false, reason: 'post-expansion-navigation-failed', rounds: round, navigation: remount, totalExpansionActions, totalCoveragePositions };
     }
@@ -261,12 +309,12 @@ export async function processTurnToFixedPoint(
     const terminal = await sampleTurn(page, turnId);
     const revisionStable = terminal.revision === Number(afterCoverage.revision ?? terminal.revision);
     const noNewExpansion = Number(expansion.processed || 0) === 0;
-    const disclosureComplete = Number(terminal.remaining || 0) === 0;
+    const disclosureComplete = Number(terminal.actionable || 0) === 0;
 
     await onProgress?.({
       phase: 'Processing retained turn',
-      detail: `Turn-local coverage and disclosure expansion for ${turnId}.`,
-      scanningStatus: `${turnId} · turn round ${round}/${maxRounds} · revision ${terminal.revision} · remaining ${terminal.remaining} · expanded ${expansion.processed}`,
+      detail: `Turn-local guarded coverage and disclosure expansion for ${turnId}.`,
+      scanningStatus: `${turnId} · turn round ${round}/${maxRounds} · semantic revision ${terminal.revision} · actionable ${terminal.actionable} · expanded ${expansion.processed}`,
       scanComplete: false
     });
 
@@ -277,22 +325,20 @@ export async function processTurnToFixedPoint(
         reason: 'turn-fixed-point',
         rounds: round,
         revision: terminal.revision,
-        remaining: terminal.remaining,
+        actionable: terminal.actionable,
         totalExpansionActions,
         totalCoveragePositions,
         navigation
       };
     }
 
-    // A round that did perform useful expansion must be followed by another
-    // complete turn cycle so newly mounted nested disclosures are discoverable.
     if (terminal.revision === lastRevision && noNewExpansion && afterCoverage.converged && disclosureComplete) {
       return {
         converged: expansion.converged,
         reason: expansion.converged ? 'turn-fixed-point' : expansion.reason,
         rounds: round,
         revision: terminal.revision,
-        remaining: terminal.remaining,
+        actionable: terminal.actionable,
         totalExpansionActions,
         totalCoveragePositions,
         navigation
@@ -307,7 +353,7 @@ export async function processTurnToFixedPoint(
     reason: 'turn-round-limit',
     rounds: maxRounds,
     revision: finalSample.revision,
-    remaining: finalSample.remaining,
+    actionable: finalSample.actionable,
     totalExpansionActions,
     totalCoveragePositions
   };
@@ -318,6 +364,7 @@ export const __testing = {
   TURN_COVERAGE_SETTLE_MS,
   TURN_COVERAGE_QUIET_SAMPLES,
   TURN_COVERAGE_BAND_FRACTION,
+  TURN_COVERAGE_GUARD_FRACTION,
   TURN_PROCESS_MAX_ROUNDS,
   TURN_EXPANSION_ACTION_LIMIT
 };

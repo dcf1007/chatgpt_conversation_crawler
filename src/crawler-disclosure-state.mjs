@@ -76,6 +76,12 @@ export async function installDisclosureState(page) {
       } : { textLength: 0, htmlLength: 0, preCount: 0, codeCount: 0, mediaCount: 0, childCount: 0 };
     }
 
+    function rememberCollapsedLogicalKeys(section, keys) {
+      const id = section?.getAttribute?.('data-testid') || '';
+      if (!id) return;
+      crawler.state.disclosureKnownKeysByTurn[id] = [...new Set(keys)].sort();
+    }
+
     function sectionState(section) {
       const collapsed = [...section.querySelectorAll('[aria-expanded="false"]')];
       const recognizedKeys = [];
@@ -108,6 +114,7 @@ export async function installDisclosureState(page) {
       actionableLogicalKeys.push(...actionableDetailLogicalKeys);
       actionableLogicalKeys.sort();
       closedDetailLogicalKeys.sort();
+      rememberCollapsedLogicalKeys(section, [...recognizedLogicalKeys, ...closedDetailLogicalKeys]);
       return {
         allCollapsedControls: collapsed.length,
         recognizedCollapsed: recognizedKeys.length,
@@ -182,17 +189,18 @@ export async function installDisclosureState(page) {
       };
     }
 
-    function confirm(key) {
-      if (!key) return;
-      const collapsed = turns().some(section => [...section.querySelectorAll('[aria-expanded="false"]')]
-        .some(element => isDisclosureControl(element) && keyFor(element) === key));
-      if (!collapsed) {
+    function confirm(key, confirmed) {
+      if (!key) return false;
+      if (confirmed === true) {
         crawler.state.successfulExpansions++;
         delete crawler.state.attempts[key];
         delete crawler.state.failures[key];
-      } else if ((crawler.state.attempts[key] || 0) >= 3) {
-        crawler.state.failures[key] = `Could not expand after 3 attempts: ${key}`;
+        return true;
       }
+      if ((crawler.state.attempts[key] || 0) >= 3) {
+        crawler.state.failures[key] = `Could not confirm expanded after 3 attempts: ${key}`;
+      }
+      return false;
     }
 
     function turnDisclosureSample(targetTurnId) {
@@ -239,23 +247,26 @@ export async function installDisclosureState(page) {
       };
     }
 
+    function actionableKnownKeys(turn) {
+      const keys = crawler.state.disclosureKnownKeysByTurn?.[turn.id] || [];
+      return keys.filter(logicalKey => logicalActionable(logicalKey, turn.id));
+    }
+
     function retainedDisclosureSummary() {
       const unresolved = Object.values(crawler.state?.turns || {})
-        .filter(turn => Number(turn.remaining || 0) > 0)
-        .sort((left, right) => turnNumber(left.id) - turnNumber(right.id) || String(left.id).localeCompare(String(right.id)));
+        .map(turn => ({ turn, keys: actionableKnownKeys(turn) }))
+        .filter(item => item.keys.length > 0)
+        .sort((left, right) => turnNumber(left.turn.id) - turnNumber(right.turn.id) || String(left.turn.id).localeCompare(String(right.turn.id)));
+      const allTurnIds = unresolved.map(item => item.turn.id);
       return {
         retainedUnresolvedTurns: unresolved.length,
-        retainedUnresolvedDisclosures: unresolved.reduce((total, turn) => total + Number(turn.remaining || 0), 0),
-        retainedUnresolvedTurnIds: unresolved.slice(0, maxLabels).map(turn => turn.id),
-        fingerprint: unresolved.map(turn => [
-          turn.id,
-          turnRevision(turn.id),
-          Number(turn.remaining || 0),
-          Number(turn.preCount || 0),
-          Number(turn.codeCount || 0),
-          Number(turn.mediaCount || 0),
-          Number(turn.textLength || 0),
-          Number(turn.htmlLength || turn.html?.length || 0)
+        retainedUnresolvedDisclosures: unresolved.reduce((total, item) => total + item.keys.length, 0),
+        retainedUnresolvedTurnIds: allTurnIds.slice(0, maxLabels),
+        retainedUnresolvedTurnIdsFull: allTurnIds,
+        fingerprint: unresolved.map(item => [
+          item.turn.id,
+          turnRevision(item.turn.id),
+          item.keys.join('~')
         ].join(':')).join('|')
       };
     }
@@ -266,24 +277,14 @@ export async function installDisclosureState(page) {
         .map(turn => [
           turn.id,
           turnRevision(turn.id),
-          Number(turn.remaining || 0),
-          Number(turn.preCount || 0),
-          Number(turn.codeCount || 0),
-          Number(turn.mediaCount || 0),
-          Number(turn.appBlockCount || 0),
-          Number(turn.textLength || 0),
-          Number(turn.htmlLength || turn.html?.length || 0),
-          Number(turn.elementCount || 0)
+          turn.evidenceFingerprint || ''
         ].join(':')).join('|');
     }
 
-    // Turn revisions are owned by crawler-base and advance only for genuinely
-    // novel semantic generations. This keeps disclosure liveness independent
-    // from which generation wins archival retention and prevents a known poorer
-    // remount from reopening an already-proven disclosure forever.
     crawler.state.retainedRevision = Number(crawler.state.retainedRevision || 0);
     crawler.state.turnRevisions = crawler.state.turnRevisions || Object.create(null);
     crawler.state.disclosureCompletions = crawler.state.disclosureCompletions || Object.create(null);
+    crawler.state.disclosureKnownKeysByTurn = crawler.state.disclosureKnownKeysByTurn || Object.create(null);
     crawler.retainedRevision = () => Number(crawler.state.retainedRevision || 0);
     crawler.turnRevision = targetTurnId => turnRevision(targetTurnId);
     crawler.retainedCorpusFingerprint = retainedCorpusFingerprint;
@@ -296,6 +297,8 @@ export async function installDisclosureState(page) {
       crawler.state.disclosureCompletions[logicalKey] = turnRevision(targetTurnId);
     };
 
+    // Presentation telemetry only. Authoritative unresolved work is derived from
+    // logical keys + completion revision in retainedDisclosureSummary().
     crawler.countUnresolvedDisclosures = section => {
       const disclosure = sectionState(section);
       return disclosure.recognizedCollapsed + disclosure.closedDetails;
@@ -375,6 +378,7 @@ export async function installDisclosureState(page) {
       return {
         ...baseStats(), ...collapsed,
         retainedRevision: Number(crawler.state.retainedRevision || 0),
+        semanticRetainedRevision: Number(crawler.state.retainedRevision || 0),
         retainedCorpusFingerprint: retainedCorpusFingerprint(),
         retainedUnresolvedTurns: retained.retainedUnresolvedTurns,
         retainedUnresolvedDisclosures: retained.retainedUnresolvedDisclosures,

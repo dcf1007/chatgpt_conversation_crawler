@@ -1,4 +1,3 @@
-import { expandMounted } from './crawler-expansion.mjs';
 import { processTurnToFixedPoint, retainedTurnIds } from './crawler-turn-processing.mjs';
 import { ensurePageForegroundProtection } from './runtime-browser.mjs';
 
@@ -10,16 +9,15 @@ const OLDEST_PROBE_MIN_NUDGE_PX = 220;
 const OLDEST_PROBE_MAX_NUDGE_PX = 520;
 const RECONCILIATION_MAX_PASSES = 2;
 const RECONCILIATION_STABLE_PASSES = 1;
-const NAVIGATION_STAGNATION_REASSERT = 2;
-const TURN_DISCOVERY_MAX_BATCHES = 3;
+const TURN_WORK_QUEUE_MAX_ITEMS = 10000;
 
 export const CRAWLER_PROGRESS_LIMITS = Object.freeze({
-  scanPasses: 3,
   scanMaxSteps: SCAN_MAX_STEPS,
   scanEndpointStableChecks: SCAN_ENDPOINT_STABLE_CHECKS,
   oldestRequiredQuietChecks: OLDEST_REQUIRED_QUIET_CHECKS,
   oldestMaxChecks: OLDEST_MAX_CHECKS,
-  reconciliationMaxPasses: RECONCILIATION_MAX_PASSES
+  reconciliationMaxPasses: RECONCILIATION_MAX_PASSES,
+  turnWorkQueueMaxItems: TURN_WORK_QUEUE_MAX_ITEMS
 });
 
 async function report(page, onProgress, extra = {}) {
@@ -35,20 +33,14 @@ async function report(page, onProgress, extra = {}) {
   return { stats, metrics };
 }
 
-function traversalProgressSignature(metrics, stats, { normalizeTop = false } = {}) {
+/** Retained semantic state is the only traversal convergence authority. */
+function traversalProgressSignature(_metrics, stats) {
   return [
-    normalizeTop ? 0 : Math.round(metrics.top),
-    Math.round(metrics.height),
     stats.turns,
     stats.oldestRetained,
     stats.newestRetained,
     stats.retainedCorpusFingerprint,
-    stats.preBlocks,
-    stats.codeBlocks,
-    stats.mediaElements,
-    stats.timelineMarkers,
-    stats.retainedUnresolvedTurns,
-    stats.retainedUnresolvedDisclosures
+    stats.timelineMarkers
   ].join('|');
 }
 
@@ -58,10 +50,7 @@ function oldestProbeNudge(metrics) {
   const viewportNudge = Math.floor(Number(metrics.client || 0) * 0.38);
   return Math.min(
     maximumTop,
-    Math.max(
-      OLDEST_PROBE_MIN_NUDGE_PX,
-      Math.min(OLDEST_PROBE_MAX_NUDGE_PX, viewportNudge)
-    )
+    Math.max(OLDEST_PROBE_MIN_NUDGE_PX, Math.min(OLDEST_PROBE_MAX_NUDGE_PX, viewportNudge))
   );
 }
 
@@ -70,29 +59,50 @@ function nextReconciliationStablePasses(current, processingConverged, sameFinger
   return Math.max(0, Number(current || 0)) + 1;
 }
 
-function traversalCompletionSummary(scans, oldest, reconciliation, turnProcessing = []) {
+function traversalCompletionSummary(scans, oldest, reconciliation, _turnProcessing = [], finalStats = {}) {
   const nonConvergedScans = scans.filter(result => !result.converged).length;
-  const failedTurns = turnProcessing.filter(result => !result.converged).length;
-  const traversalBase = nonConvergedScans === 0
-    ? oldest.converged
-      ? 'Discovery + reverse/forward verification converged with oldest-edge convergence'
-      : `Verification sweeps converged; oldest-edge safety limit (${oldest.quietChecks}/${oldest.requiredQuietChecks} stable)`
-    : `${nonConvergedScans} traversal sweep(s) reached their safety limit`;
-  const turnPart = failedTurns ? `; ${failedTurns} retained turn(s) did not reach a turn-local fixed point` : '';
-  return reconciliation.rounds > 0
-    ? `${traversalBase}${turnPart}; targeted retained reconciliation ${reconciliation.converged ? 'converged' : 'stopped'} after ${reconciliation.rounds} pass(es)`
-    : `${traversalBase}${turnPart}`;
+  const failedTurns = Number(finalStats.turnProcessingFailures || 0);
+  const parts = [];
+  parts.push(nonConvergedScans === 0
+    ? 'Passive discovery/verification sweeps converged'
+    : `${nonConvergedScans} passive traversal sweep(s) reached their safety limit`);
+  parts.push(oldest.converged
+    ? 'oldest edge converged'
+    : `oldest edge stopped at ${oldest.quietChecks}/${oldest.requiredQuietChecks} stable checks`);
+  parts.push(failedTurns ? `${failedTurns} retained turn(s) remain non-converged` : 'turn-local processing converged');
+  parts.push(reconciliation.converged
+    ? 'logical disclosure reconciliation converged'
+    : `logical disclosure reconciliation stopped with ${Number(finalStats.retainedUnresolvedDisclosures || 0)} actionable disclosure(s)`);
+  return parts.join('; ');
 }
 
-/**
- * Existing mounted-range expansion scan retained for direct callers/tests. The
- * v1.7.1 automatic orchestration uses captureSweep + turn-local processing so
- * unrelated mounted turns cannot own convergence for a retained target.
- */
+async function exactEndpoint(page, direction) {
+  return page.evaluate(dir => {
+    const crawler = window.__archiveCrawler;
+    const metrics = crawler.metrics();
+    const maximumTop = Math.max(0, Number(metrics.height || 0) - Number(metrics.client || 0));
+    const targetTop = dir === 'down' ? maximumTop : 0;
+    crawler.setTop(targetTop);
+    return { targetTop, maximumTop };
+  }, direction);
+}
+
+async function sampleSweepState(page) {
+  await page.evaluate(() => window.__archiveCrawler.capture());
+  const metrics = await page.evaluate(() => window.__archiveCrawler.metrics());
+  const stats = await page.evaluate(() => window.__archiveCrawler.stats());
+  return { metrics, stats };
+}
+
+/** Compatibility direct caller: same passive semantic primitive as beta3. */
 export async function scan(page, direction, pass, onProgress, shouldCancel, maxSteps = SCAN_MAX_STEPS) {
+  return captureSweep(page, direction, `Compatibility passive scan ${pass}`, onProgress, shouldCancel, maxSteps, pass);
+}
+
+/** Capture-only sweep used for discovery and remount verification. */
+async function captureSweep(page, direction, phase, onProgress, shouldCancel, maxSteps = SCAN_MAX_STEPS, pass = 0) {
   await ensurePageForegroundProtection(page).catch(() => {});
   await page.evaluate(() => window.__archiveCrawler.resetNavigation());
-
   const first = await page.evaluate(() => window.__archiveCrawler.metrics());
   await page.evaluate(
     top => window.__archiveCrawler.setTop(top),
@@ -104,39 +114,43 @@ export async function scan(page, direction, pass, onProgress, shouldCancel, maxS
   let previousSignature = '';
   let steps = 0;
   let converged = false;
+  let endpointMode = false;
 
   for (let step = 0; step < maxSteps; step++) {
     if (shouldCancel?.()) throw new Error('Archive cancelled.');
     steps = step + 1;
-    await expandMounted(page, 180, onProgress, shouldCancel);
-    await page.evaluate(() => window.__archiveCrawler.capture());
 
-    const metrics = await page.evaluate(() => window.__archiveCrawler.metrics());
-    const maximumTop = Math.max(0, metrics.height - metrics.client);
-    const atEnd = direction === 'down' ? metrics.top >= maximumTop - 4 : metrics.top <= 4;
-    const stats = await page.evaluate(() => window.__archiveCrawler.stats());
-    const signature = traversalProgressSignature(metrics, stats);
+    let { metrics, stats } = await sampleSweepState(page);
+    let maximumTop = Math.max(0, Number(metrics.height || 0) - Number(metrics.client || 0));
+    let atEnd = direction === 'down' ? metrics.top >= maximumTop - 4 : metrics.top <= 4;
+    if (atEnd) endpointMode = true;
 
-    if (Number(stats.navigationStagnantSteps || 0) >= NAVIGATION_STAGNATION_REASSERT) {
-      await ensurePageForegroundProtection(page).catch(() => {});
+    if (endpointMode) {
+      // Once the logical edge has first been reached, stay in exact endpoint
+      // mode. Physical height can move under the virtualizer; repeated setTop()
+      // repins geometry without resetting semantic quietness.
+      await exactEndpoint(page, direction);
+      await page.waitForTimeout(80);
+      ({ metrics, stats } = await sampleSweepState(page));
+      maximumTop = Math.max(0, Number(metrics.height || 0) - Number(metrics.client || 0));
+      atEnd = direction === 'down' ? metrics.top >= maximumTop - 4 : metrics.top <= 4;
     }
 
-    if (atEnd && signature === previousSignature) stableChecks++;
-    else if (atEnd) stableChecks = 1;
+    const signature = traversalProgressSignature(metrics, stats);
+    if (endpointMode && signature === previousSignature) stableChecks++;
+    else if (endpointMode) stableChecks = 1;
     else stableChecks = 0;
 
     const positionPercent = maximumTop <= 0 ? 100 : Math.max(0, Math.min(100, (metrics.top / maximumTop) * 100));
     const arrow = direction === 'up' ? '↑' : '↓';
-    const edgeStatus = atEnd
-      ? ` · edge stable ${Math.min(stableChecks, SCAN_ENDPOINT_STABLE_CHECKS)}/${SCAN_ENDPOINT_STABLE_CHECKS}`
-      : '';
-
     await onProgress?.({
       ...stats,
       stage: 'traversal',
-      phase: 'Scanning conversation',
-      detail: 'Capturing mounted turns, timeline markers, disclosures, and asynchronously hydrated content as they appear.',
-      scanningStatus: `Pass ${pass}/3 ${arrow} · step ${steps}/${maxSteps} · ${positionPercent.toFixed(1)}% loaded range · mounted first ${stats.mountedFirst}${edgeStatus}`,
+      phase,
+      detail: phase.includes('discovery')
+        ? 'Passively recording retained turn identities/order and semantic generations before active turn processing.'
+        : 'Passively remounting the corpus to challenge retained semantic revisions without blindly reopening completed disclosures.',
+      scanningStatus: `${phase} ${arrow} · step ${steps}/${maxSteps} · ${positionPercent.toFixed(1)}% loaded range${endpointMode ? ` · semantic edge quiet ${stableChecks}/${SCAN_ENDPOINT_STABLE_CHECKS}${atEnd ? '' : ' · repinning geometry'}` : ''}`,
       scanComplete: false,
       pass,
       direction,
@@ -146,20 +160,28 @@ export async function scan(page, direction, pass, onProgress, shouldCancel, maxS
       scrollClient: metrics.client
     });
 
-    if (atEnd && stableChecks >= SCAN_ENDPOINT_STABLE_CHECKS) {
+    if (endpointMode && stableChecks >= SCAN_ENDPOINT_STABLE_CHECKS) {
       converged = true;
       break;
     }
-    previousSignature = signature;
+    if (endpointMode) previousSignature = signature;
 
-    const fraction = direction === 'up' ? 0.42 : 0.62;
-    const minimumStep = direction === 'up' ? 280 : 320;
-    const stepSize = Math.max(minimumStep, Math.floor(metrics.client * fraction));
+    if (endpointMode) {
+      await page.waitForTimeout(direction === 'up' ? 240 : 190);
+      continue;
+    }
+
+    const fraction = direction === 'up' ? 0.46 : 0.60;
+    const minimumStep = direction === 'up' ? 260 : 300;
+    const stepSize = Math.max(minimumStep, Math.floor(Number(metrics.client || 0) * fraction));
     const nextTop = direction === 'down'
-      ? Math.min(maximumTop, metrics.top + stepSize)
-      : Math.max(0, metrics.top - stepSize);
-    await page.evaluate(top => window.__archiveCrawler.navigateTop(top), nextTop);
-    await page.waitForTimeout(direction === 'up' ? 260 : 200);
+      ? Math.min(maximumTop, Number(metrics.top || 0) + stepSize)
+      : Math.max(0, Number(metrics.top || 0) - stepSize);
+
+    const exact = direction === 'down' ? nextTop >= maximumTop - 0.5 : nextTop <= 0.5;
+    if (exact) await page.evaluate(top => window.__archiveCrawler.setTop(top), direction === 'down' ? maximumTop : 0);
+    else await page.evaluate(top => window.__archiveCrawler.navigateTop(top), nextTop);
+    await page.waitForTimeout(direction === 'up' ? 240 : 190);
   }
 
   const result = {
@@ -169,92 +191,23 @@ export async function scan(page, direction, pass, onProgress, shouldCancel, maxS
     steps,
     maxSteps,
     stableChecks,
-    requiredStableChecks: SCAN_ENDPOINT_STABLE_CHECKS
+    requiredStableChecks: SCAN_ENDPOINT_STABLE_CHECKS,
+    phase
   };
   await page.evaluate(value => window.__archiveCrawler.markScanResult?.(value), result);
 
   if (!converged) {
     await report(page, onProgress, {
       stage: 'traversal',
-      phase: 'Traversal safety limit reached',
-      detail: `Pass ${pass} ${direction} did not prove endpoint convergence within ${maxSteps} steps. The retained content is preserved and final integrity reporting will flag the incomplete convergence.`,
-      scanningStatus: `Pass ${pass}/3 ${direction === 'up' ? '↑' : '↓'} · safety limit ${steps}/${maxSteps}`,
+      phase: `${phase} safety limit reached`,
+      detail: `${phase} did not prove semantic endpoint convergence within ${maxSteps} steps. Retained content is preserved and final integrity reporting will flag the incomplete convergence.`,
+      scanningStatus: `${phase} ${direction === 'up' ? '↑' : '↓'} · safety limit ${steps}/${maxSteps}`,
       scanComplete: false,
       pass,
       direction,
       step: steps
     });
   }
-  return result;
-}
-
-/** Capture-only sweep used for discovery and final corpus verification. */
-async function captureSweep(page, direction, pass, phase, onProgress, shouldCancel, maxSteps = SCAN_MAX_STEPS) {
-  await ensurePageForegroundProtection(page).catch(() => {});
-  await page.evaluate(() => window.__archiveCrawler.resetNavigation());
-  const first = await page.evaluate(() => window.__archiveCrawler.metrics());
-  await page.evaluate(
-    top => window.__archiveCrawler.setTop(top),
-    direction === 'down' ? 0 : Math.max(0, first.height - first.client)
-  );
-  await page.waitForTimeout(350);
-
-  let stableChecks = 0;
-  let previousSignature = '';
-  let steps = 0;
-  let converged = false;
-
-  for (let step = 0; step < maxSteps; step++) {
-    if (shouldCancel?.()) throw new Error('Archive cancelled.');
-    steps = step + 1;
-    await page.evaluate(() => window.__archiveCrawler.capture());
-    const metrics = await page.evaluate(() => window.__archiveCrawler.metrics());
-    const stats = await page.evaluate(() => window.__archiveCrawler.stats());
-    const maximumTop = Math.max(0, metrics.height - metrics.client);
-    const atEnd = direction === 'down' ? metrics.top >= maximumTop - 4 : metrics.top <= 4;
-    const signature = traversalProgressSignature(metrics, stats);
-
-    if (atEnd && signature === previousSignature) stableChecks++;
-    else if (atEnd) stableChecks = 1;
-    else stableChecks = 0;
-
-    const positionPercent = maximumTop <= 0 ? 100 : Math.max(0, Math.min(100, (metrics.top / maximumTop) * 100));
-    const arrow = direction === 'up' ? '↑' : '↓';
-    await onProgress?.({
-      ...stats,
-      stage: 'traversal',
-      phase,
-      detail: pass === 1
-        ? 'Recording retained turn identities/order and every mounted generation encountered before turn-local processing.'
-        : 'Verifying retained semantic revisions without blindly reopening already-converged disclosures.',
-      scanningStatus: `Pass ${pass}/3 ${arrow} · step ${steps}/${maxSteps} · ${positionPercent.toFixed(1)}% loaded range${atEnd ? ` · edge stable ${stableChecks}/${SCAN_ENDPOINT_STABLE_CHECKS}` : ''}`,
-      scanComplete: false,
-      pass,
-      direction,
-      step: steps,
-      scrollTop: metrics.top,
-      scrollHeight: metrics.height,
-      scrollClient: metrics.client
-    });
-
-    if (atEnd && stableChecks >= SCAN_ENDPOINT_STABLE_CHECKS) {
-      converged = true;
-      break;
-    }
-    previousSignature = signature;
-
-    const fraction = direction === 'up' ? 0.46 : 0.60;
-    const minimumStep = direction === 'up' ? 260 : 300;
-    const stepSize = Math.max(minimumStep, Math.floor(metrics.client * fraction));
-    const nextTop = direction === 'down'
-      ? Math.min(maximumTop, metrics.top + stepSize)
-      : Math.max(0, metrics.top - stepSize);
-    await page.evaluate(top => window.__archiveCrawler.navigateTop(top), nextTop);
-    await page.waitForTimeout(direction === 'up' ? 240 : 190);
-  }
-
-  const result = { converged, pass, direction, steps, maxSteps, stableChecks, requiredStableChecks: SCAN_ENDPOINT_STABLE_CHECKS, phase };
-  await page.evaluate(value => window.__archiveCrawler.markScanResult?.(value), result);
   return result;
 }
 
@@ -269,7 +222,7 @@ export async function verifyOldestMessages(page, onProgress, shouldCancel) {
     stage: 'oldest_verification',
     phase: 'Verifying oldest messages',
     detail: 'Live-preview rebuilding is paused while the oldest edge is probed for asynchronously prepended turns.',
-    scanningStatus: `Oldest-edge probe · check 0/${OLDEST_MAX_CHECKS} · stable 0/${OLDEST_REQUIRED_QUIET_CHECKS}`,
+    scanningStatus: `Oldest-edge probe · check 0/${OLDEST_MAX_CHECKS} · semantic quiet 0/${OLDEST_REQUIRED_QUIET_CHECKS}`,
     scanComplete: false,
     pass: 0,
     direction: 'up',
@@ -290,16 +243,17 @@ export async function verifyOldestMessages(page, onProgress, shouldCancel) {
     const stats = await page.evaluate(() => window.__archiveCrawler.stats());
     const metrics = await page.evaluate(() => window.__archiveCrawler.metrics());
     const atTop = metrics.top <= 4;
-    const signature = traversalProgressSignature(metrics, stats, { normalizeTop: atTop });
+    const signature = traversalProgressSignature(metrics, stats);
     if (atTop && signature === previousSignature) quietChecks++;
+    else if (atTop) quietChecks = 1;
     else quietChecks = 0;
-    previousSignature = signature;
+    if (atTop) previousSignature = signature;
 
     await onProgress?.({
       ...stats,
       stage: 'oldest_verification',
       phase: 'Verifying oldest messages',
-      scanningStatus: `Oldest-edge probe · check ${checks}/${OLDEST_MAX_CHECKS} · stable ${quietChecks}/${OLDEST_REQUIRED_QUIET_CHECKS} · ${atTop ? 'at top' : `offset ${Math.round(metrics.top)}px`} · mounted first ${stats.mountedFirst}`,
+      scanningStatus: `Oldest-edge probe · check ${checks}/${OLDEST_MAX_CHECKS} · semantic quiet ${quietChecks}/${OLDEST_REQUIRED_QUIET_CHECKS} · ${atTop ? 'at top' : `offset ${Math.round(metrics.top)}px`} · mounted first ${stats.mountedFirst}`,
       oldestRetained: stats.oldestRetained,
       scanComplete: false,
       pass: 0,
@@ -337,11 +291,11 @@ export async function verifyOldestMessages(page, onProgress, shouldCancel) {
     stage: 'oldest_verification',
     phase: converged ? 'Oldest-message verification complete' : 'Oldest-message verification safety limit reached',
     detail: converged
-      ? 'The oldest edge converged; beginning the discovery sweep.'
-      : `The oldest edge did not reach ${OLDEST_REQUIRED_QUIET_CHECKS}/${OLDEST_REQUIRED_QUIET_CHECKS} quiet checks before the ${OLDEST_MAX_CHECKS}-check safety limit; continuing with discovery and recording a warning in the archive.`,
+      ? 'The oldest edge converged semantically.'
+      : `The oldest edge did not reach ${OLDEST_REQUIRED_QUIET_CHECKS}/${OLDEST_REQUIRED_QUIET_CHECKS} quiet checks before the ${OLDEST_MAX_CHECKS}-check safety limit; continuing while recording an archive warning.`,
     scanningStatus: converged
-      ? `Oldest-edge probe complete · stable ${quietChecks}/${OLDEST_REQUIRED_QUIET_CHECKS} after ${checks} checks`
-      : `Oldest-edge probe safety limit · stable ${quietChecks}/${OLDEST_REQUIRED_QUIET_CHECKS} after ${checks}/${OLDEST_MAX_CHECKS} checks`,
+      ? `Oldest-edge probe complete · semantic quiet ${quietChecks}/${OLDEST_REQUIRED_QUIET_CHECKS} after ${checks} checks`
+      : `Oldest-edge probe safety limit · semantic quiet ${quietChecks}/${OLDEST_REQUIRED_QUIET_CHECKS} after ${checks}/${OLDEST_MAX_CHECKS} checks`,
     pass: 0,
     direction: 'up',
     previewPaused: false,
@@ -357,14 +311,10 @@ async function retainedDisclosureSummary(page) {
 }
 
 async function fullUnresolvedTurnIds(page) {
-  return page.evaluate(() => Object.values(window.__archiveCrawler?.state?.turns || {})
-    .filter(turn => Number(turn?.remaining || 0) > 0)
-    .map(turn => turn.id)
-    .filter(Boolean)
-    .sort((left, right) => {
-      const number = id => Number(/conversation-turn-(\d+)/.exec(id || '')?.[1] ?? Number.MAX_SAFE_INTEGER);
-      return number(left) - number(right) || left.localeCompare(right);
-    }));
+  const summary = await retainedDisclosureSummary(page);
+  return Array.isArray(summary.retainedUnresolvedTurnIdsFull)
+    ? summary.retainedUnresolvedTurnIdsFull
+    : summary.retainedUnresolvedTurnIds || [];
 }
 
 async function turnRevisionMap(page) {
@@ -379,19 +329,54 @@ function changedTurnIds(before, after) {
   return [...ids].filter(id => Number(before?.[id] ?? -1) !== Number(after?.[id] ?? -1));
 }
 
-async function processRetainedTurnBatch(page, ids, onProgress, shouldCancel, processedSet = new Set()) {
+async function processRetainedTurnBatch(page, ids, onProgress, shouldCancel, processedSet = null) {
   const results = [];
   for (const turnId of ids) {
-    if (processedSet.has(turnId)) continue;
+    if (processedSet?.has(turnId)) continue;
     if (shouldCancel?.()) throw new Error('Archive cancelled.');
     const currentRetained = await retainedTurnIds(page);
     if (!currentRetained.includes(turnId)) continue;
     const result = await processTurnToFixedPoint(page, turnId, currentRetained, { shouldCancel, onProgress });
-    processedSet.add(turnId);
+    processedSet?.add(turnId);
     results.push({ turnId, ...result });
     await page.evaluate(value => window.__archiveCrawler.markTurnProcessingResult?.(value), { turnId, ...result });
   }
   return results;
+}
+
+async function processAllUnprocessed(page, onProgress, shouldCancel, processedSet) {
+  const results = [];
+  while (true) {
+    if (shouldCancel?.()) throw new Error('Archive cancelled.');
+    const ids = await retainedTurnIds(page);
+    const pending = ids.filter(id => !processedSet.has(id));
+    if (!pending.length) break;
+    if (processedSet.size + pending.length > TURN_WORK_QUEUE_MAX_ITEMS) {
+      const limitResult = {
+        converged: false,
+        phase: 'turn-work-queue',
+        direction: '',
+        steps: processedSet.size,
+        maxSteps: TURN_WORK_QUEUE_MAX_ITEMS,
+        reason: 'turn-work-queue-limit'
+      };
+      await page.evaluate(value => window.__archiveCrawler.markScanResult?.(value), limitResult);
+      break;
+    }
+    results.push(...await processRetainedTurnBatch(page, pending, onProgress, shouldCancel, processedSet));
+  }
+  return results;
+}
+
+async function dirtyTurnIds(page, before, after, processedSet = null) {
+  const dirty = new Set([
+    ...changedTurnIds(before, after),
+    ...(await fullUnresolvedTurnIds(page))
+  ]);
+  if (processedSet) {
+    for (const id of await retainedTurnIds(page)) if (!processedSet.has(id)) dirty.add(id);
+  }
+  return (await retainedTurnIds(page)).filter(id => dirty.has(id));
 }
 
 export async function reconcileRetainedDisclosures(page, onProgress, shouldCancel) {
@@ -414,17 +399,17 @@ export async function reconcileRetainedDisclosures(page, onProgress, shouldCance
       ...(await page.evaluate(() => window.__archiveCrawler.stats())),
       stage: 'reconciliation',
       phase: 'Reconciling retained disclosures',
-      detail: 'Revisiting only retained turns that still report recognized unresolved content disclosures.',
-      scanningStatus: `Targeted reconciliation ${round}/${RECONCILIATION_MAX_PASSES} · ${unresolvedIds.length} unresolved turn(s)`,
+      detail: 'Revisiting only retained turns whose logical disclosure proof is stale or absent at the current semantic revision.',
+      scanningStatus: `Targeted reconciliation ${round}/${RECONCILIATION_MAX_PASSES} · ${unresolvedIds.length} actionable turn(s)`,
       scanComplete: false,
       pass: 0,
       direction: '',
       step: 0
     });
 
-    const retained = await retainedTurnIds(page);
     let processingConverged = true;
     for (const turnId of unresolvedIds) {
+      const retained = await retainedTurnIds(page);
       const result = await processTurnToFixedPoint(page, turnId, retained, { shouldCancel, onProgress });
       await page.evaluate(value => window.__archiveCrawler.markTurnProcessingResult?.(value), { turnId, ...result, reconciliationRound: round });
       if (!result.converged) processingConverged = false;
@@ -452,11 +437,11 @@ export async function reconcileRetainedDisclosures(page, onProgress, shouldCance
     stage: 'reconciliation',
     phase: result.converged ? 'Retained-disclosure reconciliation complete' : 'Retained-disclosure reconciliation stopped',
     detail: result.converged
-      ? `All retained recognized disclosures converged after ${rounds} targeted reconciliation pass(es).`
-      : `Targeted reconciliation stopped after ${rounds} pass(es) with ${result.unresolvedTurns} retained turn(s) and ${result.unresolvedDisclosures} disclosure(s) still flagged. Retained content is preserved and the limitation is reported.`,
+      ? `All retained actionable logical disclosures converged after ${rounds} targeted reconciliation pass(es).`
+      : `Targeted reconciliation stopped after ${rounds} pass(es) with ${result.unresolvedTurns} retained turn(s) and ${result.unresolvedDisclosures} actionable disclosure(s) still unproved.`,
     scanningStatus: result.converged
-      ? `Retained disclosure corpus converged · ${rounds} targeted pass(es)`
-      : `Retained targeted reconciliation stopped · ${result.unresolvedTurns} turn(s) / ${result.unresolvedDisclosures} disclosure(s) remain`,
+      ? `Logical disclosure corpus converged · ${rounds} targeted pass(es)`
+      : `Targeted reconciliation stopped · ${result.unresolvedTurns} turn(s) / ${result.unresolvedDisclosures} actionable disclosure(s) remain`,
     scanComplete: false,
     pass: 0,
     direction: '',
@@ -468,8 +453,8 @@ export async function reconcileRetainedDisclosures(page, onProgress, shouldCance
 export async function runAutomaticTraversal(page, { onProgress, shouldCancel } = {}) {
   await report(page, onProgress, {
     stage: 'preparing',
-    phase: 'Preparing crawler',
-    detail: 'Installed page-side capture helpers; preparing oldest-edge verification and discovery.',
+    phase: 'Preparing beta3 semantic crawler',
+    detail: 'Preparing passive bidirectional discovery, turn-local processing, remount verification, and targeted closure.',
     scanningStatus: 'Not started',
     scanComplete: false,
     pass: 0,
@@ -478,49 +463,77 @@ export async function runAutomaticTraversal(page, { onProgress, shouldCancel } =
     previewPaused: false
   });
 
-  const oldest = await verifyOldestMessages(page, onProgress, shouldCancel);
+  await page.evaluate(() => window.__archiveCrawler.setTop(0));
+  await page.waitForTimeout(250);
+
   const scans = [];
-  scans.push(await captureSweep(page, 'down', 1, 'Discovering retained turns', onProgress, shouldCancel));
+  scans.push(await captureSweep(page, 'down', 'Forward passive discovery', onProgress, shouldCancel));
+  scans.push(await captureSweep(page, 'up', 'Reverse passive discovery', onProgress, shouldCancel));
+  const oldest = await verifyOldestMessages(page, onProgress, shouldCancel);
 
   const processed = new Set();
   const turnProcessing = [];
-  for (let batch = 0; batch < TURN_DISCOVERY_MAX_BATCHES; batch++) {
-    const ids = await retainedTurnIds(page);
-    const pending = ids.filter(id => !processed.has(id));
-    if (!pending.length) break;
-    await page.evaluate(() => window.__archiveCrawler.setTop(0));
-    await page.waitForTimeout(250);
-    turnProcessing.push(...await processRetainedTurnBatch(page, pending, onProgress, shouldCancel, processed));
-  }
+  turnProcessing.push(...await processAllUnprocessed(page, onProgress, shouldCancel, processed));
 
-  const revisionsBeforeReverse = await turnRevisionMap(page);
-  scans.push(await captureSweep(page, 'up', 2, 'Reverse verification sweep', onProgress, shouldCancel));
-  const revisionsAfterReverse = await turnRevisionMap(page);
-
-  scans.push(await captureSweep(page, 'down', 3, 'Forward verification sweep', onProgress, shouldCancel));
+  const revisionsBeforeForward = await turnRevisionMap(page);
+  scans.push(await captureSweep(page, 'down', 'Forward remount verification', onProgress, shouldCancel));
   const revisionsAfterForward = await turnRevisionMap(page);
-
-  const dirty = new Set([
-    ...changedTurnIds(revisionsBeforeReverse, revisionsAfterReverse),
-    ...changedTurnIds(revisionsAfterReverse, revisionsAfterForward),
-    ...(await fullUnresolvedTurnIds(page))
-  ]);
-  if (dirty.size) {
-    const ids = (await retainedTurnIds(page)).filter(id => dirty.has(id));
-    turnProcessing.push(...await processRetainedTurnBatch(page, ids, onProgress, shouldCancel, new Set()));
+  const forwardDirty = await dirtyTurnIds(page, revisionsBeforeForward, revisionsAfterForward, processed);
+  if (forwardDirty.length) {
+    turnProcessing.push(...await processRetainedTurnBatch(page, forwardDirty, onProgress, shouldCancel));
+    for (const id of forwardDirty) processed.add(id);
   }
+  turnProcessing.push(...await processAllUnprocessed(page, onProgress, shouldCancel, processed));
+
+  const semanticChangedDuringForwardClosure = changedTurnIds(revisionsBeforeForward, revisionsAfterForward).length > 0
+    || forwardDirty.length > 0;
+
+  // Keep the retention observer active for every broad passive sweep so even a
+  // mount-and-detach inside the optional reverse closure is retained.
+  if (semanticChangedDuringForwardClosure) {
+    const beforeReverseClosure = await turnRevisionMap(page);
+    scans.push(await captureSweep(page, 'up', 'Conditional reverse closure', onProgress, shouldCancel));
+    const afterReverseClosure = await turnRevisionMap(page);
+    const reverseDirty = await dirtyTurnIds(page, beforeReverseClosure, afterReverseClosure, processed);
+    if (reverseDirty.length) {
+      turnProcessing.push(...await processRetainedTurnBatch(page, reverseDirty, onProgress, shouldCancel));
+      for (const id of reverseDirty) processed.add(id);
+    }
+    turnProcessing.push(...await processAllUnprocessed(page, onProgress, shouldCancel, processed));
+  }
+
+  // Only after all broad traversal is finished do we drain and seal passive
+  // retention. Semantic work delivered by that final drain is processed before
+  // the final convergence decision; no asynchronous observer remains afterward.
+  const revisionsBeforeSeal = await turnRevisionMap(page);
+  await page.evaluate(() => window.__archiveCrawler.sealMountRetention?.());
+  const revisionsAfterSeal = await turnRevisionMap(page);
+  const sealDirty = await dirtyTurnIds(page, revisionsBeforeSeal, revisionsAfterSeal, processed);
+  if (sealDirty.length) {
+    turnProcessing.push(...await processRetainedTurnBatch(page, sealDirty, onProgress, shouldCancel));
+    for (const id of sealDirty) processed.add(id);
+  }
+  turnProcessing.push(...await processAllUnprocessed(page, onProgress, shouldCancel, processed));
 
   const reconciliation = await reconcileRetainedDisclosures(page, onProgress, shouldCancel);
-  await page.evaluate(() => window.__archiveCrawler.capture());
+  const finalStats = await page.evaluate(() => window.__archiveCrawler.stats());
 
   const traversalConverged = scans.every(result => result.converged)
-    && turnProcessing.every(result => result.converged);
-  const traversalSummary = traversalCompletionSummary(scans, oldest, reconciliation, turnProcessing);
+    && oldest.converged
+    && Number(finalStats.turnProcessingFailures || 0) === 0
+    && reconciliation.converged
+    && Number(finalStats.retainedUnresolvedDisclosures || 0) === 0
+    && Boolean(finalStats.mountRetentionSealed);
+  const traversalSummary = traversalCompletionSummary(scans, oldest, reconciliation, turnProcessing, finalStats);
 
   await report(page, onProgress, {
     stage: 'finalization',
-    phase: 'Turn/corpus convergence complete',
-    detail: 'Discovery, per-turn viewport coverage, scoped disclosure expansion, reverse/forward verification, and targeted reconciliation are finished; preparing final integrity validation.',
+    phase: traversalConverged
+      ? 'Turn/corpus convergence complete'
+      : 'Turn/corpus processing finished with integrity warnings',
+    detail: traversalConverged
+      ? 'Bidirectional passive discovery, turn-local guarded coverage, scoped disclosure proof, remount verification, targeted semantic revalidation, and reconciliation reached the required fixed point.'
+      : 'Crawler processing finished, but one or more convergence invariants did not prove cleanly before a safety limit. Retained content will be finalized with integrity warnings.',
     scanningStatus: traversalSummary,
     scanComplete: true,
     pass: 0,
@@ -536,7 +549,11 @@ export async function runAutomaticTraversal(page, { onProgress, shouldCancel } =
     scans,
     oldest,
     reconciliation,
-    finalExpansion: { converged: true, processed: 0, reason: 'turn-scoped-finalization' },
+    finalExpansion: {
+      converged: reconciliation.converged && Number(finalStats.retainedUnresolvedDisclosures || 0) === 0,
+      processed: 0,
+      reason: reconciliation.converged ? 'logical-disclosure-fixed-point' : 'logical-disclosure-unresolved'
+    },
     turnProcessing,
     traversalConverged
   };
@@ -545,6 +562,5 @@ export async function runAutomaticTraversal(page, { onProgress, shouldCancel } =
 export const __testing = {
   traversalProgressSignature,
   nextReconciliationStablePasses,
-  changedTurnIds,
-  NAVIGATION_STAGNATION_REASSERT
+  changedTurnIds
 };

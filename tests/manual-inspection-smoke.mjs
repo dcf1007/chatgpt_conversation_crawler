@@ -8,7 +8,7 @@ const turns = [
   {
     id: 'conversation-turn-37',
     role: 'assistant',
-    remaining: 0,
+    actionableDisclosureCount: 0,
     preCount: 0,
     codeCount: 0,
     textLength: 2200,
@@ -17,7 +17,7 @@ const turns = [
   {
     id: 'conversation-turn-38',
     role: 'assistant',
-    remaining: 0,
+    actionableDisclosureCount: 0,
     preCount: 61,
     codeCount: 52,
     textLength: 28038,
@@ -26,7 +26,7 @@ const turns = [
   {
     id: 'conversation-turn-54',
     role: 'assistant',
-    remaining: 0,
+    actionableDisclosureCount: 0,
     preCount: 47,
     codeCount: 31,
     textLength: 15543,
@@ -35,7 +35,7 @@ const turns = [
   {
     id: 'conversation-turn-60',
     role: 'assistant',
-    remaining: 1,
+    actionableDisclosureCount: 1,
     preCount: 3,
     codeCount: 2,
     textLength: 5000,
@@ -45,7 +45,7 @@ const turns = [
 
 const targets = selectTargetsFromTurns(turns, { count: 2 });
 assert.equal(targets.length, 2);
-assert.equal(targets[0].id, 'conversation-turn-60', 'recognized unresolved reasoning should rank first');
+assert.equal(targets[0].id, 'conversation-turn-60', 'actionable unresolved reasoning should rank first');
 assert.equal(targets[1].id, 'conversation-turn-38', 'rich reasoning/tool turn should beat generic image controls');
 assert.ok(!targets.some(target => target.id === 'conversation-turn-37'));
 assert.match(targets[1].reason, /reasoning\/tool|tool\/code/i);
@@ -53,15 +53,10 @@ assert.match(targets[1].reason, /reasoning\/tool|tool\/code/i);
 const single = selectTargetsFromTurns(turns, { count: 1, excludeIds: ['conversation-turn-60'] })[0];
 assert.equal(single.id, 'conversation-turn-38');
 
-// Target choice must be based on the untouched automatic corpus. Selecting two
-// targets in one call must not depend on changes from a previous manual step.
 const firstPass = selectTargetsFromTurns(turns, { count: 2 }).map(target => target.id);
 const secondPass = selectTargetsFromTurns(turns, { count: 2 }).map(target => target.id);
 assert.deepEqual(firstPass, secondPass);
 
-// Regression: MHTML metadata must describe the target being remounted now, not
-// the target from the completed previous manual step. The live publisher uses
-// this descriptor before shared logical navigation begins.
 const remountDescriptor = buildManualRemountDiagnosticState(
   { id: 'conversation-turn-14', reason: 'rich assistant reasoning/tool turn' },
   { index: 2, count: 2 }
@@ -75,8 +70,6 @@ assert.equal(remountDescriptor.targetReason, 'rich assistant reasoning/tool turn
 assert.equal(remountDescriptor.interactionCount, 0);
 assert.equal(remountDescriptor.finishRequested, false);
 
-// Sparse virtualizer regression: mounted first/last do not define a contiguous
-// interval. A missing target between mounted predecessor/successor is bracketed.
 const retained = Array.from({ length: 60 }, (_, index) => `conversation-turn-${index + 1}`);
 const sparseMounted = [27, 37, 39, 44, 45, 46, 47, 48, 56, 57, 58, 59, 60]
   .map(number => `conversation-turn-${number}`);
@@ -94,8 +87,6 @@ const mounted = analyzeTurnWindow(retained, ['conversation-turn-37', 'conversati
 assert.equal(mounted.relation, 'mounted');
 assert.equal(mounted.targetMounted, true);
 
-// Logical recovery must never regress or retain the historical pixel where an
-// off-screen predecessor happened to be observed.
 let best = tightenTurnBracket(null, {
   nearestBeforeId: 'conversation-turn-13',
   nearestBeforeIndex: 12,
@@ -114,4 +105,4 @@ assert.equal(best.afterId, 'conversation-turn-27');
 assert.equal(best.afterIndex, 26);
 assert.equal(Object.prototype.hasOwnProperty.call(best, 'scrollTop'), false);
 
-console.log('dynamic manual target selection + truthful remount metadata + shared logical remount smoke test passed');
+console.log('beta3 manual target selection + truthful remount metadata + shared logical remount smoke test passed');

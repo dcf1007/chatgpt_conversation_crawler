@@ -6,15 +6,17 @@ const wrapper = fs.readFileSync(new URL('../src/crawler.mjs', import.meta.url), 
 const session = fs.readFileSync(new URL('../src/chatgpt-session.mjs', import.meta.url), 'utf8');
 const expansion = fs.readFileSync(new URL('../src/crawler-expansion.mjs', import.meta.url), 'utf8');
 const traversal = fs.readFileSync(new URL('../src/crawler-traversal.mjs', import.meta.url), 'utf8');
+const mount = fs.readFileSync(new URL('../src/crawler-mount-retention.mjs', import.meta.url), 'utf8');
 const server = fs.readFileSync(new URL('../server.mjs', import.meta.url), 'utf8');
 
 assert.match(core, /installMountRetention/);
 assert.match(core, /installDisclosureState/);
 assert.match(core, /installCrawlerNavigation/);
 assert.match(core, /ensurePageForegroundProtection/);
-assert.match(core, /flushMountRetention/);
+assert.doesNotMatch(core, /flushMountRetention\?\.\(\)/, 'core must not mutate retained state after beta3 traversal closes');
 assert.doesNotMatch(wrapper, /installManualScrollAssist/, 'development wrapper must not own navigation semantics');
 assert.doesNotMatch(wrapper, /installPageForegroundProtection/, 'development wrapper must not own foreground protection');
+assert.match(wrapper, /processTurnToFixedPoint/, 'manual diagnostics must reconverge through the target-turn production primitive');
 assert.match(session, /from '\.\/runtime-browser\.mjs'/, 'authenticated persistent contexts must use the protected Chromium runtime explicitly');
 assert.doesNotMatch(session, /from 'playwright'/, 'session manager must not bypass the protected Chromium runtime import');
 assert.match(server, /installTransientContextRetention/);
@@ -23,7 +25,10 @@ assert.match(expansion, /turnDisclosureSample/);
 assert.match(expansion, /mountedDisclosureSample/);
 assert.match(traversal, /verifyOldestMessages/);
 assert.match(traversal, /reconcileRetainedDisclosures/);
-assert.match(traversal, /navigationStagnantSteps/);
+assert.match(traversal, /sealMountRetention/);
+assert.match(traversal, /Conditional reverse closure/);
 assert.match(traversal, /ensurePageForegroundProtection/);
+assert.match(mount, /captureSectionNode/, 'mount retention must retain the concrete observed section node');
+assert.match(mount, /mountRetentionSealed/, 'mount retention must expose final closure state');
 
-console.log('permanent core/runtime module contract smoke test passed');
+console.log('permanent beta3 core/runtime module contract smoke test passed');

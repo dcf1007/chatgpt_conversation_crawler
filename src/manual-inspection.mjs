@@ -30,7 +30,7 @@ function countReasoningLabelsInHtml(html) {
 }
 
 function normalizeTurn(turn) {
-  const recognizedCollapsed = Number(turn.remaining || 0);
+  const actionableDisclosures = Number(turn.actionableDisclosureCount || 0);
   const closedDetails = countClosedDetailsInHtml(turn.html);
   const reasoningLabels = countReasoningLabelsInHtml(turn.html);
   const preBlocks = Number(turn.preCount || 0);
@@ -39,18 +39,19 @@ function normalizeTurn(turn) {
   const htmlLength = Number(turn.htmlLength || turn.html?.length || 0);
   const assistant = turn.role === 'assistant';
 
-  // Generic aria-expanded=false controls are deliberately absent from this
-  // score. Image viewers and menus must not outrank reasoning/tool turns.
+  // Diagnostic priority follows logical actionable disclosure proof rather than
+  // retained presentation-only `remaining`. Generic collapsed image/menu
+  // controls remain deliberately absent from this score.
   let tier = 0;
-  if (assistant && recognizedCollapsed > 0) tier = 5;
+  if (assistant && actionableDisclosures > 0) tier = 5;
   else if (assistant && reasoningLabels > 0) tier = 4;
   else if (assistant && (preBlocks > 0 || codeBlocks > 0)) tier = 3;
   else if (assistant) tier = 2;
-  else if (recognizedCollapsed > 0 || reasoningLabels > 0 || preBlocks > 0 || codeBlocks > 0) tier = 1;
+  else if (actionableDisclosures > 0 || reasoningLabels > 0 || preBlocks > 0 || codeBlocks > 0) tier = 1;
 
   const score =
     tier * 10 ** 15 +
-    recognizedCollapsed * 10 ** 11 +
+    actionableDisclosures * 10 ** 11 +
     reasoningLabels * 10 ** 9 +
     preBlocks * 10 ** 6 +
     codeBlocks * 10 ** 4 +
@@ -58,7 +59,7 @@ function normalizeTurn(turn) {
 
   return {
     ...turn,
-    recognizedCollapsed,
+    actionableDisclosures,
     closedDetails,
     reasoningLabels,
     preBlocks,
@@ -71,8 +72,8 @@ function normalizeTurn(turn) {
 }
 
 function reasonForTarget(target) {
-  if (target.recognizedCollapsed > 0) {
-    return `assistant turn with ${target.recognizedCollapsed} recognized collapsed reasoning/tool disclosure(s)`;
+  if (target.actionableDisclosures > 0) {
+    return `assistant turn with ${target.actionableDisclosures} actionable reasoning/tool disclosure proof(s)`;
   }
   if (target.reasoningLabels > 0) {
     return `rich assistant reasoning/tool turn (${target.reasoningLabels} reasoning label(s), ${target.preBlocks} pre, ${target.codeBlocks} code)`;
@@ -107,16 +108,28 @@ async function getSessionMode(page) {
 }
 
 async function getRetainedTurns(page) {
-  return page.evaluate(() => Object.values(window.__archiveCrawler?.state?.turns || {}).map(turn => ({
-    id: turn.id,
-    role: turn.role || '',
-    remaining: Number(turn.remaining || 0),
-    preCount: Number(turn.preCount || 0),
-    codeCount: Number(turn.codeCount || 0),
-    textLength: Number(turn.textLength || 0),
-    htmlLength: Number(turn.htmlLength || turn.html?.length || 0),
-    html: turn.html || ''
-  })));
+  return page.evaluate(() => {
+    const crawler = window.__archiveCrawler;
+    const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object || {}, key);
+    return Object.values(crawler?.state?.turns || {}).map(turn => {
+      const revision = Number(crawler?.turnRevision?.(turn.id) || 0);
+      const keys = crawler?.state?.disclosureKnownKeysByTurn?.[turn.id] || [];
+      const actionableDisclosureCount = keys.filter(key => {
+        if (!hasOwn(crawler?.state?.disclosureCompletions, key)) return true;
+        return Number(crawler.state.disclosureCompletions[key] || 0) < revision;
+      }).length;
+      return {
+        id: turn.id,
+        role: turn.role || '',
+        actionableDisclosureCount,
+        preCount: Number(turn.preCount || 0),
+        codeCount: Number(turn.codeCount || 0),
+        textLength: Number(turn.textLength || 0),
+        htmlLength: Number(turn.htmlLength || turn.html?.length || 0),
+        html: turn.html || ''
+      };
+    });
+  });
 }
 
 async function getCrawlerStats(page) {
@@ -381,9 +394,6 @@ async function assembleDiagnosticSnapshot(page, sourceUrl) {
     captureArchiveState(page),
     getCrawlerStats(page)
   ]);
-  // Diagnostic snapshots are built before the normal server-side final integrity
-  // evaluation. Attach integrity only to this detached clone so diagnostics are
-  // truthful without mutating live retained crawler state.
   archiveState.integrity = evaluateArchiveIntegrity(currentStats);
   const preparedImages = await mainImages.prepareMainImages(page, archiveState);
   const preparedEmbeddedContent = await appBlocks.prepareEmbeddedContent(page, {
@@ -419,7 +429,7 @@ function summarizeTarget(target) {
     id: target.id,
     reason: target.reason,
     role: target.role,
-    recognizedCollapsed: target.recognizedCollapsed,
+    actionableDisclosures: target.actionableDisclosures,
     reasoningLabels: target.reasoningLabels,
     preBlocks: target.preBlocks,
     codeBlocks: target.codeBlocks,
@@ -452,12 +462,12 @@ async function captureManualStep({ page, target, step, retainedTurnIds, diagnost
 
   await onProgress?.({
     phase: `Reconciling manual step ${step.index}/${step.count}`,
-    detail: `Manual work on ${target.id} is captured. Running the automatic turn-scoped disclosure convergence once more before continuing.`,
+    detail: `Manual work on ${target.id} is captured. Running the same automatic target-turn fixed point once more before continuing.`,
     scanningStatus: `${target.id} · ${manualResult.interactionCount} manual interaction(s) · reconverging`,
     scanComplete: true
   });
-  await convergeMounted?.();
-  await page.evaluate(() => window.__archiveCrawler.capture());
+  await convergeMounted?.(target.id);
+  await page.evaluate(id => window.__archiveCrawler.captureTurn(id), target.id);
   const afterConvergenceMetrics = await getManualPageMetrics(page, target.id);
 
   return {
@@ -486,9 +496,6 @@ export async function runManualInspection(page, { onProgress, shouldCancel, conv
     return;
   }
 
-  // Select every regression target from the untouched automatic corpus before
-  // any human interaction. This keeps step 2 independent from step 1 and makes
-  // the diagnostic portable to unrelated conversations.
   const targets = selectTargetsFromTurns(retainedTurns, { count: TARGET_COUNT });
   if (!targets.length) {
     await onProgress?.({ phase: 'Manual diagnostic skipped', detail: 'No suitable reasoning/tool or assistant turn was available for manual validation.' });
@@ -504,7 +511,7 @@ export async function runManualInspection(page, { onProgress, shouldCancel, conv
     sourceUrl: page.url(),
     sessionMode,
     diagnosticDirectory,
-    targetSelection: 'dynamic automatic-corpus ranking; generic collapsed image/menu controls excluded from priority',
+    targetSelection: 'dynamic automatic-corpus ranking using logical actionable disclosure proof; generic collapsed image/menu controls excluded from priority',
     selectedTargets: targets.map(summarizeTarget),
     automatic: { crawlerStats: automaticStats, snapshotStats: automaticSnapshot.stats },
     steps: []

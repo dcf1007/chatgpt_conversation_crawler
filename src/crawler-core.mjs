@@ -24,9 +24,11 @@ export async function installCrawler(page) {
 /** Run the automatic capture pipeline. */
 export async function crawlAutomaticConversation(page, options = {}) {
   await installCrawler(page);
-  const result = await runAutomaticTraversal(page, options);
-  await page.evaluate(() => window.__archiveCrawler.flushMountRetention?.());
-  return result;
+  // Beta3 traversal drains and seals mount retention before its final semantic
+  // closure proof. Do not perform another asynchronous retention flush after
+  // runAutomaticTraversal() returns, because that could mutate the retained
+  // corpus behind an already-issued convergence result.
+  return runAutomaticTraversal(page, options);
 }
 
 export { CRAWLER_PROGRESS_LIMITS };

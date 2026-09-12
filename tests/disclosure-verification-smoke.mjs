@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { expandMounted } from '../src/crawler-expansion.mjs';
 
 const turnId = 'conversation-turn-14';
-const logicalKey = `${turnId}|control|reasoning|0`;
+const logicalKey = `${turnId}|details|reasoning|0`;
 const state = {
   turnRevisions: { [turnId]: 1 },
   disclosureCompletions: Object.create(null),
@@ -57,7 +57,7 @@ const crawler = {
       mounted: true,
       turnId,
       actionableCollapsed: actionable() ? 1 : 0,
-      closedDetails: 0,
+      closedDetails: actionable() ? 1 : 0,
       actionableLogicalKeys: actionable() ? [logicalKey] : [],
       signature: 'ignored'
     };
@@ -65,7 +65,7 @@ const crawler = {
   mountedDisclosureSample() {
     return {
       actionableCollapsed: actionable() ? 1 : 0,
-      closedDetails: 0,
+      closedDetails: actionable() ? 1 : 0,
       actionableLogicalKeys: actionable() ? [logicalKey] : [],
       signature: 'ignored'
     };
@@ -88,11 +88,18 @@ const page = {
 };
 
 await expandMounted(page, 20);
-assert.equal(activations, 2, 'a progress-producing activation must receive one verification retry at the richer revision');
-assert.equal(state.turnRevisions[turnId], 2, 'first activation should retain the richer generation');
-assert.equal(state.disclosureCompletions[logicalKey], 2, 'only the no-progress verification should establish completion');
+assert.equal(activations, 1, 'a confirmed progress-producing activation must not require a second no-progress verification click');
+assert.equal(state.turnRevisions[turnId], 2, 'first activation should retain the richer semantic generation');
+assert.equal(state.disclosureCompletions[logicalKey], 2, 'completion must be recorded at the resulting semantic revision');
 
 await expandMounted(page, 20);
-assert.equal(activations, 2, 'same-revision remount must remain suppressed after no-progress verification');
+assert.equal(activations, 1, 'same-revision collapsed remount must remain suppressed');
 
-console.log('disclosure fixed-point verification smoke test passed');
+// A genuinely newer semantic revision makes the same logical disclosure
+// actionable again; completion then advances to that newer revision.
+state.turnRevisions[turnId] = 3;
+await expandMounted(page, 20);
+assert.equal(activations, 2, 'newer semantic evidence must invalidate the older completion proof exactly once');
+assert.equal(state.disclosureCompletions[logicalKey], 3);
+
+console.log('beta3 disclosure completion-at-resulting-revision smoke test passed');

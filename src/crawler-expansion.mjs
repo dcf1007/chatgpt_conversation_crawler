@@ -67,11 +67,13 @@ async function waitForDisclosureHydration(page, result, shouldCancel) {
   while (Date.now() < deadline) {
     if (shouldCancel?.()) throw new Error('Archive cancelled.');
     latest = await page.evaluate(key => window.__archiveCrawler.disclosureSample(key), result.key);
-    if (latest.expanded && latest.targetExists) {
+    if (latest.present && latest.expanded && latest.targetExists) {
       stableSamples = latest.signature === previousSignature ? stableSamples + 1 : 1;
       previousSignature = latest.signature;
       if (stableSamples >= DISCLOSURE_STABLE_SAMPLES) return latest;
     } else {
+      // A physical key disappearing during virtualization is unknown, not
+      // positive expansion proof. Wait for a stable positive observation.
       stableSamples = 0;
       previousSignature = '';
     }
@@ -88,6 +90,7 @@ async function processExpansion(page, result, turnRevisionBefore, onProgress, sh
     await page.waitForTimeout(80);
   } else {
     const hydration = await waitForDisclosureHydration(page, result, shouldCancel);
+    confirmed = Boolean(hydration?.present && hydration?.expanded && hydration?.targetExists && !hydration?.timedOut);
     if (hydration?.timedOut) {
       await page.evaluate(value => window.__archiveCrawler.noteHydrationTimeout?.(value), {
         turnId: result.turnId || hydration.turnId || '',
@@ -96,22 +99,21 @@ async function processExpansion(page, result, turnRevisionBefore, onProgress, sh
         waitMs: DISCLOSURE_MAX_SETTLE_MS
       });
     }
-    confirmed = await page.evaluate(key => {
-      const crawler = window.__archiveCrawler;
-      crawler.confirm(key);
-      return !Object.prototype.hasOwnProperty.call(crawler.state?.attempts || {}, key);
-    }, result.key);
+    await page.evaluate(({ key, success }) => window.__archiveCrawler.confirm(key, success), {
+      key: result.key,
+      success: confirmed
+    });
   }
 
   const activity = await captureActiveTurn(page, result.turnId || '');
   const revisionAfter = await turnRevision(page, result.turnId || '');
   const retainedProgress = revisionAfter > Number(turnRevisionBefore || 0);
 
-  // A successful activation can produce a richer retained turn and then remount
-  // collapsed once more. Record semantic completion only when an activation
-  // produces no newer retained generation. If it improved the turn, leave
-  // it eligible for one more verification at the new revision.
-  if (confirmed && !retainedProgress && result.logicalKey && result.turnId) {
+  // Positive exposure followed by capture proves this logical disclosure at the
+  // resulting semantic-evidence revision, even when that activation produced a
+  // richer retained turn. A genuinely newer semantic revision later makes the
+  // same logical key actionable again automatically.
+  if (confirmed && result.logicalKey && result.turnId) {
     await page.evaluate(value => window.__archiveCrawler.markDisclosureComplete?.(value), {
       logicalKey: result.logicalKey,
       turnId: result.turnId
