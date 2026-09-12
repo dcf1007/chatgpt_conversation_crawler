@@ -81,12 +81,12 @@ assert.equal(turnSample.turnId, 'conversation-turn-1');
 assert.equal(turnSample.actionableCollapsed, 0);
 assert.match(turnSample.signature, /^conversation-turn-1\|/);
 
-// Successful activation must reset the retry budget. The same logical
-// disclosure can remount collapsed later; attempts are not a lifetime cap.
+// Successful positive activation proof must reset the retry budget. The same
+// logical disclosure can remount collapsed later; attempts are not a lifetime cap.
 const retryKey = 'conversation-turn-1||synthetic successful remount';
 globalThis.__archiveCrawler.state.attempts[retryKey] = 3;
 globalThis.__archiveCrawler.state.failures[retryKey] = 'synthetic prior failure';
-globalThis.__archiveCrawler.confirm(retryKey);
+globalThis.__archiveCrawler.confirm(retryKey, true);
 assert.equal(globalThis.__archiveCrawler.state.attempts[retryKey], undefined);
 assert.equal(globalThis.__archiveCrawler.state.failures[retryKey], undefined);
 
@@ -141,10 +141,9 @@ assert.equal(scopedOne.disclosure.clicks, 0);
 assert.equal(scopedTwo.disclosure.clicks, 1);
 documentMock.querySelectorAll = originalDocumentQueryAll;
 
-// Runtime regression: nested content appears after the
-// parent's immediate hydration, while an unrelated virtualized turn can churn.
-// Turn-scoped convergence must use conversation-turn-54 only and must never consult a
-// whole-mounted-DOM signature.
+// Runtime regression: nested content appears after the parent's immediate
+// hydration, while an unrelated virtualized turn can churn. Turn-scoped
+// convergence must use conversation-turn-54 only.
 let phase = 'parent-ready';
 let exposeNestedAfterWait = false;
 let turnSamples = 0;
@@ -199,8 +198,6 @@ const fakeCrawler = {
       actionableCollapsed,
       recognizedCollapsed: actionableCollapsed,
       closedDetails: 0,
-      // Deliberately stable once the nested generation has been processed.
-      // An unrelated turn's mount state is not represented here.
       signature: phase === 'waiting-for-nested' ? 'turn54-parent-settled' : `turn54-${phase}`
     };
   },
@@ -266,8 +263,6 @@ assert.equal(quiescence.scopeTurnId, 'conversation-turn-54');
 assert.ok(turnSamples >= 4, 'expected turn-scoped samples while nested content settled');
 assert.equal(mountedWholeDomSamples, 0, 'whole-mounted-DOM stability must not control turn-scoped disclosure convergence');
 
-// A viewport with no disclosure activity exits after two lightweight idle
-// samples even if unrelated mounted DOM would be oscillating.
 let idleSamples = 0;
 globalThis.__archiveCrawler = {
   expandOne() { return null; },
@@ -283,11 +278,11 @@ globalThis.__archiveCrawler = {
 await expandMounted(runtimePage, 20);
 assert.equal(idleSamples, 2);
 
-console.log('crawler install + retry reset + turn-scoped quiescence smoke test passed');
+console.log('crawler install + explicit confirmation + turn-scoped quiescence smoke test passed');
 
-// Endpoint convergence must also ignore virtualizer membership churn. The
-// durable retained/capture state is unchanged, but mountedFirst alternates on
-// every stats read as turn 45 enters/leaves the live viewport.
+// Endpoint convergence must ignore virtualizer membership churn. Beta3 performs
+// one capture before and one after each exact endpoint repin, so six semantic
+// quiet checks are bounded at twelve captures despite mounted-range churn.
 let endpointIterations = 0;
 let endpointStatsReads = 0;
 globalThis.__archiveCrawler = {
@@ -316,6 +311,7 @@ globalThis.__archiveCrawler = {
       newestRetained: 'conversation-turn-60',
       mountedFirst: endpointStatsReads % 2 ? 'conversation-turn-45' : 'conversation-turn-46',
       mountedLast: 'conversation-turn-60',
+      retainedCorpusFingerprint: 'stable-semantic-corpus',
       allCollapsedControls: 0,
       recognizedCollapsed: 0,
       actionableCollapsed: 0,
@@ -327,6 +323,6 @@ globalThis.__archiveCrawler = {
   }
 };
 await scan(runtimePage, 'down', 1, undefined, undefined, 20);
-assert.ok(endpointIterations <= 7, `endpoint should converge despite mounted-turn churn; captures=${endpointIterations}`);
+assert.ok(endpointIterations <= 12, `endpoint should converge despite mounted-turn churn; captures=${endpointIterations}`);
 
 console.log('endpoint stability ignores unrelated mounted-turn churn');
