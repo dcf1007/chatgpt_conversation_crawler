@@ -2,11 +2,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
 import { createMhtmlRecorder } from '../src/mhtml-recorder.mjs';
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'crawler-mhtml-summary-'));
-await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '1.7.1-beta3-dev2' }), 'utf8');
+await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '1.7.1-beta3-dev2.1' }), 'utf8');
 
 let snapshotIndex = 0;
 const snapshotBodies = ['first mhtml body', 'second mhtml body'];
@@ -114,9 +113,11 @@ const manifestText = await fs.readFile(recorder.manifestPath, 'utf8');
 const rows = manifestText.trim().split(/\r?\n/).map(line => JSON.parse(line));
 assert.equal(rows.length, 2);
 assert.equal(rows[0].diagnosticSchemaVersion, 2);
-assert.equal(rows[0].crawlerVersion, '1.7.1-beta3-dev2');
-assert.equal(rows[0].sha256, createHash('sha256').update(snapshotBodies[0]).digest('hex'));
-assert.equal(rows[1].sha256, createHash('sha256').update(snapshotBodies[1]).digest('hex'));
+assert.equal(rows[0].crawlerVersion, '1.7.1-beta3-dev2.1');
+assert.equal(rows[0].bytes, Buffer.byteLength(snapshotBodies[0], 'utf8'));
+assert.equal(rows[1].bytes, Buffer.byteLength(snapshotBodies[1], 'utf8'));
+assert.equal(Object.hasOwn(rows[0], 'sha256'), false, 'dev2.1 must not hash complete MHTML snapshots');
+assert.equal(Object.hasOwn(rows[1], 'sha256'), false, 'dev2.1 must not hash complete MHTML snapshots');
 assert.deepEqual(rows[1].newlyRetainedTurnIds, ['conversation-turn-2']);
 assert.deepEqual(rows[1].newHydrationConflictTurnIds, ['conversation-turn-2']);
 assert.deepEqual(rows[1].newTurnProcessingFailureTurnIds, ['conversation-turn-2']);
@@ -125,7 +126,7 @@ assert.equal(rows[1].semanticChangedSincePreviousCapture, true);
 
 const summary = JSON.parse(await fs.readFile(recorder.summaryPath, 'utf8'));
 assert.equal(summary.diagnosticSchemaVersion, 2);
-assert.equal(summary.crawlerVersion, '1.7.1-beta3-dev2');
+assert.equal(summary.crawlerVersion, '1.7.1-beta3-dev2.1');
 assert.equal(summary.snapshotCount, 2);
 assert.equal(summary.failedSnapshotCount, 0);
 assert.equal(summary.maximumRetainedTurns, 2);

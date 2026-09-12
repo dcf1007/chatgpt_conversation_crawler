@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
 import { buildManifestMetadata } from './mhtml-manifest-metadata.mjs';
 
 const PERIODIC_CAPTURE_INTERVAL_MS = 10_000;
@@ -43,10 +42,6 @@ async function readGitHead(projectRoot) {
   } catch {
     return '';
   }
-}
-
-function sha256(value) {
-  return createHash('sha256').update(value).digest('hex');
 }
 
 function finalStateFromEntry(entry = {}) {
@@ -210,9 +205,9 @@ function updateRunSummary(summary, entry) {
 
 /**
  * Keep periodic MHTML as an idle safety net instead of an independent stream.
- * Every event-driven capture postpones the next periodic snapshot. If nothing
- * else is captured for intervalMs, one periodic snapshot is taken and another
- * idle interval begins.
+ * Event activity postpones the next periodic snapshot even when it does not
+ * itself produce a capture. If nothing happens for intervalMs, one idle sample
+ * is requested and another inactivity interval begins.
  */
 export function createIdlePeriodicScheduler(onIdle, {
   intervalMs = PERIODIC_CAPTURE_INTERVAL_MS,
@@ -303,8 +298,9 @@ async function pageExecutionState(page) {
 /**
  * Capture Chromium's own MHTML serialization for a live page. Capture requests
  * are coalesced: one snapshot may be active and only the newest pending request
- * is retained. The manifest records request/coalescing provenance and the MHTML
- * hash so a later audit can request exact snapshots by sequence and verify them.
+ * is retained. The manifest records request/coalescing provenance and byte size;
+ * hashing the full MHTML is deliberately avoided because it duplicates work on
+ * very large snapshots without helping crawler correctness.
  */
 export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
   const directory = path.join(projectRoot, 'mhtml-diagnostics', diagnosticState.id);
@@ -326,6 +322,7 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
   let pendingCapture = null;
   let drainPromise = null;
   let idlePeriodic;
+  let idleCapture = null;
   let previousDiagnosticSample = null;
   let previousCapturedAt = null;
   let previousNavigationAmplifiedRequests = 0;
@@ -407,7 +404,6 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
         ...commonMetadata,
         filename,
         bytes: Buffer.byteLength(mhtml, 'utf8'),
-        sha256: sha256(mhtml),
         ok: true
       };
     } catch (error) {
@@ -415,7 +411,6 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
         ...commonMetadata,
         filename,
         bytes: 0,
-        sha256: '',
         ok: false,
         error: error?.message || String(error)
       };
@@ -472,11 +467,20 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
   }
 
   idlePeriodic = createIdlePeriodicScheduler(() => {
+    if (typeof idleCapture === 'function') {
+      void Promise.resolve(idleCapture()).catch(() => {});
+      return;
+    }
     void capture('periodic-10s');
   });
 
-  function startPeriodic() {
+  function startPeriodic(onIdle = null) {
+    if (typeof onIdle === 'function') idleCapture = onIdle;
     idlePeriodic.start();
+  }
+
+  function noteActivity() {
+    idlePeriodic.noteActivity();
   }
 
   async function writeSummary() {
@@ -500,5 +504,5 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
     await cdpSession.detach().catch(() => {});
   }
 
-  return { directory, manifestPath, summaryPath, capture, startPeriodic, close };
+  return { directory, manifestPath, summaryPath, capture, startPeriodic, noteActivity, close };
 }

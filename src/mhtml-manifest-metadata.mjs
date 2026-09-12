@@ -83,10 +83,11 @@ function semanticSignatureParts(sample) {
 }
 
 /**
- * Material-change signature for deciding when the development hook requests an
- * event-driven MHTML. Keep every beta3 raw-DOM/presentation field here so dev2
- * enriches diagnostics without reducing or otherwise changing capture
- * sensitivity. The semantic/retention fields are additive.
+ * Lightweight material-change signature used only when a diagnostic event is
+ * observed. Rich revision maps, disclosure-key arrays and per-turn details are
+ * deliberately excluded here: they are captured and hashed only when an MHTML
+ * is actually going to be written. This keeps dev diagnostics observational
+ * rather than creating a crawler-sized hot path of their own.
  */
 export function diagnosticSampleSignature(sample = {}) {
   return diagnosticHash({
@@ -113,18 +114,17 @@ export function diagnosticSampleSignature(sample = {}) {
     appBlocks: Number(sample.appBlocks || 0),
     collapsed: Number(sample.collapsed || 0),
     expanded: Number(sample.expanded || 0),
-    allCollapsedControls: Number(sample.allCollapsedControls || 0),
-    recognizedCollapsed: Number(sample.recognizedCollapsed || 0),
-    actionableCollapsed: Number(sample.actionableCollapsed || 0),
-    closedDetails: Number(sample.closedDetails || 0),
-    expansionGeneration: Number(sample.expansionGeneration || 0),
-    quiescentRounds: Number(sample.quiescentRounds || 0),
+    retainedRevision: Number(sample.retainedRevision || 0),
+    timelineMarkers: Number(sample.timelineMarkers || 0),
+    hydrationConflictsUnresolved: Number(sample.hydrationConflictsUnresolved || 0),
+    turnProcessingFailures: Number(sample.turnProcessingFailures || 0),
+    hydrationTimeoutEvents: Number(sample.hydrationTimeoutEvents || 0),
     retainedUnresolvedTurns: Number(sample.retainedUnresolvedTurns || 0),
     retainedUnresolvedDisclosures: Number(sample.retainedUnresolvedDisclosures || 0),
-    retainedUnresolvedTurnIds: sample.retainedUnresolvedTurnIds || [],
     reconciliationRounds: Number(sample.reconciliationRounds || 0),
     reconciliationStablePasses: Number(sample.reconciliationStablePasses || 0),
     reconciliationConverged: sample.reconciliationConverged,
+    mountRetentionSealed: Boolean(sample.mountRetentionSealed),
     manualPhase: sample.manualPhase || '',
     manualStepIndex: Number(sample.manualStepIndex || 0),
     manualStepCount: Number(sample.manualStepCount || 0),
@@ -132,21 +132,7 @@ export function diagnosticSampleSignature(sample = {}) {
     manualTargetTurnId: sample.manualTargetTurnId || '',
     manualInteractionCount: Number(sample.manualInteractionCount || 0),
     manualFinishRequested: Boolean(sample.manualFinishRequested),
-    manualEventCount: Number(sample.manualEventCount || 0),
-
-    // dev2 additions: semantic/archive state that can change without altering
-    // the coarse physical counts above.
-    retainedRevision: Number(sample.retainedRevision || 0),
-    retainedCorpusFingerprint: sample.retainedCorpusFingerprint || '',
-    mountedTurnIds: sample.mountedTurnIds || [],
-    retainedTurnIds: sample.retainedTurnIds || [],
-    turnRevisionMap: sample.turnRevisionMap || {},
-    hydrationConflictTurnIdsFull: sample.hydrationConflictTurnIdsFull || [],
-    turnProcessingFailureTurnIdsFull: sample.turnProcessingFailureTurnIdsFull || [],
-    hydrationTimeoutTurnIdsFull: sample.hydrationTimeoutTurnIdsFull || [],
-    retainedUnresolvedTurnIdsFull: sample.retainedUnresolvedTurnIdsFull || [],
-    actionableLogicalKeys: sample.actionableLogicalKeys || [],
-    disclosureByTurn: sample.disclosureByTurn || []
+    manualEventCount: Number(sample.manualEventCount || 0)
   });
 }
 

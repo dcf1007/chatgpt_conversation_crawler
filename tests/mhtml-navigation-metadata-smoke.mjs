@@ -25,12 +25,12 @@ for (const field of [
   'navigationAmplifiedRequests',
   'navigationDirectionResets',
   'navigationAmplifiedRequestsDelta',
-  'sha256',
   'summary.json',
   'coalescedRequests'
 ]) {
   assert.ok(recorder.includes(field), `MHTML recorder instrumentation missing ${field}`);
 }
+assert.doesNotMatch(recorder, /createHash|sha256/i, 'dev2.1 recorder must not hash complete MHTML snapshots');
 
 for (const field of [
   'retainedRevision',

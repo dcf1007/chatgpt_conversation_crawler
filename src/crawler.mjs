@@ -6,6 +6,7 @@ import {
 import { processTurnToFixedPoint, retainedTurnIds } from './crawler-turn-processing.mjs';
 
 const MANUAL_INSPECTION_ENV = 'CHATGPT_CRAWLER_MANUAL_INSPECTION';
+const DIAGNOSTIC_PROGRESS_EVENT = 'archive-crawler-diagnostic-progress';
 
 export { installCrawler, CRAWLER_PROGRESS_LIMITS };
 
@@ -40,21 +41,24 @@ async function retainPartialManualState(page) {
  * comparison after automatic capture completes.
  */
 export async function crawlConversation(page, options = {}) {
-  // The development MHTML recorder samples this lightweight page-side progress
-  // record. Publishing only the small fields it needs keeps diagnostics truthful
-  // without adding another telemetry subsystem to the permanent crawler core.
+  // Publish a lightweight page-side progress record for diagnostics. The dev
+  // MHTML hook listens to the event rather than polling the page once a second.
   const forwardProgress = async patch => {
     const progress = patch || {};
-    await page.evaluate(value => {
+    await page.evaluate(({ value, eventName }) => {
       window.__archiveDiagnosticProgress = value;
+      window.dispatchEvent(new Event(eventName));
     }, {
-      stage: String(progress.stage || ''),
-      phase: String(progress.phase || ''),
-      pass: Number(progress.pass || 0),
-      direction: String(progress.direction || ''),
-      step: Number(progress.step || 0),
-      scanningStatus: String(progress.scanningStatus || ''),
-      scanComplete: Boolean(progress.scanComplete)
+      eventName: DIAGNOSTIC_PROGRESS_EVENT,
+      value: {
+        stage: String(progress.stage || ''),
+        phase: String(progress.phase || ''),
+        pass: Number(progress.pass || 0),
+        direction: String(progress.direction || ''),
+        step: Number(progress.step || 0),
+        scanningStatus: String(progress.scanningStatus || ''),
+        scanComplete: Boolean(progress.scanComplete)
+      }
     }).catch(() => {});
     return options.onProgress?.(progress);
   };

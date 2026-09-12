@@ -5,14 +5,14 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-assert.equal(packageJson.version, '1.7.1-beta3-dev2');
+assert.equal(packageJson.version, '1.7.1-beta3-dev2.1');
 assert.equal(packageJson.scripts?.start, 'node server-dev.mjs');
 
 for (const required of [
   'server.mjs',
   'server-dev.mjs',
-  'V1_7_1_BETA3_DEV2.md',
-  'README.v1.7.1-beta3-dev2.txt',
+  'V1_7_1_BETA3_DEV2_1.md',
+  'README.v1.7.1-beta3-dev2.1.txt',
   'src/archive-integrity.mjs',
   'DIAGNOSTIC_BUILD_ONLY',
   'public/index.html',
@@ -37,7 +37,7 @@ for (const required of [
   'start-linux.sh',
   'start-macos.sh'
 ]) {
-  assert.ok(fs.existsSync(path.join(root, required)), `required v1.7.1 beta3-dev2 file missing: ${required}`);
+  assert.ok(fs.existsSync(path.join(root, required)), `required v1.7.1 beta3-dev2.1 file missing: ${required}`);
 }
 
-console.log('v1.7.1 beta3-dev2 package contract smoke test passed');
+console.log('v1.7.1 beta3-dev2.1 package contract smoke test passed');
