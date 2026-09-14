@@ -4,6 +4,7 @@ import { chromium } from 'playwright';
 import { createMhtmlRecorder } from './mhtml-recorder.mjs';
 import { createAsyncStartGate } from './mhtml-start-gate.mjs';
 import { diagnosticSampleSignature } from './mhtml-manifest-metadata.mjs';
+import { selectMhtmlCheckpointReason } from './mhtml-checkpoint-policy.mjs';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MATERIAL_SAMPLE_COOLDOWN_MS = 2000;
@@ -39,10 +40,10 @@ function createDiagnosticId(mode) {
 }
 
 /**
- * Read page diagnostics on demand. The lightweight mode is used only after an
- * actual browser/crawler event and avoids crawler.stats(), per-turn outerHTML,
- * disclosure-key arrays, and other deep forensic work. Rich mode is collected
- * only when an MHTML is actually about to be written (or for final shutdown).
+ * Read page diagnostics on demand. Lightweight sampling is used for frequent
+ * event telemetry. It deliberately avoids crawler.stats(), per-turn outerHTML,
+ * and full disclosure maps. Rich mode is reserved for actual MHTML forensic
+ * checkpoints and final shutdown.
  */
 async function samplePage(page, { rich = false } = {}) {
   return page.evaluate(({ rich }) => {
@@ -107,6 +108,23 @@ async function samplePage(page, { rich = false } = {}) {
     const timelineMarkers = Object.keys(crawlerState.timelineMarkers || {}).length;
     const expansionGeneration = Number(crawlerState.expansionGeneration || 0);
     const quiescence = crawlerState.quiescence || {};
+
+    // Target disclosure liveness can be sampled from permanent crawler state
+    // without invoking the expensive whole-turn turnDisclosureSample() helper.
+    const activeTurnId = String(
+      progressState.targetTurnId ||
+      manualState.targetTurnId ||
+      quiescence.scopeTurnId ||
+      crawlerState.lastExpansionTurn ||
+      ''
+    );
+    const activeTurnRevision = Number(crawlerState.turnRevisions?.[activeTurnId] || 0);
+    const activeTurnKnownKeys = [...(crawlerState.disclosureKnownKeysByTurn?.[activeTurnId] || [])].map(String).sort();
+    const activeTurnActionableLogicalKeys = activeTurnKnownKeys.filter(logicalKey => {
+      const hasCompletion = Object.prototype.hasOwnProperty.call(crawlerState.disclosureCompletions || {}, logicalKey);
+      const completed = hasCompletion ? Number(crawlerState.disclosureCompletions[logicalKey] || 0) : null;
+      return completed === null || completed < activeTurnRevision;
+    });
 
     // textContent is intentionally used instead of innerText: it still detects
     // textual mutation without forcing layout on very large virtualized pages.
@@ -174,7 +192,13 @@ async function samplePage(page, { rich = false } = {}) {
       manualTargetReason: String(manualState.targetReason || ''),
       manualInteractionCount: Number(manualState.interactionCount || 0),
       manualFinishRequested: Boolean(manualState.finishRequested),
-      manualEventCount: Array.isArray(manualState.events) ? manualState.events.length : 0
+      manualEventCount: Array.isArray(manualState.events) ? manualState.events.length : 0,
+      activeTurnId,
+      activeTurnRevision,
+      activeTurnRecognizedCollapsed: activeTurnKnownKeys.length,
+      activeTurnActionableCollapsed: activeTurnActionableLogicalKeys.length,
+      activeTurnClosedDetails: 0,
+      activeTurnActionableLogicalKeys
     };
 
     if (!rich) return base;
@@ -238,14 +262,14 @@ async function samplePage(page, { rich = false } = {}) {
       });
     }
 
-    const activeTurnId = String(
+    const richActiveTurnId = String(
       progressState.targetTurnId ||
       manualState.targetTurnId ||
       crawlerStats.quiescenceScopeTurn ||
       crawlerState.lastExpansionTurn ||
       ''
     );
-    const targetDisclosure = disclosureByTurn.find(item => item.turnId === activeTurnId) || {};
+    const targetDisclosure = disclosureByTurn.find(item => item.turnId === richActiveTurnId) || {};
 
     return {
       ...base,
@@ -275,14 +299,17 @@ async function samplePage(page, { rich = false } = {}) {
       mountObserverEvents: Number(crawlerStats.mountObserverEvents || 0),
       mountObserverHydrationEvents: Number(crawlerStats.mountObserverHydrationEvents || 0),
       mountObserverFlushCaptures: Number(crawlerStats.mountObserverFlushCaptures || 0),
-      activeTurnId,
-      activeTurnRevision: Number(turnRevisionMap[activeTurnId] || 0),
-      activeTurnRecognizedCollapsed: Number(targetDisclosure.recognizedCollapsed || 0),
-      activeTurnActionableCollapsed: Number(targetDisclosure.actionableCollapsed || 0),
+      activeTurnId: richActiveTurnId,
+      activeTurnRevision: Number(turnRevisionMap[richActiveTurnId] || 0),
+      activeTurnRecognizedCollapsed: Number(targetDisclosure.recognizedCollapsed || base.activeTurnRecognizedCollapsed || 0),
+      activeTurnActionableCollapsed: Number(targetDisclosure.actionableCollapsed || base.activeTurnActionableCollapsed || 0),
       activeTurnClosedDetails: Number(targetDisclosure.closedDetails || 0),
+      activeTurnActionableLogicalKeys: Array.isArray(targetDisclosure.actionableLogicalKeys)
+        ? targetDisclosure.actionableLogicalKeys
+        : base.activeTurnActionableLogicalKeys,
 
       // Rich state is compacted into hashes+deltas by the recorder and is never
-      // part of the event-detection signature.
+      // part of the high-frequency event-detection signature.
       mountedTurnIds: mountedIds,
       retainedTurnIds,
       turnRevisionMap,
@@ -427,6 +454,7 @@ async function startRecorder(page, mode) {
       diagnosticState,
       previousSample: null,
       lastSignature: '',
+      lastRecordedSignature: '',
       lastEventSampleAt: 0,
       lastResourceCaptureAt: 0,
       eventTimer: null,
@@ -440,31 +468,43 @@ async function startRecorder(page, mode) {
       owningContext.recorders.add(state);
     }
 
-    const capture = async (reason, sample = null) => {
+    const updateDiagnosticState = sample => {
+      if (!sample) return;
+      Object.assign(diagnosticState, {
+        url: page.url(),
+        phase: sample.phase || diagnosticState.phase,
+        pass: sample.pass,
+        direction: sample.direction,
+        step: sample.step,
+        stage: sample.stage,
+        mountedTurns: sample.mountedTurns,
+        retainedTurns: sample.retainedTurns,
+        oldestRetained: sample.oldestRetained,
+        newestRetained: sample.newestRetained,
+        scrollTop: sample.scrollTop,
+        scrollClient: sample.scrollClient,
+        mountedFirst: sample.mountedFirst,
+        mountedLast: sample.mountedLast,
+        scrollHeight: sample.scrollHeight,
+        preBlocks: sample.preBlocks,
+        codeBlocks: sample.codeBlocks,
+        appBlocks: sample.appBlocks
+      });
+    };
+
+    const capture = async (reason, sample = null, metadata = {}) => {
       if (state.closing) return;
-      if (sample) {
-        Object.assign(diagnosticState, {
-          url: page.url(),
-          phase: sample.phase || diagnosticState.phase,
-          pass: sample.pass,
-          direction: sample.direction,
-          step: sample.step,
-          stage: sample.stage,
-          mountedTurns: sample.mountedTurns,
-          retainedTurns: sample.retainedTurns,
-          oldestRetained: sample.oldestRetained,
-          newestRetained: sample.newestRetained,
-          scrollTop: sample.scrollTop,
-          scrollClient: sample.scrollClient,
-          mountedFirst: sample.mountedFirst,
-          mountedLast: sample.mountedLast,
-          scrollHeight: sample.scrollHeight,
-          preBlocks: sample.preBlocks,
-          codeBlocks: sample.codeBlocks,
-          appBlocks: sample.appBlocks
-        });
-      }
-      await recorder.capture(reason, sample ? { __diagnosticSample: sample } : {}).catch(() => {});
+      updateDiagnosticState(sample);
+      await recorder.capture(reason, {
+        ...metadata,
+        ...(sample ? { __diagnosticSample: sample } : {})
+      }).catch(() => {});
+    };
+
+    const recordTelemetry = async (reason, sample, metadata = {}) => {
+      if (state.closing || !sample) return;
+      updateDiagnosticState(sample);
+      await recorder.recordTelemetry(reason, sample, metadata).catch(() => {});
     };
 
     const updateObservedSample = sample => {
@@ -473,11 +513,11 @@ async function startRecorder(page, mode) {
       state.lastSignature = diagnosticSampleSignature(sample);
     };
 
-    const captureRich = async reason => {
+    const captureRich = async (reason, metadata = {}) => {
       if (state.closing || page.isClosed()) return;
       const richSample = await samplePage(page, { rich: true }).catch(() => null);
       if (richSample) updateObservedSample(richSample);
-      await capture(reason, richSample);
+      await capture(reason, richSample, metadata);
     };
 
     const sampleMaterialEvent = async () => {
@@ -489,18 +529,30 @@ async function startRecorder(page, mode) {
 
       const previousSample = state.previousSample;
       const signature = diagnosticSampleSignature(currentSample);
-      state.previousSample = currentSample;
-      state.lastSignature = signature;
+      const eventReasons = [...state.pendingEventReasons];
       state.pendingEventReasons.clear();
-      if (signature === state.lastCapturedSignature) return;
+      updateObservedSample(currentSample);
+      if (signature === state.lastRecordedSignature) return;
+      state.lastRecordedSignature = signature;
 
-      const reason = manualStateChanged(previousSample, currentSample)
-        ? 'manual-inspection-change'
-        : 'material-dom-change';
-      const richSample = await samplePage(page, { rich: true }).catch(() => currentSample);
-      state.lastCapturedSignature = diagnosticSampleSignature(richSample);
-      updateObservedSample(richSample);
-      await capture(reason, richSample);
+      if (manualStateChanged(previousSample, currentSample)) {
+        await captureRich('manual-inspection-change', { eventReasons });
+        state.lastRecordedSignature = state.lastSignature;
+        return;
+      }
+
+      // Raw DOM/progress/virtualizer changes remain useful evidence, but they are
+      // JSONL telemetry only. A separate narrow semantic policy decides whether
+      // the transition also deserves an expensive full MHTML serialization.
+      await recordTelemetry('material-dom-change', currentSample, { eventReasons });
+      const checkpointReason = selectMhtmlCheckpointReason(previousSample, currentSample);
+      if (checkpointReason) {
+        await captureRich(checkpointReason, {
+          checkpointSourceReason: 'material-dom-change',
+          eventReasons
+        });
+        state.lastRecordedSignature = state.lastSignature;
+      }
     };
 
     const signalMaterialEvent = reason => {
@@ -519,8 +571,6 @@ async function startRecorder(page, mode) {
       state.eventTimer.unref?.();
     };
 
-    state.lastCapturedSignature = '';
-
     await page.exposeBinding(DIAGNOSTIC_EVENT_BINDING, async (_source, reason) => {
       const current = pageState.get(page);
       if (!current || current.closing) return;
@@ -532,7 +582,7 @@ async function startRecorder(page, mode) {
     const initialSample = await samplePage(page, { rich: true }).catch(() => null);
     if (initialSample) {
       updateObservedSample(initialSample);
-      state.lastCapturedSignature = state.lastSignature;
+      state.lastRecordedSignature = state.lastSignature;
       state.lastEventSampleAt = Date.now();
     }
     await capture('initial-loaded', initialSample);
@@ -557,7 +607,24 @@ async function startRecorder(page, mode) {
       clearTimeout(state.resourceTimer);
       state.resourceTimer = setTimeout(async () => {
         if (state.closing || page.isClosed()) return;
-        await captureRich('lazy-resource-loaded');
+        const previousSample = state.previousSample;
+        const resourceSample = await samplePage(page, { rich: false }).catch(() => null);
+        if (!resourceSample) return;
+        updateObservedSample(resourceSample);
+        state.lastRecordedSignature = state.lastSignature;
+        await recordTelemetry('lazy-resource-loaded', resourceSample, {
+          resourceType,
+          resourceUrl
+        });
+        const checkpointReason = selectMhtmlCheckpointReason(previousSample, resourceSample);
+        if (checkpointReason === 'archive-resource-state-change') {
+          await captureRich(checkpointReason, {
+            checkpointSourceReason: 'lazy-resource-loaded',
+            resourceType,
+            resourceUrl
+          });
+          state.lastRecordedSignature = state.lastSignature;
+        }
       }, 700);
       state.resourceTimer.unref?.();
     });
@@ -566,6 +633,11 @@ async function startRecorder(page, mode) {
 
 async function stopRecorder(state, reason = 'context-closing') {
   if (!state || state.closing) return;
+
+  // Seal the hook before taking the final rich sample. Late MutationObserver,
+  // requestfinished, or exposed-binding callbacks must not enqueue new work
+  // behind the closing checkpoint.
+  state.closing = true;
   if (state.eventTimer) clearTimeout(state.eventTimer);
   if (state.resourceTimer) clearTimeout(state.resourceTimer);
   await disposePageEventBridge(state.page);
@@ -575,32 +647,35 @@ async function stopRecorder(state, reason = 'context-closing') {
       ? await samplePage(state.page, { rich: true }).catch(() => state.previousSample)
       : state.previousSample;
     if (finalSample) {
-      Object.assign(state.diagnosticState, {
-        url: state.page?.url?.() || state.diagnosticState.url,
-        phase: finalSample.phase || state.diagnosticState.phase,
-        pass: finalSample.pass,
-        direction: finalSample.direction,
-        step: finalSample.step,
-        stage: finalSample.stage,
-        mountedTurns: finalSample.mountedTurns,
-        retainedTurns: finalSample.retainedTurns,
-        oldestRetained: finalSample.oldestRetained,
-        newestRetained: finalSample.newestRetained,
-        scrollTop: finalSample.scrollTop,
-        scrollClient: finalSample.scrollClient,
-        mountedFirst: finalSample.mountedFirst,
-        mountedLast: finalSample.mountedLast,
-        scrollHeight: finalSample.scrollHeight,
-        preBlocks: finalSample.preBlocks,
-        codeBlocks: finalSample.codeBlocks,
-        appBlocks: finalSample.appBlocks
-      });
+      updateDiagnosticStateForClosing(state, finalSample);
     }
     await state.recorder.capture(reason, finalSample ? { __diagnosticSample: finalSample } : {}).catch(() => {});
   } finally {
-    state.closing = true;
     await state.recorder.close().catch(() => {});
   }
+}
+
+function updateDiagnosticStateForClosing(state, finalSample) {
+  Object.assign(state.diagnosticState, {
+    url: state.page?.url?.() || state.diagnosticState.url,
+    phase: finalSample.phase || state.diagnosticState.phase,
+    pass: finalSample.pass,
+    direction: finalSample.direction,
+    step: finalSample.step,
+    stage: finalSample.stage,
+    mountedTurns: finalSample.mountedTurns,
+    retainedTurns: finalSample.retainedTurns,
+    oldestRetained: finalSample.oldestRetained,
+    newestRetained: finalSample.newestRetained,
+    scrollTop: finalSample.scrollTop,
+    scrollClient: finalSample.scrollClient,
+    mountedFirst: finalSample.mountedFirst,
+    mountedLast: finalSample.mountedLast,
+    scrollHeight: finalSample.scrollHeight,
+    preBlocks: finalSample.preBlocks,
+    codeBlocks: finalSample.codeBlocks,
+    appBlocks: finalSample.appBlocks
+  });
 }
 
 function attachTargetPage(page, mode) {
