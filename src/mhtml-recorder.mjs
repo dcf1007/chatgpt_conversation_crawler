@@ -1,9 +1,118 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { buildManifestMetadata } from './mhtml-manifest-metadata.mjs';
+import {
+  buildManifestMetadata,
+  diagnosticHash,
+  diagnosticSampleSignature
+} from './mhtml-manifest-metadata.mjs';
 
 const PERIODIC_CAPTURE_INTERVAL_MS = 10_000;
+const MHTML_CAPTURE_TIMEOUT_MS = 60_000;
+const CDP_RECOVERY_TIMEOUT_MS = 5_000;
 const MAX_SUMMARY_INTERESTING_SEQUENCES = 500;
+const TELEMETRY_ONLY_CAPTURE_REASONS = new Set([
+  'material-dom-change',
+  'lazy-resource-loaded'
+]);
+
+const TELEMETRY_FIELDS = [
+  'stage',
+  'phase',
+  'pass',
+  'direction',
+  'step',
+  'progressDetail',
+  'scanningStatus',
+  'scanComplete',
+  'previewPaused',
+  'mountedTurns',
+  'retainedTurns',
+  'retainedRevision',
+  'semanticRetainedRevision',
+  'timelineMarkers',
+  'oldestRetained',
+  'newestRetained',
+  'scrollTop',
+  'scrollClient',
+  'mountedFirst',
+  'mountedLast',
+  'scrollHeight',
+  'physicalMaximumTop',
+  'atPhysicalTop',
+  'atPhysicalBottom',
+  'textLength',
+  'preBlocks',
+  'codeBlocks',
+  'images',
+  'svgs',
+  'iframes',
+  'appBlocks',
+  'collapsed',
+  'expanded',
+  'expansionGeneration',
+  'lastExpansionTurn',
+  'lastExpansionStatus',
+  'quiescentRounds',
+  'requiredQuiescentRounds',
+  'quiescenceConverged',
+  'quiescenceScopeTurn',
+  'quiescenceTimedOut',
+  'retainedUnresolvedTurns',
+  'retainedUnresolvedDisclosures',
+  'hydrationConflictsUnresolved',
+  'turnProcessingFailures',
+  'hydrationTimeoutEvents',
+  'scanLimitEvents',
+  'expansionLimitEvents',
+  'reconciliationRounds',
+  'reconciliationStablePasses',
+  'reconciliationConverged',
+  'mountRetentionSealed',
+  'manualPhase',
+  'manualStepIndex',
+  'manualStepCount',
+  'manualStepLabel',
+  'manualTargetTurnId',
+  'manualTargetReason',
+  'manualInteractionCount',
+  'manualFinishRequested',
+  'manualEventCount',
+  'activeTurnId',
+  'activeTurnRevision',
+  'activeTurnRecognizedCollapsed',
+  'activeTurnActionableCollapsed',
+  'activeTurnClosedDetails',
+  'activeTurnActionableLogicalKeys'
+];
+
+const TELEMETRY_SEMANTIC_FIELDS = [
+  'retainedTurns',
+  'retainedRevision',
+  'semanticRetainedRevision',
+  'timelineMarkers',
+  'oldestRetained',
+  'newestRetained',
+  'preBlocks',
+  'codeBlocks',
+  'images',
+  'svgs',
+  'iframes',
+  'appBlocks',
+  'expansionGeneration',
+  'retainedUnresolvedTurns',
+  'retainedUnresolvedDisclosures',
+  'hydrationConflictsUnresolved',
+  'turnProcessingFailures',
+  'hydrationTimeoutEvents',
+  'reconciliationConverged',
+  'mountRetentionSealed',
+  'activeTurnId',
+  'activeTurnRevision',
+  'activeTurnRecognizedCollapsed',
+  'activeTurnActionableCollapsed',
+  'activeTurnClosedDetails',
+  'activeTurnActionableLogicalKeys'
+];
 
 function sanitizeFilenamePart(value) {
   return String(value || 'snapshot')
@@ -18,6 +127,46 @@ function timestampForFilename(date = new Date()) {
 
 function sortedStrings(values) {
   return [...new Set((values || []).map(value => String(value || '')).filter(Boolean))].sort();
+}
+
+function normalizeTelemetryValue(value) {
+  if (Array.isArray(value)) return [...value].map(item => String(item || '')).filter(Boolean).sort();
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value === 'boolean' || value === null) return value;
+  if (value === undefined) return null;
+  return String(value);
+}
+
+function selectTelemetryFields(sample = {}, fields = TELEMETRY_FIELDS) {
+  return Object.fromEntries(fields.map(field => [field, normalizeTelemetryValue(sample[field])]));
+}
+
+function changedTelemetryFields(previous, current) {
+  if (!previous) return TELEMETRY_FIELDS.filter(field => current[field] !== null);
+  return TELEMETRY_FIELDS.filter(field =>
+    JSON.stringify(normalizeTelemetryValue(previous[field])) !== JSON.stringify(normalizeTelemetryValue(current[field]))
+  );
+}
+
+function telemetrySemanticHash(sample = {}) {
+  return diagnosticHash(selectTelemetryFields(sample, TELEMETRY_SEMANTIC_FIELDS));
+}
+
+function telemetryDeltas(previous, current) {
+  const numberDelta = field => Number(current?.[field] || 0) - Number(previous?.[field] || 0);
+  return {
+    mountedTurnsDelta: numberDelta('mountedTurns'),
+    retainedTurnsDelta: numberDelta('retainedTurns'),
+    retainedRevisionDelta: numberDelta('retainedRevision'),
+    scrollTopDelta: numberDelta('scrollTop'),
+    scrollHeightDelta: numberDelta('scrollHeight'),
+    expansionGenerationDelta: numberDelta('expansionGeneration'),
+    retainedUnresolvedTurnsDelta: numberDelta('retainedUnresolvedTurns'),
+    retainedUnresolvedDisclosuresDelta: numberDelta('retainedUnresolvedDisclosures'),
+    hydrationConflictsUnresolvedDelta: numberDelta('hydrationConflictsUnresolved'),
+    turnProcessingFailuresDelta: numberDelta('turnProcessingFailures'),
+    hydrationTimeoutEventsDelta: numberDelta('hydrationTimeoutEvents')
+  };
 }
 
 async function readPackageVersion(projectRoot) {
@@ -77,11 +226,17 @@ function createRunSummary({ diagnosticState, packageVersion, sourceCommit, start
     sourceCommit,
     startedAt,
     endedAt: '',
+    manifestRecordCount: 0,
+    telemetryRecordCount: 0,
     snapshotCount: 0,
     failedSnapshotCount: 0,
+    timedOutSnapshotCount: 0,
+    recoveredCdpSessionCount: 0,
     totalMhtmlBytes: 0,
     captureRequestCount: 0,
     coalescedRequestCount: 0,
+    telemetryReasonCounts: {},
+    mhtmlReasonCounts: {},
     firstCapturedAt: '',
     lastCapturedAt: '',
     firstRetainedRevision: null,
@@ -106,13 +261,22 @@ function createRunSummary({ diagnosticState, packageVersion, sourceCommit, start
 }
 
 function updateRunSummary(summary, entry) {
-  summary.snapshotCount++;
-  summary.failedSnapshotCount += entry.ok ? 0 : 1;
-  summary.totalMhtmlBytes += Number(entry.bytes || 0);
-  summary.captureRequestCount = Math.max(summary.captureRequestCount, Number(entry.requestId || 0));
-  summary.coalescedRequestCount += Number(entry.coalescedRequests || 0);
-  summary.firstCapturedAt ||= entry.capturedAt || '';
-  summary.lastCapturedAt = entry.capturedAt || summary.lastCapturedAt;
+  summary.manifestRecordCount++;
+  if (entry.entryType === 'telemetry') {
+    summary.telemetryRecordCount++;
+    summary.telemetryReasonCounts[entry.reason] = Number(summary.telemetryReasonCounts[entry.reason] || 0) + 1;
+  } else {
+    summary.snapshotCount++;
+    summary.failedSnapshotCount += entry.ok ? 0 : 1;
+    summary.timedOutSnapshotCount += entry.captureTimedOut ? 1 : 0;
+    summary.recoveredCdpSessionCount += entry.cdpRecovered ? 1 : 0;
+    summary.totalMhtmlBytes += Number(entry.bytes || 0);
+    summary.captureRequestCount = Math.max(summary.captureRequestCount, Number(entry.requestId || 0));
+    summary.coalescedRequestCount += Number(entry.coalescedRequests || 0);
+    summary.mhtmlReasonCounts[entry.reason] = Number(summary.mhtmlReasonCounts[entry.reason] || 0) + 1;
+    summary.firstCapturedAt ||= entry.capturedAt || '';
+    summary.lastCapturedAt = entry.capturedAt || summary.lastCapturedAt;
+  }
 
   const revision = Number(entry.retainedRevision || entry.semanticRetainedRevision || 0);
   if (summary.firstRetainedRevision == null) summary.firstRetainedRevision = revision;
@@ -154,8 +318,9 @@ function updateRunSummary(summary, entry) {
   if (Array.isArray(entry.newHydrationTimeoutTurnIds)) {
     summary.hydrationTimeoutTurnIds = sortedStrings([...summary.hydrationTimeoutTurnIds, ...entry.newHydrationTimeoutTurnIds]);
   }
-  if (Array.isArray(entry.retainedUnresolvedTurnIdsFull)) summary.unresolvedTurnIdsAtEnd = sortedStrings(entry.retainedUnresolvedTurnIdsFull);
-  else {
+  if (Array.isArray(entry.retainedUnresolvedTurnIdsFull)) {
+    summary.unresolvedTurnIdsAtEnd = sortedStrings(entry.retainedUnresolvedTurnIdsFull);
+  } else {
     if (Array.isArray(entry.newUnresolvedTurnIds)) {
       summary.unresolvedTurnIdsAtEnd = sortedStrings([...summary.unresolvedTurnIdsAtEnd, ...entry.newUnresolvedTurnIds]);
     }
@@ -181,9 +346,11 @@ function updateRunSummary(summary, entry) {
     lastRange.lastSequence = entry.sequence;
   }
 
-  const interesting = !entry.ok ||
+  const interesting =
+    (entry.entryType === 'mhtml' && entry.ok === false) ||
     entry.reason === 'manual-inspection-change' ||
     entry.semanticChangedSincePreviousCapture === true ||
+    entry.semanticChangedSincePreviousTelemetry === true ||
     Number(entry.coalescedRequests || 0) > 0 ||
     Number(entry.navigationAmplifiedRequestsDelta || 0) > 0 ||
     (entry.changedTurnIds?.length || 0) > 0 ||
@@ -295,76 +462,117 @@ async function pageExecutionState(page) {
   }).catch(() => ({}));
 }
 
+function timeoutError(message, timeoutMs) {
+  const error = new Error(`${message} after ${timeoutMs} ms.`);
+  error.code = 'MHTML_CAPTURE_TIMEOUT';
+  return error;
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return Promise.resolve(promise);
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(timeoutError(message, timeoutMs)), timeoutMs);
+      timer.unref?.();
+    })
+  ]).finally(() => clearTimeout(timer));
+}
+
+function recoverableCdpError(error) {
+  if (error?.code === 'MHTML_CAPTURE_TIMEOUT') return true;
+  return /target.*closed|context.*closed|browser.*closed|session.*closed|session.*detached|not attached|protocol error/i.test(
+    error?.message || String(error || '')
+  );
+}
+
 /**
- * Capture Chromium's own MHTML serialization for a live page. Capture requests
+ * Capture Chromium's own MHTML serialization for a live page. MHTML requests
  * are coalesced: one snapshot may be active and only the newest pending request
- * is retained. The manifest records request/coalescing provenance and byte size;
- * hashing the full MHTML is deliberately avoided because it duplicates work on
- * very large snapshots without helping crawler correctness.
+ * is retained. High-frequency page events are written separately as JSONL
+ * telemetry and never enter this queue merely because the DOM moved.
  */
-export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
+export async function createMhtmlRecorder(projectRoot, diagnosticState, page, {
+  captureTimeoutMs = MHTML_CAPTURE_TIMEOUT_MS,
+  recoveryTimeoutMs = CDP_RECOVERY_TIMEOUT_MS
+} = {}) {
   const directory = path.join(projectRoot, 'mhtml-diagnostics', diagnosticState.id);
   await fs.mkdir(directory, { recursive: true });
 
   const manifestPath = path.join(directory, 'manifest.jsonl');
   const summaryPath = path.join(directory, 'summary.json');
-  const cdpSession = await page.context().newCDPSession(page);
-  await cdpSession.send('Page.enable').catch(() => {});
-
   const startedAt = new Date().toISOString();
   const packageVersion = await readPackageVersion(projectRoot);
   const sourceCommit = process.env.CHATGPT_CRAWLER_COMMIT || process.env.GITHUB_SHA || await readGitHead(projectRoot);
   const runSummary = createRunSummary({ diagnosticState, packageVersion, sourceCommit, startedAt });
 
-  let sequenceNumber = 0;
+  let cdpSession = null;
+  let manifestSequence = 0;
+  let snapshotSequence = 0;
   let requestNumber = 0;
+  let acceptingCaptures = true;
   let closed = false;
   let pendingCapture = null;
   let drainPromise = null;
+  let manifestWritePromise = Promise.resolve();
   let idlePeriodic;
   let idleCapture = null;
-  let previousDiagnosticSample = null;
+  let previousMhtmlDiagnosticSample = null;
+  let previousTelemetrySample = null;
   let previousCapturedAt = null;
   let previousNavigationAmplifiedRequests = 0;
 
-  async function appendManifest(entry) {
-    await fs.appendFile(manifestPath, `${JSON.stringify(entry)}\n`, 'utf8');
+  async function createCdpSession() {
+    const session = await withTimeout(
+      page.context().newCDPSession(page),
+      recoveryTimeoutMs,
+      'Creating diagnostic CDP session timed out'
+    );
+    await withTimeout(
+      session.send('Page.enable').catch(() => {}),
+      recoveryTimeoutMs,
+      'Enabling diagnostic CDP Page domain timed out'
+    );
+    return session;
   }
 
-  async function captureOne(request) {
-    const { reason, metadata, requestedAt, requestId, coalescedRequests, coalescedReasons } = request;
-    sequenceNumber++;
-    const filenameBase = [
-      String(sequenceNumber).padStart(4, '0'),
-      timestampForFilename(requestedAt),
-      sanitizeFilenamePart(diagnosticState.sessionMode),
-      sanitizeFilenamePart(reason)
-    ].join('-');
-    const filename = `${filenameBase}.mhtml`;
-    const filePath = path.join(directory, filename);
-    const executionState = await pageExecutionState(page);
-    const rawSample = metadata?.__diagnosticSample || null;
-    const explicitMetadata = { ...(metadata || {}) };
-    delete explicitMetadata.__diagnosticSample;
-    const sampledMetadata = rawSample
-      ? buildManifestMetadata(rawSample, previousDiagnosticSample, {
-          forceDetails: sequenceNumber === 1 || reason === 'manual-inspection-change'
-        })
-      : {};
-    if (rawSample) previousDiagnosticSample = rawSample;
+  async function detachCdpSession(session) {
+    if (!session) return;
+    await withTimeout(
+      session.detach().catch(() => {}),
+      recoveryTimeoutMs,
+      'Detaching diagnostic CDP session timed out'
+    ).catch(() => {});
+  }
 
-    const capturedAt = new Date();
+  async function recoverCdpSession() {
+    const staleSession = cdpSession;
+    cdpSession = null;
+    await detachCdpSession(staleSession);
+    if (closed || page.isClosed?.()) return false;
+    try {
+      cdpSession = await createCdpSession();
+      return true;
+    } catch {
+      cdpSession = null;
+      return false;
+    }
+  }
+
+  cdpSession = await createCdpSession();
+
+  function appendManifest(entry) {
+    manifestWritePromise = manifestWritePromise.then(async () => {
+      await fs.appendFile(manifestPath, `${JSON.stringify(entry)}\n`, 'utf8');
+      updateRunSummary(runSummary, entry);
+    });
+    return manifestWritePromise;
+  }
+
+  function commonStateMetadata(executionState = {}) {
     const amplified = Number(executionState.navigationAmplifiedRequests || 0);
-    const commonMetadata = {
-      sequence: sequenceNumber,
-      requestId,
-      requestedAt: requestedAt.toISOString(),
-      capturedAt: capturedAt.toISOString(),
-      captureLatencyMs: Math.max(0, capturedAt.getTime() - requestedAt.getTime()),
-      elapsedSincePreviousCaptureMs: previousCapturedAt ? Math.max(0, capturedAt.getTime() - previousCapturedAt.getTime()) : null,
-      coalescedRequests: Number(coalescedRequests || 0),
-      coalescedReasons: Array.isArray(coalescedReasons) ? coalescedReasons.slice(-20) : [],
-      reason,
+    const common = {
       sessionMode: diagnosticState.sessionMode,
       diagnosticId: diagnosticState.id,
       crawlerVersion: packageVersion,
@@ -388,36 +596,186 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
       codeBlocks: diagnosticState.codeBlocks || 0,
       appBlocks: diagnosticState.appBlocks || 0,
       ...executionState,
-      navigationAmplifiedRequestsDelta: Math.max(0, amplified - previousNavigationAmplifiedRequests),
-      ...sampledMetadata,
+      navigationAmplifiedRequestsDelta: Math.max(0, amplified - previousNavigationAmplifiedRequests)
+    };
+    previousNavigationAmplifiedRequests = amplified;
+    return common;
+  }
+
+  async function recordTelemetry(reason, sample = {}, metadata = {}) {
+    if (closed || !acceptingCaptures) return;
+    const recordedAt = new Date();
+    const previous = previousTelemetrySample;
+    const current = sample || {};
+    const currentSemanticHash = telemetrySemanticHash(current);
+    const previousSemanticHash = previous ? telemetrySemanticHash(previous) : '';
+    const executionState = await pageExecutionState(page);
+    const explicitMetadata = { ...(metadata || {}) };
+    delete explicitMetadata.__diagnosticSample;
+    manifestSequence++;
+
+    const entry = {
+      sequence: manifestSequence,
+      entryType: 'telemetry',
+      recordedAt: recordedAt.toISOString(),
+      reason: String(reason || 'page-event'),
+      ...commonStateMetadata(executionState),
+      ...selectTelemetryFields(current),
+      telemetrySignatureHash: diagnosticSampleSignature(current),
+      previousTelemetrySignatureHash: previous ? diagnosticSampleSignature(previous) : '',
+      semanticTelemetryHash: currentSemanticHash,
+      previousSemanticTelemetryHash: previousSemanticHash,
+      semanticChangedSincePreviousTelemetry: previous ? currentSemanticHash !== previousSemanticHash : null,
+      changedFields: changedTelemetryFields(previous, current),
+      ...telemetryDeltas(previous, current),
       ...explicitMetadata
     };
-    previousCapturedAt = capturedAt;
-    previousNavigationAmplifiedRequests = amplified;
+    previousTelemetrySample = current;
+    await appendManifest(entry).catch(() => {});
+  }
 
+  async function sendCaptureSnapshot() {
+    if (!cdpSession) cdpSession = await createCdpSession();
+    return withTimeout(
+      cdpSession.send('Page.captureSnapshot', { format: 'mhtml' }),
+      captureTimeoutMs,
+      'Chromium MHTML capture timed out'
+    );
+  }
+
+  async function captureSnapshotWithRecovery() {
+    let attempts = 0;
+    let cdpRecovered = false;
+    let captureTimedOut = false;
+
+    try {
+      attempts++;
+      return {
+        snapshot: await sendCaptureSnapshot(),
+        attempts,
+        cdpRecovered,
+        captureTimedOut
+      };
+    } catch (firstError) {
+      captureTimedOut = firstError?.code === 'MHTML_CAPTURE_TIMEOUT';
+      if (!recoverableCdpError(firstError)) throw Object.assign(firstError, { attempts, cdpRecovered, captureTimedOut });
+
+      cdpRecovered = await recoverCdpSession();
+      if (!cdpRecovered || captureTimedOut) {
+        throw Object.assign(firstError, { attempts, cdpRecovered, captureTimedOut });
+      }
+
+      try {
+        attempts++;
+        return {
+          snapshot: await sendCaptureSnapshot(),
+          attempts,
+          cdpRecovered,
+          captureTimedOut
+        };
+      } catch (retryError) {
+        captureTimedOut ||= retryError?.code === 'MHTML_CAPTURE_TIMEOUT';
+        if (recoverableCdpError(retryError)) cdpRecovered = await recoverCdpSession() || cdpRecovered;
+        throw Object.assign(retryError, { attempts, cdpRecovered, captureTimedOut });
+      }
+    }
+  }
+
+  async function captureOne(request) {
+    const { reason, metadata, requestedAt, requestId, coalescedRequests, coalescedReasons } = request;
+    snapshotSequence++;
+    const filenameBase = [
+      String(snapshotSequence).padStart(4, '0'),
+      timestampForFilename(requestedAt),
+      sanitizeFilenamePart(diagnosticState.sessionMode),
+      sanitizeFilenamePart(reason)
+    ].join('-');
+    const filename = `${filenameBase}.mhtml`;
+    const filePath = path.join(directory, filename);
+    const executionState = await pageExecutionState(page);
+    const rawSample = metadata?.__diagnosticSample || null;
+    const explicitMetadata = { ...(metadata || {}) };
+    delete explicitMetadata.__diagnosticSample;
+    const sampledMetadata = rawSample
+      ? buildManifestMetadata(rawSample, previousMhtmlDiagnosticSample, {
+          forceDetails: snapshotSequence === 1 || reason === 'manual-inspection-change'
+        })
+      : {};
+
+    const captureStartedAt = new Date();
     let entry;
     try {
-      const snapshot = await cdpSession.send('Page.captureSnapshot', { format: 'mhtml' });
-      const mhtml = String(snapshot?.data || '');
+      const result = await captureSnapshotWithRecovery();
+      const mhtml = String(result.snapshot?.data || '');
       await fs.writeFile(filePath, mhtml, 'utf8');
+      const captureCompletedAt = new Date();
+      manifestSequence++;
       entry = {
-        ...commonMetadata,
+        sequence: manifestSequence,
+        snapshotSequence,
+        entryType: 'mhtml',
+        requestId,
+        requestedAt: requestedAt.toISOString(),
+        captureStartedAt: captureStartedAt.toISOString(),
+        captureCompletedAt: captureCompletedAt.toISOString(),
+        capturedAt: captureCompletedAt.toISOString(),
+        queueLatencyMs: Math.max(0, captureStartedAt.getTime() - requestedAt.getTime()),
+        captureDurationMs: Math.max(0, captureCompletedAt.getTime() - captureStartedAt.getTime()),
+        captureLatencyMs: Math.max(0, captureCompletedAt.getTime() - requestedAt.getTime()),
+        elapsedSincePreviousCaptureMs: previousCapturedAt
+          ? Math.max(0, captureCompletedAt.getTime() - previousCapturedAt.getTime())
+          : null,
+        captureAttempts: result.attempts,
+        captureTimedOut: result.captureTimedOut,
+        cdpRecovered: result.cdpRecovered,
+        coalescedRequests: Number(coalescedRequests || 0),
+        coalescedReasons: Array.isArray(coalescedReasons) ? coalescedReasons.slice(-20) : [],
+        reason,
+        ...commonStateMetadata(executionState),
+        ...sampledMetadata,
+        ...explicitMetadata,
         filename,
         bytes: Buffer.byteLength(mhtml, 'utf8'),
         ok: true
       };
+      previousCapturedAt = captureCompletedAt;
     } catch (error) {
+      const captureCompletedAt = new Date();
+      manifestSequence++;
       entry = {
-        ...commonMetadata,
+        sequence: manifestSequence,
+        snapshotSequence,
+        entryType: 'mhtml',
+        requestId,
+        requestedAt: requestedAt.toISOString(),
+        captureStartedAt: captureStartedAt.toISOString(),
+        captureCompletedAt: captureCompletedAt.toISOString(),
+        capturedAt: captureCompletedAt.toISOString(),
+        queueLatencyMs: Math.max(0, captureStartedAt.getTime() - requestedAt.getTime()),
+        captureDurationMs: Math.max(0, captureCompletedAt.getTime() - captureStartedAt.getTime()),
+        captureLatencyMs: Math.max(0, captureCompletedAt.getTime() - requestedAt.getTime()),
+        elapsedSincePreviousCaptureMs: previousCapturedAt
+          ? Math.max(0, captureCompletedAt.getTime() - previousCapturedAt.getTime())
+          : null,
+        captureAttempts: Number(error?.attempts || 1),
+        captureTimedOut: Boolean(error?.captureTimedOut || error?.code === 'MHTML_CAPTURE_TIMEOUT'),
+        cdpRecovered: Boolean(error?.cdpRecovered),
+        coalescedRequests: Number(coalescedRequests || 0),
+        coalescedReasons: Array.isArray(coalescedReasons) ? coalescedReasons.slice(-20) : [],
+        reason,
+        ...commonStateMetadata(executionState),
+        ...sampledMetadata,
+        ...explicitMetadata,
         filename,
         bytes: 0,
         ok: false,
         error: error?.message || String(error)
       };
+      previousCapturedAt = captureCompletedAt;
     }
 
+    if (rawSample) previousMhtmlDiagnosticSample = rawSample;
     await appendManifest(entry).catch(() => {});
-    updateRunSummary(runSummary, entry);
   }
 
   async function drainCaptures() {
@@ -428,8 +786,8 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
     }
   }
 
-  function capture(reason, metadata = {}) {
-    if (closed) return drainPromise || Promise.resolve();
+  function queueMhtmlCapture(reason, metadata = {}, { force = false } = {}) {
+    if (closed || (!acceptingCaptures && !force)) return drainPromise || Promise.resolve();
 
     if (reason !== 'periodic-10s') idlePeriodic?.noteActivity();
 
@@ -466,6 +824,27 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
       });
   }
 
+  /**
+   * Backward-compatible capture entry point for explicit forensic checkpoints.
+   * The two former high-frequency reasons are permanently redirected to JSONL
+   * telemetry so callers cannot accidentally recreate material-DOM MHTML floods.
+   */
+  function capture(reason, metadata = {}) {
+    const normalizedReason = String(reason || 'checkpoint');
+    const sample = metadata?.__diagnosticSample || {};
+    if (TELEMETRY_ONLY_CAPTURE_REASONS.has(normalizedReason)) {
+      if (normalizedReason !== 'periodic-10s') idlePeriodic?.noteActivity();
+      return recordTelemetry(normalizedReason, sample, metadata);
+    }
+
+    if (normalizedReason === 'context-closing') {
+      acceptingCaptures = false;
+      idlePeriodic?.stop();
+      return queueMhtmlCapture(normalizedReason, metadata, { force: true });
+    }
+    return queueMhtmlCapture(normalizedReason, metadata);
+  }
+
   idlePeriodic = createIdlePeriodicScheduler(() => {
     if (typeof idleCapture === 'function') {
       void Promise.resolve(idleCapture()).catch(() => {});
@@ -480,6 +859,7 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
   }
 
   function noteActivity() {
+    if (!acceptingCaptures || closed) return;
     idlePeriodic.noteActivity();
   }
 
@@ -492,6 +872,7 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
 
   async function close() {
     if (closed) return;
+    acceptingCaptures = false;
     idlePeriodic.stop();
     await drainPromise?.catch(() => {});
     if (pendingCapture) {
@@ -500,9 +881,20 @@ export async function createMhtmlRecorder(projectRoot, diagnosticState, page) {
     }
     closed = true;
     pendingCapture = null;
+    await manifestWritePromise.catch(() => {});
     await writeSummary().catch(() => {});
-    await cdpSession.detach().catch(() => {});
+    await detachCdpSession(cdpSession);
+    cdpSession = null;
   }
 
-  return { directory, manifestPath, summaryPath, capture, startPeriodic, noteActivity, close };
+  return {
+    directory,
+    manifestPath,
+    summaryPath,
+    capture,
+    recordTelemetry,
+    startPeriodic,
+    noteActivity,
+    close
+  };
 }
