@@ -289,6 +289,7 @@ async function launchJobBrowser(job) {
 async function runJob(job) {
   const heartbeat = setInterval(() => { job.heartbeatAt = now(); }, 2000);
   heartbeat.unref?.();
+  let completionPatch = null;
 
   try {
     await launchJobBrowser(job);
@@ -389,7 +390,10 @@ async function runJob(job) {
     job.html = snapshot.html;
     job.previewHtml = snapshot.html;
     job.previewVersion++;
-    update(job, {
+
+    // Build the final public completion patch now, but do not publish it until
+    // Playwright and the development diagnostic recorder have both closed.
+    completionPatch = {
       ...snapshot.stats,
       state: 'complete',
       stage: 'complete',
@@ -403,8 +407,21 @@ async function runJob(job) {
       scanComplete: true,
       pass: 0,
       direction: '',
-      step: 0,
-      finishedAt: now()
+      step: 0
+    };
+    update(job, {
+      ...snapshot.stats,
+      state: 'running',
+      stage: 'finalization',
+      phase: 'Closing browser session',
+      detail: 'Final archive assembled; closing the browser and diagnostic recorder before enabling download.',
+      integrityStatus: integrity.status,
+      integrityWarningCount: integrity.warningCount,
+      integrityWarnings: integrity.warnings,
+      scanComplete: true,
+      pass: 0,
+      direction: '',
+      step: 0
     });
   } catch (error) {
     const cancelled = job.cancelRequested || error?.code === 'ARCHIVE_CANCELLED';
@@ -427,6 +444,21 @@ async function runJob(job) {
     job.context = null;
     job.browser = null;
     job.page = null;
+
+    if (completionPatch) {
+      if (job.cancelRequested) {
+        update(job, {
+          state: 'cancelled',
+          stage: 'cancelled',
+          phase: 'Cancelled',
+          detail: 'The archive job was cancelled.',
+          error: '',
+          finishedAt: now()
+        });
+      } else {
+        update(job, { ...completionPatch, finishedAt: now() });
+      }
+    }
   }
 }
 
