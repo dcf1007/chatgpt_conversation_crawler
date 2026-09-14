@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createMhtmlRecorder } from '../src/mhtml-recorder.mjs';
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'crawler-mhtml-summary-'));
-await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '1.7.1-beta3-dev2.1' }), 'utf8');
+await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '1.7.1-beta4-dev2' }), 'utf8');
 
 let snapshotIndex = 0;
 const snapshotBodies = ['first mhtml body', 'second mhtml body'];
@@ -106,18 +106,23 @@ Object.assign(diagnosticState, {
   retainedTurns: secondSample.retainedTurns,
   newestRetained: secondSample.newestRetained
 });
-await recorder.capture('material-dom-change', { __diagnosticSample: secondSample });
+await recorder.capture('turn-processing-state-change', { __diagnosticSample: secondSample });
 await recorder.close();
 
 const manifestText = await fs.readFile(recorder.manifestPath, 'utf8');
 const rows = manifestText.trim().split(/\r?\n/).map(line => JSON.parse(line));
 assert.equal(rows.length, 2);
+assert.equal(rows[0].entryType, 'mhtml');
+assert.equal(rows[1].entryType, 'mhtml');
 assert.equal(rows[0].diagnosticSchemaVersion, 2);
-assert.equal(rows[0].crawlerVersion, '1.7.1-beta3-dev2.1');
+assert.equal(rows[0].crawlerVersion, '1.7.1-beta4-dev2');
 assert.equal(rows[0].bytes, Buffer.byteLength(snapshotBodies[0], 'utf8'));
 assert.equal(rows[1].bytes, Buffer.byteLength(snapshotBodies[1], 'utf8'));
-assert.equal(Object.hasOwn(rows[0], 'sha256'), false, 'dev2.1 must not hash complete MHTML snapshots');
-assert.equal(Object.hasOwn(rows[1], 'sha256'), false, 'dev2.1 must not hash complete MHTML snapshots');
+assert.equal(Object.hasOwn(rows[0], 'sha256'), false, 'MHTML snapshots must not hash complete bodies');
+assert.equal(Object.hasOwn(rows[1], 'sha256'), false, 'MHTML snapshots must not hash complete bodies');
+assert.ok(rows[0].captureStartedAt);
+assert.ok(rows[0].captureCompletedAt);
+assert.ok(Number.isFinite(rows[0].captureDurationMs));
 assert.deepEqual(rows[1].newlyRetainedTurnIds, ['conversation-turn-2']);
 assert.deepEqual(rows[1].newHydrationConflictTurnIds, ['conversation-turn-2']);
 assert.deepEqual(rows[1].newTurnProcessingFailureTurnIds, ['conversation-turn-2']);
@@ -126,7 +131,9 @@ assert.equal(rows[1].semanticChangedSincePreviousCapture, true);
 
 const summary = JSON.parse(await fs.readFile(recorder.summaryPath, 'utf8'));
 assert.equal(summary.diagnosticSchemaVersion, 2);
-assert.equal(summary.crawlerVersion, '1.7.1-beta3-dev2.1');
+assert.equal(summary.crawlerVersion, '1.7.1-beta4-dev2');
+assert.equal(summary.manifestRecordCount, 2);
+assert.equal(summary.telemetryRecordCount, 0);
 assert.equal(summary.snapshotCount, 2);
 assert.equal(summary.failedSnapshotCount, 0);
 assert.equal(summary.maximumRetainedTurns, 2);
@@ -138,6 +145,8 @@ assert.deepEqual(summary.hydrationTimeoutTurnIds, ['conversation-turn-2']);
 assert.deepEqual(summary.unresolvedTurnIdsAtEnd, ['conversation-turn-2']);
 assert.equal(summary.finalState.reconciliationConverged, false);
 assert.equal(summary.finalState.mountRetentionSealed, true);
+assert.equal(summary.mhtmlReasonCounts['initial-loaded'], 1);
+assert.equal(summary.mhtmlReasonCounts['turn-processing-state-change'], 1);
 assert.ok(summary.interestingSequences.includes(2));
 assert.equal(summary.phaseRanges.length, 2);
 
