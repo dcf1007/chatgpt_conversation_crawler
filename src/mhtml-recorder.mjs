@@ -475,7 +475,6 @@ function withTimeout(promise, timeoutMs, message) {
     Promise.resolve(promise),
     new Promise((_, reject) => {
       timer = setTimeout(() => reject(timeoutError(message, timeoutMs)), timeoutMs);
-      timer.unref?.();
     })
   ]).finally(() => clearTimeout(timer));
 }
